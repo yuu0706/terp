@@ -611,6 +611,7 @@ exports.run = (win) => {
       await sleep(4000);
       const sessions = await js('[...window.__terp.sessions.values()].map((s) => s.id + " " + s.cwd)').catch((e) => [`ERR ${e.message}`]);
       log.push(`sessions: ${JSON.stringify(sessions)}`);
+      fs.writeFileSync(path.join(outDir, 'screen.png'), (await win.webContents.capturePage()).toPNG());
       fs.writeFileSync(path.join(outDir, 'result.txt'), log.join('\n') + '\n');
       app.quit();
       return;
