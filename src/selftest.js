@@ -137,6 +137,55 @@ async function runFilesTest({ win, js, check, outDir }) {
   await js(`window.__terp.activateKey('t:${looseId}')`);
 }
 
+// TERP_SELFTEST_PATHLINKS を付けると、実在確認・折り返し・ファイルの行と桁への移動を確かめる
+async function runPathLinksTest({ js, check, outDir }) {
+  const dir = fs.mkdtempSync(path.join(path.resolve(outDir), 'pathlinks-'));
+  const source = path.join(dir, 'src', 'a.js');
+  const notes = path.join(dir, 'notes.md');
+  fs.mkdirSync(path.dirname(source), { recursive: true });
+  fs.writeFileSync(source, 'const a = 1;\nconst b = 2;\nconst c = 3;\nconst d = 4;\nconst e = 5;\n');
+  fs.writeFileSync(notes, '# notes\n');
+  const id = await js(`window.__terp.open(${JSON.stringify(dir)})`);
+  await sleep(2500);
+  const cols = await js(`window.__terp.sessions.get(${id}).term.cols`);
+  let deep = dir;
+  for (let i = 0; path.join(deep, 'wrapped.js').length <= cols + 40; i++) deep = path.join(deep, `nested-${i}-${'x'.repeat(40)}`);
+  const longPath = path.join(deep, 'wrapped.js');
+  fs.mkdirSync(deep, { recursive: true });
+  fs.writeFileSync(longPath, 'const wrapped = true;\n');
+  await js(`window.terp.write(${id}, 'stty -echo\\r')`);
+  await sleep(300);
+  const outputs = ['src/a.js:3:2', notes, '(src/a.js)', 'missing/nothing.js:1', longPath];
+  const quote = (value) => "'" + value.replace(/'/g, "'\\''") + "'";
+  const command = "printf '\\033[2J\\033[H" + '%s\\n'.repeat(outputs.length) + "' " + outputs.map(quote).join(' ') + '\r';
+  await js(`window.terp.write(${id}, ${JSON.stringify(command)})`);
+  let links = [];
+  for (let i = 0; i < 40; i++) {
+    links = await js(`window.__terp.terminalLinks(${id})`);
+    if (links.some((link) => link.text === longPath)) break;
+    await sleep(100);
+  }
+  check('相対パスと行・桁がリンクになる', links.some((link) => link.text === 'src/a.js:3:2' && link.path === source && link.line === 3 && link.column === 2));
+  check('絶対パスがリンクになる', links.some((link) => link.text === notes && link.path === notes));
+  check('括弧を除いたパスがリンクになる', links.some((link) => link.text === 'src/a.js' && link.path === source));
+  check('存在しないパスはリンクにならない', !links.some((link) => link.text === 'missing/nothing.js:1'));
+  const wrapped = links.filter((link) => link.text === longPath);
+  check('折り返された長いパスが1つのリンクになる', wrapped.length === 1 && wrapped[0].range.end.y > wrapped[0].range.start.y);
+  check('相対パスのリンクを押せる', await js(`window.__terp.activateTerminalLink(${id}, 'src/a.js:3:2')`));
+  check('リンクのファイルがタブで開く', (await js('window.__terp.activeKey')) === `f:${source}`);
+  const position = await js(`window.__terp.editorOf(${JSON.stringify(source)})?.getPosition()`);
+  check('カーソルが3行目2桁目に移る', position?.lineNumber === 3 && position?.column === 2, JSON.stringify(position));
+  await js(`window.__terp.activate(${id})`);
+  check('絶対パスのリンクを押せる', await js(`window.__terp.activateTerminalLink(${id}, ${JSON.stringify(notes)})`));
+  check('notes.md がタブで開く', (await js('window.__terp.activeKey')) === `f:${notes}`);
+  await js(`window.__terp.activate(${id})`);
+  await js(`window.__terp.editorOf(${JSON.stringify(source)}).setPosition({ lineNumber: 1, column: 1 })`);
+  await js(`window.__terp.activateTerminalLink(${id}, 'src/a.js:3:2')`);
+  const reopened = await js(`window.__terp.editorOf(${JSON.stringify(source)}).getPosition()`);
+  check('開いているタブでも指定の行・桁に移る', (await js('window.__terp.activeKey')) === `f:${source}` && reopened.lineNumber === 3 && reopened.column === 2);
+  await js(`window.terp.write(${id}, 'stty echo\\r')`);
+}
+
 // TERP_SELFTEST_SUBAGENTS を付けると、偽の会話で一覧・記録の追記・設定の入口を確かめる
 async function runSubagentsTest({ win, js, check, outDir }) {
   const savedDirs = process.env.TERP_CLAUDE_DIRS;
@@ -859,6 +908,13 @@ exports.run = (win) => {
     if (process.env.TERP_SELFTEST_SUBAGENTS) {
       await runSubagentsTest({ win, js, check, outDir });
       check('CSP の違反が無い', !log.some((line) => line.startsWith('console:') && line.includes('violates')));
+      fs.writeFileSync(path.join(outDir, 'result.txt'), log.join('\n') + '\n');
+      await finish();
+      return;
+    }
+
+    if (process.env.TERP_SELFTEST_PATHLINKS === '1') {
+      await runPathLinksTest({ js, check, outDir });
       fs.writeFileSync(path.join(outDir, 'result.txt'), log.join('\n') + '\n');
       await finish();
       return;

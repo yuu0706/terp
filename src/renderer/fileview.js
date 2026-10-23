@@ -98,7 +98,7 @@ function notice(text, file) {
 // 状態はこの戻り値に集め、タブ側は dirty と editor を参照する
 export function renderFileView(el, file, root, { confirm, onChange, isActive }) {
   const rel = root && file.startsWith(root + '/') ? file.slice(root.length + 1) : file;
-  const view = { editor: null, dirty: false, mtime: null, ready: null, get saving() { return saving; }, reload, save, checkExternal, dispose };
+  const view = { editor: null, dirty: false, mtime: null, ready: null, get saving() { return saving; }, reveal, reload, save, checkExternal, dispose };
   views.add(view);
   let savedText = '';
   let disposed = false;
@@ -130,6 +130,16 @@ export function renderFileView(el, file, root, { confirm, onChange, isActive }) 
   body.tabIndex = 0;
   el.replaceChildren(head, banner, body);
   body.append(notice('読み込み中…', file));
+
+  function reveal(line, column = 1) {
+    if (disposed || !view.editor || !Number.isFinite(line)) return;
+    const model = view.editor.getModel();
+    const lineNumber = Math.max(1, Math.min(model.getLineCount(), Math.trunc(line)));
+    const col = Number.isFinite(column) ? Math.trunc(column) : 1;
+    view.editor.setPosition({ lineNumber, column: Math.max(1, Math.min(model.getLineMaxColumn(lineNumber), col)) });
+    view.editor.revealLineInCenter(lineNumber);
+    view.editor.focus();
+  }
 
   function updateDirty() {
     view.dirty = Boolean(view.editor && view.editor.getValue({ preserveBOM: true }) !== savedText);

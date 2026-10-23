@@ -6,6 +6,7 @@ import { WebLinksAddon } from '../../node_modules/@xterm/addon-web-links/lib/add
 import { initGitPanel, refresh as refreshGit, setGitVisible } from './gitpanel.js';
 import { initFilesPanel, refreshFiles, setFilesVisible, markActiveFile } from './filespanel.js';
 import { renderFileView, applyEditorConfig } from './fileview.js';
+import { createPathLinkProvider } from './pathlinks.js';
 import { initSettings, openSettings } from './settings.js';
 
 const terp = window.terp;
@@ -1073,9 +1074,15 @@ async function restoreTabs() {
   saveTabs();
 }
 
-async function openFile(path) {
+async function openFile(path, { line, column } = {}) {
   const key = fileKey(path);
-  if (fileViews.has(path)) return activateKey(key);
+  if (fileViews.has(path)) {
+    const f = fileViews.get(path);
+    activateKey(key);
+    await f.view.ready;
+    if (line !== undefined && activeKey === key) f.view.reveal(line, column);
+    return f;
+  }
   const el = document.createElement('section');
   el.className = 'fileview';
   el.hidden = true;
@@ -1092,6 +1099,7 @@ async function openFile(path) {
     isActive: () => activeKey === key,
   });
   await f.view.ready;
+  if (line !== undefined && activeKey === key) f.view.reveal(line, column);
   return f;
 }
 
@@ -1291,6 +1299,13 @@ function registerSession(id, { el, term, fit }, extra = {}) {
     ...extra,
   };
   sessions.set(id, s);
+  s.pathLinks = createPathLinkProvider(term, {
+    context: () => ({ cwd: s.cwd, root: workOf(s)?.path, home: terp.home }),
+    statFile: (path) => terp.statFile(path),
+    openFile,
+    revealFile: (path) => terp.revealFile(path),
+  });
+  term.registerLinkProvider(s.pathLinks);
   s.li = createItem(s);
 
   term.attachCustomKeyEventHandler((event) => handleKey(s, event));
@@ -1557,8 +1572,10 @@ window.__terp = {
   activate,
   activateKey,
   // 自己診断へは関数を含むものを渡せないため、開いたパスだけを返す
-  openFile: (path) => openFile(path).then(() => path),
+  openFile: (path, position) => openFile(path, position).then(() => path),
   editorOf: (path) => fileViews.get(path)?.view?.editor || null,
+  terminalLinks: async (id) => (await sessions.get(id).pathLinks.visibleLinks()).map(({ text, path, line, column, range, directory }) => ({ text, path, line, column, range, directory })),
+  activateTerminalLink: (id, text) => sessions.get(id).pathLinks.activate(text),
   closeKey,
   setPanel,
   openSettings,
