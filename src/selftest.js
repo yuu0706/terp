@@ -370,6 +370,21 @@ exports.run = (win) => {
     };
 
     await sleep(2500);
+    // TERP_SELFTEST_DIAG を付けると、何も操作せずに起動の様子だけを書き出して終わる。
+    // 利用者の設定のまま使うため、常駐のプロセスもシェルも止めない
+    if (process.env.TERP_SELFTEST_DIAG) {
+      // TERP_SELFTEST_QUITBUSY を付けると、出力が流れ続けるシェルを置いたまま終わる（閉じても居残らないかを見る）
+      if (process.env.TERP_SELFTEST_QUITBUSY) {
+        const id = await js('window.__terp.activeId');
+        await js(`window.terp.write(${id}, ${JSON.stringify('while true; do echo busy; sleep 0.05; done\r')})`);
+      }
+      await sleep(4000);
+      const sessions = await js('[...window.__terp.sessions.values()].map((s) => s.id + " " + s.cwd)').catch((e) => [`ERR ${e.message}`]);
+      log.push(`sessions: ${JSON.stringify(sessions)}`);
+      fs.writeFileSync(path.join(outDir, 'result.txt'), log.join('\n') + '\n');
+      app.quit();
+      return;
+    }
     const tui = process.env.TERP_SELFTEST_CMD;
     if (tui) {
       // TERP_SELFTEST_CMD を指定したときは、その TUI を起動した画面を撮る

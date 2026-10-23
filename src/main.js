@@ -36,6 +36,11 @@ function shellEnv() {
 }
 
 // 窓を閉じた後も、常駐のプロセスからは出力が届き続ける。閉じた窓へ送ると本体でエラーになり、
+// その知らせの画面で終了が止まって terp が居残った（2026-10-23 観測）。送る前に必ず窓の有無を確かめる
+function toWindow(channel, ...args) {
+  if (win && !win.isDestroyed() && !win.webContents.isDestroyed()) win.webContents.send(channel, ...args);
+}
+
 function ensureClient() {
   if (client.socket && !client.socket.destroyed) return Promise.resolve();
   if (!connecting) {
@@ -43,23 +48,23 @@ function ensureClient() {
       .connect()
       .then(({ fresh }) => {
         // 常駐のプロセスが古い版でも、シェルを守るためそのまま使う。画面で知らせる
-        if (!fresh) win?.webContents.send('host-stale');
+        if (!fresh) toWindow('host-stale');
       })
       .finally(() => (connecting = null));
   }
   return connecting;
 }
 
-client.on('data', (id, data) => win?.webContents.send('pty:data', id, data));
+client.on('data', (id, data) => toWindow('pty:data', id, data));
 // 終わったシェルを控えから消すのは、閉じる操作（pty:kill）と定期の保存に任せる。
 // 常駐のプロセスごと止まるとき（Mac の終了など）はシェルが1つずつ終わるため、ここで書くと控えが空になる
 client.on('exit', (id, code) => {
   known.delete(id);
-  win?.webContents.send('pty:exit', id, code);
+  toWindow('pty:exit', id, code);
 });
 // 常駐のプロセスが落ちたら、そのシェルはすべて終わったものとして扱う
 client.on('disconnect', () => {
-  for (const id of known.keys()) win?.webContents.send('pty:exit', id, null);
+  for (const id of known.keys()) toWindow('pty:exit', id, null);
   known.clear();
 });
 
@@ -139,7 +144,7 @@ async function pollInfo() {
       known.set(p.id, entry);
       return { id: p.id, cwd: entry.cwd, program: entry.program };
     });
-    if (!win.isDestroyed()) win.webContents.send('pty:info', info);
+    toWindow('pty:info', info);
   });
 }
 
@@ -216,7 +221,7 @@ ipcMain.on('open-external', (_e, url) => {
 
 // ⌘ の付くキーはメニューで受け、画面へ操作として送る
 function buildMenu() {
-  const send = (action, arg) => () => win?.webContents.send('menu', action, arg);
+  const send = (action, arg) => () => toWindow('menu', action, arg);
   const selectItems = Array.from({ length: 9 }, (_, i) => ({
     label: `ターミナル ${i + 1}`,
     accelerator: `CmdOrCtrl+${i + 1}`,
@@ -309,7 +314,7 @@ app.whenReady().then(() => {
   config.watchConfig((loaded) => {
     if (!win || win.isDestroyed()) return;
     setBlur(win, loaded.window.blur);
-    win.webContents.send('config', loaded);
+    toWindow('config', loaded);
   });
   setInterval(pollInfo, 1500);
   setInterval(saveSnapshot, 10000);
@@ -319,3 +324,4 @@ app.whenReady().then(() => {
 app.on('window-all-closed', () => app.quit());
 app.on('before-quit', () => saveSnapshot());
 // 終わるときは常駐のプロセスとの接続を切り、出力が届かないようにする。シェルは常駐のプロセスに残る
+app.on('will-quit', () => client.socket?.destroy());
