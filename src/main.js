@@ -10,6 +10,7 @@ const projects = require('./projects');
 const gitops = require('./git');
 const gitpanel = require('./gitpanel');
 const agents = require('./agents');
+const subagents = require('./subagents');
 const files = require('./files');
 const snapshot = require('./snapshot');
 const tabs = require('./tabs');
@@ -212,6 +213,15 @@ ipcMain.handle('files:write', safe((_e, { file, text, mtime, force }) => files.w
 ipcMain.handle('files:open-external', safe((_e, file) => shell.openPath(file)));
 ipcMain.handle('files:reveal', safe((_e, file) => shell.showItemInFolder(file)));
 ipcMain.handle('agents:list', safe(() => agents.detect(config.loadConfig().agents)));
+ipcMain.handle('subagents:list', safe(async () => {
+  const entries = [...known.values()];
+  const byPid = await subagents.list(
+    entries.map((entry) => entry.pid),
+    entries.filter((entry) => entry.program === 'claude').map((entry) => entry.pid),
+  );
+  return Object.fromEntries([...known].map(([id, entry]) => [id, byPid.get(entry.pid) || []]));
+}));
+ipcMain.handle('subagents:read', safe((_e, file, offset) => subagents.read(file, offset)));
 ipcMain.handle('git:status', safe((_e, dir) => gitpanel.status(dir)));
 ipcMain.handle('git:diff', safe((_e, { top, file, kind }) => gitpanel.diff(top, file, kind)));
 ipcMain.handle('git:stage', safe((_e, { top, files }) => gitpanel.stage(top, files)));

@@ -137,6 +137,72 @@ async function runFilesTest({ win, js, check, outDir }) {
   await js(`window.__terp.activateKey('t:${looseId}')`);
 }
 
+// TERP_SELFTEST_SUBAGENTS を付けると、偽の会話で一覧・記録の追記・設定の入口を確かめる
+async function runSubagentsTest({ win, js, check, outDir }) {
+  const savedDirs = process.env.TERP_CLAUDE_DIRS;
+  const savedSession = process.env.TERP_FAKE_CLAUDE_SESSION;
+  const dirs = [path.join(outDir, 'claude-test'), path.join(outDir, 'claude2-test')];
+  const session = 'selftest-session';
+  const folders = dirs.map((dir) => path.join(dir, 'projects', 'x', session, 'subagents'));
+  for (const dir of folders) fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(folders[0], 'agent-running.jsonl');
+  const line = (type, content) => JSON.stringify({ type, timestamp: new Date().toISOString(), message: { content } }) + '\n';
+  const initial = line('user', [{ type: 'text', text: '画面を確認する' }]) +
+    line('assistant', [{ type: 'thinking', thinking: '表示しない内容' }, { type: 'text', text: '確認を開始する' },
+      { type: 'tool_use', name: 'Read', input: { file_path: '/sample/app.js' } }]) +
+    line('user', [{ type: 'tool_result', content: '確認結果: ' + 'a'.repeat(500) }]);
+  fs.writeFileSync(file, initial);
+  fs.writeFileSync(path.join(folders[0], 'agent-running.meta.json'), JSON.stringify({ agentType: 'general-purpose', description: '画面の確認' }));
+  for (let i = 1; i <= 2; i++) {
+    const folder = folders[i - 1];
+    fs.writeFileSync(path.join(folder, `agent-finished-${i}.jsonl`), line('assistant', [{ type: 'text', text: `確認完了 ${i}` }]));
+    fs.writeFileSync(path.join(folder, `agent-finished-${i}.meta.json`), JSON.stringify({ agentType: 'general-purpose', description: `完了した確認 ${i}`, finished: true }));
+  }
+  process.env.TERP_CLAUDE_DIRS = dirs.join(path.delimiter);
+  process.env.TERP_FAKE_CLAUDE_SESSION = session;
+  const wait = async (test, ms = 7000) => {
+    for (let t = 0; t < ms; t += 100) {
+      if (await test()) return true;
+      await sleep(100);
+    }
+    return false;
+  };
+  try {
+    const id = await js('window.__terp.activeId');
+    const group = `window.__terp.sessions.get(${id}).li.nextElementSibling`;
+    const row = `${group}.querySelector('.subagent[data-id="running"]')`;
+    await js('window.__terp.refreshSubagents()');
+    check('ターミナルの直下に動いているサブエージェントが出る', await js(`Boolean(${row} && ${row}.textContent.includes('画面の確認') && ${row}.textContent.includes('Read: app.js'))`));
+    check('終わったものは 2 件に畳まれる', await js(`${group}.querySelector('.subagents__finished').textContent.includes('終わったもの 2 件') && ${group}.querySelectorAll('.subagent').length === 1`));
+    await js(`${group}.querySelector('.subagents__finished').click()`);
+    check('終わったものを開ける', await js(`${group}.querySelectorAll('.subagent').length === 3`));
+    await js(`${group}.querySelector('.subagents__finished').click()`);
+    check('もう一度押すと畳める', await js(`${group}.querySelectorAll('.subagent').length === 1`));
+    fs.appendFileSync(file, line('assistant', [{ type: 'tool_use', name: 'Bash', input: { command: 'echo subagent-updated' } }]));
+    check('一覧が追記された道具の操作に変わる', await wait(() => js(`${row}.textContent.includes('Bash: echo subagent-updated')`)));
+    await js(`${row}.click()`);
+    const key = `s:${fs.realpathSync(file)}`;
+    check('サブエージェントのタブが開く', await wait(() => js(`window.__terp.activeKey === ${JSON.stringify(key)}`)));
+    check('記録に話す・道具・結果が出る', await wait(() => js(`['text', 'tool', 'result'].every((type) => document.querySelector('.subagent-view:not([hidden]) .subagent-view__entry[data-type="' + type + '"]'))`)));
+    check('考えている内容を出さない', await js(`!document.querySelector('.subagent-view:not([hidden])').textContent.includes('表示しない内容')`));
+    fs.appendFileSync(file, line('assistant', [{ type: 'text', text: '追記された確認結果' }]));
+    check('記録のタブへ続きを足す', await wait(() => js(`document.querySelector('.subagent-view:not([hidden])').textContent.includes('追記された確認結果')`)));
+    await sleep(400);
+    const savedTabs = await js('window.terp.loadTabs()');
+    check('記録のタブを控えに残さない', savedTabs.ok && !savedTabs.value.order.includes(key) && savedTabs.value.active !== key);
+    await win.webContents.capturePage().then((img) => fs.writeFileSync(path.join(outDir, 'subagents.png'), img.toPNG()));
+    await js(`[...document.querySelectorAll('#tabs .tab')].find((tab) => tab.dataset.key === ${JSON.stringify(key)}).querySelector('.tab__close').click()`);
+    check('サブエージェントのタブを閉じられる', await js(`!window.__terp.tabOrder.includes(${JSON.stringify(key)}) && !document.querySelector('.subagent-view')`));
+    await js(`document.getElementById('settings-open').click()`);
+    check('設定のボタンで設定の画面が開く', await wait(() => js(`!document.getElementById('settings').hidden`)));
+  } finally {
+    if (savedDirs === undefined) delete process.env.TERP_CLAUDE_DIRS;
+    else process.env.TERP_CLAUDE_DIRS = savedDirs;
+    if (savedSession === undefined) delete process.env.TERP_FAKE_CLAUDE_SESSION;
+    else process.env.TERP_FAKE_CLAUDE_SESSION = savedSession;
+  }
+}
+
 // TERP_SELFTEST_EDITOR を付けると、一時ファイルで編集・保存・外の変更・閉じる確認を確かめる
 async function runEditorTest({ win, js, check, outDir }) {
   const dir = fs.mkdtempSync(path.join(outDir, 'editor-'));
@@ -785,6 +851,14 @@ exports.run = (win) => {
 
     if (process.env.TERP_SELFTEST_EDITOR) {
       await runEditorTest({ win, js, check, outDir });
+      fs.writeFileSync(path.join(outDir, 'result.txt'), log.join('\n') + '\n');
+      await finish();
+      return;
+    }
+
+    if (process.env.TERP_SELFTEST_SUBAGENTS) {
+      await runSubagentsTest({ win, js, check, outDir });
+      check('CSP の違反が無い', !log.some((line) => line.startsWith('console:') && line.includes('violates')));
       fs.writeFileSync(path.join(outDir, 'result.txt'), log.join('\n') + '\n');
       await finish();
       return;

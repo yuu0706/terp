@@ -38,9 +38,14 @@ function parseTitle(raw) {
 const sessions = new Map();
 // タブで開いているファイル。パスごとに1つ
 const fileViews = new Map();
+// サブエージェントの記録と、端末ごとの一覧。開閉状態はこの窓の間だけ持つ
+const subagentViews = new Map();
+const subagentLists = new Map();
+let subagents = {};
+let subagentsRefresh = null;
 // projects.json のリポジトリと、その worktree。git から読み直す（refreshProjects）
 let projects = [];
-// タブは開いた順に並べる。キーはターミナルが 't:<番号>'、ファイルが 'f:<パス>'。
+// タブは開いた順に並べる。キーは端末が 't:<番号>'、ファイルが 'f:<パス>'、サブの記録が 's:<パス>'。
 // Orca と同じく、上のタブには表示中のタブと同じ作業（worktree）のものだけを出す
 let tabOrder = [];
 let activeKey = null;
@@ -130,11 +135,16 @@ const STATE_LABELS = { busy: '出力中', unread: '未読の出力あり', notif
 
 const termKey = (id) => `t:${id}`;
 const fileKey = (path) => `f:${path}`;
+const subagentKey = (path) => `s:${path}`;
 
 function groupOf(key) {
   if (key.startsWith('t:')) {
     const s = sessions.get(Number(key.slice(2)));
     return (s && workOf(s)?.path) || LOOSE;
+  }
+  if (key.startsWith('s:')) {
+    const view = subagentViews.get(key.slice(2));
+    return workOfPath(sessions.get(view?.sessionId)?.cwd || view?.cwd)?.path || LOOSE;
   }
   return workOfPath(key.slice(2))?.path || LOOSE;
 }
@@ -149,6 +159,10 @@ function visibleKeys() {
 // 新しいターミナルやエージェントを開く場所: ファイルのタブならそのフォルダ、ターミナルならその作業場所
 function activeCwd() {
   if (activeKey?.startsWith('f:')) return activeKey.slice(2).replace(/\/[^/]*$/, '');
+  if (activeKey?.startsWith('s:')) {
+    const view = subagentViews.get(activeKey.slice(2));
+    return sessions.get(view?.sessionId)?.cwd || view?.cwd || null;
+  }
   return sessions.get(activeId)?.cwd || null;
 }
 
@@ -174,6 +188,12 @@ function renderAll() {
   placeSessions();
   const visible = visibleKeys();
   for (const s of sessions.values()) renderItem(s, visible.indexOf(termKey(s.id)));
+  for (const list of subagentLists.values()) {
+    for (const row of list.el.querySelectorAll('.subagent')) {
+      row.setAttribute('aria-current', String(Boolean(row.dataset.file) && activeKey === subagentKey(row.dataset.file)));
+      row.querySelector('.subagent__time').textContent = elapsedLabel(row.dataset.since);
+    }
+  }
   const group = activeKey ? groupOf(activeKey) : null;
   for (const el of projectsEl.querySelectorAll('.work')) {
     el.querySelector('.work__row').setAttribute('aria-current', String(group === el.dataset.path));
@@ -188,6 +208,7 @@ const TAB_FILE_ICON = `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
 
 function tabLabel(key) {
   if (key.startsWith('t:')) return displayName(sessions.get(Number(key.slice(2))));
+  if (key.startsWith('s:')) return subagentViews.get(key.slice(2))?.agent.description || 'サブエージェント';
   return key.split('/').pop();
 }
 
@@ -201,7 +222,7 @@ function renderTabs(visible) {
       tab.className = 'tab';
       tab.dataset.key = key;
       tab.setAttribute('role', 'tab');
-      tab.innerHTML = `${key.startsWith('t:') ? '<span class="session__dot tab__dot"></span>' : TAB_FILE_ICON}<span class="tab__name"></span>
+      tab.innerHTML = `${key.startsWith('t:') ? '<span class="session__dot tab__dot"></span>' : key.startsWith('s:') ? AGENT_ICON : TAB_FILE_ICON}<span class="tab__name"></span>
         <button class="tab__close" type="button" aria-label="閉じる" title="閉じる（⌘W）">${CLOSE_ICON}</button>`;
       tab.addEventListener('click', (e) => {
         if (e.target.closest('.tab__close')) closeKey(key);
@@ -218,7 +239,7 @@ function renderTabs(visible) {
     const dirty = key.startsWith('f:') && fileViews.get(key.slice(2))?.view?.dirty;
     tab.querySelector('.tab__name').textContent = tabLabel(key) + (dirty ? ' ●' : '');
     tab.dataset.dirty = String(Boolean(dirty));
-    tab.title = key.startsWith('t:') ? sessions.get(Number(key.slice(2)))?.cwd || '' : key.slice(2);
+    tab.title = key.startsWith('t:') ? sessions.get(Number(key.slice(2)))?.cwd || '' : key.startsWith('s:') ? `サブエージェント: ${tabLabel(key)}` : key.slice(2);
     if (key.startsWith('t:')) tab.dataset.state = stateOf(sessions.get(Number(key.slice(2))));
   }
   tabsEl.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
@@ -323,9 +344,11 @@ function placeSessions() {
     const target = (w && projectsEl.querySelector(`.work[data-path="${CSS.escape(w.path)}"] .session-list`)) || looseList;
     // 名前の編集中に動かすと入力欄の選択が外れるため、動かす必要があるときだけ動かす
     if (s.li.parentElement !== target) {
-      const after = [...target.children].find((li) => Number(li.dataset.id) > s.id);
+      const after = [...target.children].find((li) => li.classList.contains('session') && Number(li.dataset.id) > s.id);
       target.insertBefore(s.li, after || null);
     }
+    const children = subagentLists.get(s.id)?.el;
+    if (children && s.li.nextElementSibling !== children) s.li.after(children);
   }
   looseSection.hidden = looseList.children.length === 0;
 }
@@ -409,6 +432,184 @@ async function refreshProjects() {
   if (JSON.stringify(next) === JSON.stringify(projects)) return;
   projects = next;
   renderProjects();
+}
+
+// ---- サブエージェントの一覧と記録 ----
+
+function elapsedLabel(since) {
+  if (!since) return '';
+  const milliseconds = Date.now() - new Date(since).getTime();
+  if (!Number.isFinite(milliseconds)) return '';
+  const minutes = Math.max(0, Math.floor(milliseconds / 60000));
+  if (minutes < 1) return '1分未満';
+  if (minutes < 60) return `${minutes}分`;
+  if (minutes < 1440) return `${Math.floor(minutes / 60)}時間`;
+  return `${Math.floor(minutes / 1440)}日`;
+}
+
+function renderSubagents(id) {
+  const agents = subagents[id] || [];
+  let list = subagentLists.get(id);
+  if (!list) {
+    const el = document.createElement('li');
+    el.className = 'subagents';
+    el.dataset.session = id;
+    list = { el, expanded: false };
+    subagentLists.set(id, list);
+  }
+  list.el.textContent = '';
+  const rows = document.createElement('ul');
+  rows.className = 'session-list';
+  list.el.append(rows);
+  function appendAgent(agent) {
+    const li = document.createElement('li');
+    const clickable = agent.kind === 'claude' && Boolean(agent.file);
+    const row = document.createElement(clickable ? 'button' : 'div');
+    row.className = 'subagent';
+    if (clickable) row.type = 'button';
+    row.dataset.id = agent.id;
+    if (clickable) row.dataset.file = agent.file;
+    row.dataset.running = String(agent.running);
+    row.dataset.since = agent.running ? agent.startedAt : agent.updatedAt;
+    row.title = [agent.description, agent.lastAction, agent.running ? '動いている' : '終わった'].filter(Boolean).join('\n');
+    row.innerHTML = '<span class="session__dot subagent__dot"></span><span class="subagent__name"></span><span class="subagent__time"></span><span class="subagent__action"></span>';
+    row.querySelector('.subagent__dot').setAttribute('aria-label', agent.running ? '動いている' : '終わった');
+    row.querySelector('.subagent__name').textContent = agent.description || agent.agentType || 'サブエージェント';
+    row.querySelector('.subagent__action').textContent = agent.lastAction || '';
+    row.querySelector('.subagent__time').textContent = elapsedLabel(row.dataset.since);
+    if (clickable) row.addEventListener('click', () => openSubagent(id, agent));
+    li.append(row);
+    rows.append(li);
+  }
+  for (const agent of agents.filter((a) => a.running)) appendAgent(agent);
+  const finished = agents.filter((a) => !a.running);
+  if (finished.length) {
+    const li = document.createElement('li');
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'subagents__finished';
+    button.setAttribute('aria-expanded', String(list.expanded));
+    button.textContent = `${list.expanded ? '▾' : '▸'} 終わったもの ${finished.length} 件`;
+    button.addEventListener('click', () => {
+      list.expanded = !list.expanded;
+      renderSubagents(id);
+      renderAll();
+    });
+    li.append(button);
+    rows.append(li);
+    if (list.expanded) for (const agent of finished) appendAgent(agent);
+  }
+  list.el.hidden = agents.length === 0;
+}
+
+async function refreshSubagents() {
+  if (subagentsRefresh) return subagentsRefresh;
+  subagentsRefresh = refreshSubagentLists();
+  try {
+    await subagentsRefresh;
+  } finally {
+    subagentsRefresh = null;
+  }
+}
+
+async function refreshSubagentLists() {
+  try {
+    const res = await terp.listSubagents();
+    if (!res.ok) return;
+    const next = res.value;
+    if (JSON.stringify(next) === JSON.stringify(subagents)) return;
+    const previous = subagents;
+    subagents = next;
+    for (const id of sessions.keys()) {
+      if (JSON.stringify(previous[id] || []) !== JSON.stringify(next[id] || []) || !subagentLists.has(id)) renderSubagents(id);
+    }
+    for (const view of subagentViews.values()) {
+      const agent = (next[view.sessionId] || []).find((a) => a.file === view.agent.file);
+      const wasRunning = view.agent.running;
+      view.agent = agent || { ...view.agent, running: false };
+      updateSubagentHeading(view);
+      // 終了の直前に書かれた行も読む
+      if (wasRunning) readSubagentView(view);
+    }
+    renderAll();
+  } catch {
+    // 一時的に読めない間も、見ている記録と前回の一覧は残す
+  }
+}
+
+function updateSubagentHeading(view) {
+  view.el.querySelector('.subagent-view__title').textContent = view.agent.description || 'サブエージェント';
+  view.el.querySelector('.subagent-view__meta').textContent = [view.agent.agentType, view.agent.running ? '動いている' : '終わった'].filter(Boolean).join(' · ');
+}
+
+async function readSubagentView(view) {
+  if (subagentViews.get(view.agent.file) !== view) return;
+  if (view.reading) {
+    view.needsRead = true;
+    return;
+  }
+  view.reading = true;
+  const body = view.el.querySelector('.subagent-view__body');
+  try {
+    const res = await terp.readSubagent(view.agent.file, view.offset);
+    if (subagentViews.get(view.agent.file) !== view) return;
+    if (!res.ok) {
+      view.readError = true;
+      view.notice.textContent = '記録を読めない。しばらく待って読み直す';
+      return;
+    }
+    view.readError = false;
+    const follow = body.scrollHeight - body.scrollTop - body.clientHeight <= 24;
+    if (view.offset !== undefined && res.value.offset < view.offset) body.textContent = '';
+    view.offset = res.value.offset;
+    const fragment = document.createDocumentFragment();
+    for (const entry of res.value.entries) {
+      const row = document.createElement('div');
+      row.className = 'subagent-view__entry';
+      row.dataset.type = entry.t;
+      const time = document.createElement('time');
+      const date = new Date(entry.at);
+      time.textContent = Number.isFinite(date.getTime()) ? date.toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '';
+      if (Number.isFinite(date.getTime())) time.dateTime = date.toISOString();
+      const kind = document.createElement('span');
+      kind.className = 'subagent-view__kind';
+      kind.textContent = { text: '話す', tool: '道具', result: '結果' }[entry.t] || '';
+      const text = document.createElement('div');
+      text.className = 'subagent-view__text';
+      text.textContent = entry.text;
+      row.append(time, kind, text);
+      fragment.append(row);
+    }
+    body.append(fragment);
+    view.notice.textContent = body.children.length ? '' : '記録を待っている';
+    if (follow) body.scrollTop = body.scrollHeight;
+  } catch {
+    view.readError = true;
+    view.notice.textContent = '記録を読めない。しばらく待って読み直す';
+  } finally {
+    view.reading = false;
+    if (view.needsRead) {
+      view.needsRead = false;
+      readSubagentView(view);
+    }
+  }
+}
+
+async function openSubagent(sessionId, agent) {
+  const key = subagentKey(agent.file);
+  if (subagentViews.has(agent.file)) return activateKey(key);
+  const el = document.createElement('section');
+  el.className = 'subagent-view';
+  el.hidden = true;
+  el.innerHTML = '<header class="subagent-view__head"><h2 class="subagent-view__title"></h2><span class="subagent-view__meta"></span></header><p class="subagent-view__notice" role="status">記録を読み込み中</p><div class="subagent-view__body" tabindex="0" aria-label="サブエージェントの記録"></div>';
+  const view = { agent, sessionId, cwd: sessions.get(sessionId)?.cwd, el, notice: el.querySelector('.subagent-view__notice'), offset: undefined, reading: false };
+  subagentViews.set(agent.file, view);
+  container.append(el);
+  updateSubagentHeading(view);
+  const at = tabOrder.indexOf(activeKey);
+  tabOrder.splice(at < 0 ? tabOrder.length : at + 1, 0, key);
+  activateKey(key);
+  await readSubagentView(view);
 }
 
 // 作業を開く: その作業のタブのうち最近見たものへ移る。無ければ新しくターミナルを開く
@@ -800,6 +1001,9 @@ function hideView(key) {
     if (!s) return;
     s.el.hidden = true;
     detachWebgl(s);
+  } else if (key.startsWith('s:')) {
+    const view = subagentViews.get(key.slice(2));
+    if (view) view.el.hidden = true;
   } else {
     const f = fileViews.get(key.slice(2));
     if (f) f.el.hidden = true;
@@ -808,7 +1012,7 @@ function hideView(key) {
 
 function activateKey(key) {
   const isTerm = key.startsWith('t:');
-  const target = isTerm ? sessions.get(Number(key.slice(2))) : fileViews.get(key.slice(2));
+  const target = isTerm ? sessions.get(Number(key.slice(2))) : key.startsWith('s:') ? subagentViews.get(key.slice(2)) : fileViews.get(key.slice(2));
   if (!target) return;
   if (activeKey && activeKey !== key) hideView(activeKey);
   activeKey = key;
@@ -829,7 +1033,7 @@ function activateKey(key) {
     if (target.view?.editor) {
       target.view.editor.layout();
       target.view.editor.focus();
-    } else target.el.querySelector('.fileview__body')?.focus({ preventScroll: true });
+    } else target.el.querySelector('.fileview__body, .subagent-view__body')?.focus({ preventScroll: true });
   }
   refreshGit(true);
   refreshFiles(false);
@@ -848,7 +1052,9 @@ function saveTabs() {
   if (restoringTabs) return;
   clearTimeout(saveTabsTimer);
   saveTabsTimer = setTimeout(() => {
-    terp.saveTabs({ files: [...fileViews.keys()], order: [...tabOrder], active: activeKey });
+    const order = tabOrder.filter((key) => !key.startsWith('s:'));
+    const active = activeKey?.startsWith('s:') ? recent.find((key) => !key.startsWith('s:')) || null : activeKey;
+    terp.saveTabs({ files: [...fileViews.keys()], order, active });
   }, 250);
 }
 
@@ -892,7 +1098,14 @@ async function openFile(path) {
 function closeKey(key) {
   if (!key) return;
   if (key.startsWith('t:')) closeSession(Number(key.slice(2)));
-  else return closeFile(key.slice(2));
+  else if (key.startsWith('s:')) {
+    const view = subagentViews.get(key.slice(2));
+    if (!view) return;
+    // 所属を求められるうちに次のタブへ移る
+    view.el.remove();
+    dropTab(key);
+    subagentViews.delete(key.slice(2));
+  } else return closeFile(key.slice(2));
 }
 
 function closeFile(path) {
@@ -1179,6 +1392,16 @@ function removeSession(id) {
   // 所属の作業を先に求める（消した後は求められない）
   const key = termKey(id);
   const group = groupOf(key);
+  for (const view of subagentViews.values()) {
+    if (view.sessionId !== id) continue;
+    view.cwd = s.cwd;
+    view.agent = { ...view.agent, running: false };
+    updateSubagentHeading(view);
+    readSubagentView(view);
+  }
+  subagentLists.get(id)?.el.remove();
+  subagentLists.delete(id);
+  delete subagents[id];
   detachWebgl(s);
   s.term.dispose();
   s.el.remove();
@@ -1306,10 +1529,13 @@ document.getElementById('panel-refresh').addEventListener('click', () => (panelT
 document.getElementById('empty-new').addEventListener('click', () => newTerminal());
 document.getElementById('new-work').addEventListener('click', () => openWorkDialog());
 document.getElementById('add-project').addEventListener('click', () => addProject());
+document.getElementById('settings-open').addEventListener('click', () => openSettings());
 document.getElementById('empty-add-project').addEventListener('click', () => addProject());
 
 // 外で作った worktree や変更の数を拾うため、定期的に git から読み直す
 setInterval(refreshProjects, 5000);
+setInterval(refreshSubagents, 3000);
+window.addEventListener('focus', refreshSubagents);
 window.addEventListener('focus', refreshProjects);
 // エージェントを入れたり消したりしたら、ウィンドウに戻ったときに拾い直す
 window.addEventListener('focus', refreshAgents);
@@ -1318,6 +1544,7 @@ window.addEventListener('focus', refreshAgents);
 setInterval(renderAll, 500);
 setInterval(() => {
   for (const f of fileViews.values()) f.view?.checkExternal().catch(() => {});
+  for (const view of subagentViews.values()) if (view.agent.running || view.offset === undefined || view.readError) readSubagentView(view);
 }, 2000);
 
 // 自己診断（TERP_SELFTEST）から操作するための口
@@ -1350,6 +1577,7 @@ window.__terp = {
   },
   addProject,
   refreshProjects,
+  refreshSubagents,
   refreshAgents,
   get agents() {
     return agentList;
@@ -1391,3 +1619,4 @@ try {
 } finally {
   await restoreTabs();
 }
+await refreshSubagents();

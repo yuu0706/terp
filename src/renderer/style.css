@@ -92,6 +92,11 @@ body {
   color: var(--color-text-muted);
 }
 
+.sidebar__actions {
+  display: flex;
+  gap: var(--space-1);
+}
+
 .btn {
   -webkit-app-region: no-drag;
   display: inline-flex;
@@ -417,6 +422,188 @@ body {
   grid-column: 3;
   grid-row: 1;
   font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+/* サブエージェントは、親のターミナルからさらに1段下げる */
+.subagents {
+  margin-left: var(--space-3);
+}
+
+.work .subagents {
+  margin-left: calc(var(--space-3) * 2);
+}
+
+.subagents[hidden] {
+  display: none;
+}
+
+.subagent {
+  display: grid;
+  grid-template-columns: var(--space-2) minmax(0, 1fr) auto;
+  grid-template-rows: auto auto;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+  width: 100%;
+  min-height: var(--row-h);
+  box-sizing: border-box;
+  padding: var(--space-1) var(--space-2);
+  border: 0;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--color-text);
+  text-align: left;
+  font: inherit;
+  font-size: var(--text-sm);
+}
+
+button.subagent {
+  cursor: pointer;
+}
+
+button.subagent:hover,
+.subagents__finished:hover {
+  background: var(--color-bg-hover);
+}
+
+.subagent[aria-current='true'] {
+  background: var(--color-bg-active);
+}
+
+.subagent__dot {
+  background: var(--color-busy);
+  border-color: var(--color-busy);
+  opacity: 0.3;
+}
+
+.subagent[data-running='true'] .subagent__dot {
+  opacity: 1;
+}
+
+.subagent__name,
+.subagent__action {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.subagent__name {
+  grid-column: 2;
+}
+
+.subagent__time {
+  grid-column: 3;
+  white-space: nowrap;
+  color: var(--color-text-muted);
+}
+
+.subagent__action {
+  grid-column: 2 / 4;
+  grid-row: 2;
+  color: var(--color-text-muted);
+}
+
+.subagents__finished {
+  width: 100%;
+  padding: var(--space-1) var(--space-2);
+  border: 0;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--color-text-muted);
+  text-align: left;
+  font: inherit;
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+
+/* 記録は端末やファイルと同じ面で開く。右の面の開閉にも幅を合わせる */
+.subagent-view {
+  position: absolute;
+  top: var(--titlebar-height);
+  left: 0;
+  right: 0;
+  bottom: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.subagent-view[hidden] {
+  display: none;
+}
+
+.subagent-view__head {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.subagent-view__title {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: var(--text-md);
+  font-weight: 600;
+}
+
+.subagent-view__meta,
+.subagent-view__notice {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+.subagent-view__notice {
+  flex: none;
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+}
+
+.subagent-view__notice:empty {
+  display: none;
+}
+
+.subagent-view__body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: var(--space-2) var(--space-3);
+  user-select: text;
+}
+
+.subagent-view__entry {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr);
+  align-items: baseline;
+  gap: var(--space-2);
+  padding: var(--space-2) 0;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.subagent-view__entry time,
+.subagent-view__kind {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  white-space: nowrap;
+}
+
+.subagent-view__text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+.subagent-view__entry[data-type='tool'] .subagent-view__text {
+  font-family: var(--font-mono);
+}
+
+.subagent-view__entry[data-type='result'] .subagent-view__text {
   color: var(--color-text-muted);
 }
 

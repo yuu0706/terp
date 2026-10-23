@@ -42,6 +42,8 @@ contextBridge.exposeInMainWorld('terp', {
   openExternalFile: (file) => ipcRenderer.invoke('files:open-external', file),
   revealFile: (file) => ipcRenderer.invoke('files:reveal', file),
   listAgents: () => ipcRenderer.invoke('agents:list'),
+  listSubagents: () => ipcRenderer.invoke('subagents:list'),
+  readSubagent: (file, offset) => ipcRenderer.invoke('subagents:read', file, offset),
   gitStatus: (dir) => ipcRenderer.invoke('git:status', dir),
   gitDiff: (opts) => ipcRenderer.invoke('git:diff', opts),
   gitStage: (opts) => ipcRenderer.invoke('git:stage', opts),

@@ -19,12 +19,20 @@
     <nav id="sidebar" aria-label="作業とターミナルの一覧">
       <div class="sidebar__head">
         <span class="sidebar__title">作業</span>
-        <button id="add-project" class="icon-btn" type="button" aria-label="リポジトリを追加" title="リポジトリを追加">
-          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
-            <path d="M12 11v5M9.5 13.5h5" />
-          </svg>
-        </button>
+        <div class="sidebar__actions">
+          <button id="settings-open" class="icon-btn" type="button" aria-label="設定（⌘,）" title="設定（⌘,）">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="m10 3-.6 2.2-2 .9-2.1-.6-2 3.5 1.6 1.6v2.8L3.3 15l2 3.5 2.1-.6 2 .9.6 2.2h4l.6-2.2 2-.9 2.1.6 2-3.5-1.6-1.6v-2.8L20.7 9l-2-3.5-2.1.6-2-.9L14 3z" />
+              <circle cx="12" cy="12" r="3" />
+            </svg>
+          </button>
+          <button id="add-project" class="icon-btn" type="button" aria-label="リポジトリを追加" title="リポジトリを追加">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+              <path d="M12 11v5M9.5 13.5h5" />
+            </svg>
+          </button>
+        </div>
       </div>
       <div id="tree" class="tree">
         <div id="no-projects" class="tree__empty" hidden>
