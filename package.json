@@ -13,7 +13,7 @@
     "make-icon": "electron scripts/make-icon.js"
   },
   "author": "",
-  "license": "UNLICENSED",
+  "license": "MIT",
   "type": "commonjs",
   "dependencies": {
     "@xterm/addon-fit": "^0.11.0",

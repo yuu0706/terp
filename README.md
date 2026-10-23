@@ -57,3 +57,7 @@ npm start
 ## 設計
 
 方針・採らなかった案・既知の落とし穴は [docs/design.md](docs/design.md) にまとめている。
+
+## ライセンス
+
+[MIT](LICENSE)
