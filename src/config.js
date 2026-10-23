@@ -181,4 +181,52 @@ function watchConfig(onChange) {
   });
 }
 
-module.exports = { CONFIG_DIR, CONFIG_PATH, ensureConfigFile, loadConfig, watchConfig, parseGhosttyTheme };
+// 設定の画面から1つ以上の値を書き換える。null は「書かない（既定に戻す）」として消す。
+// 画面に無い値や、利用者が手で書いた値は残す。JSON が壊れているときは書かずに失敗を返す
+function updateConfig(patch) {
+  let current = {};
+  try {
+    current = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+  } catch (err) {
+    if (err.code !== 'ENOENT') throw new Error(`config.json が壊れているため書けません。直してから変えてください（${err.message}）`);
+  }
+  const next = { ...current };
+  for (const [key, value] of Object.entries(patch)) {
+    if (!(key in DEFAULT_CONFIG)) throw new Error(`知らない設定の名前です: ${key}`);
+    if (value === null) delete next[key];
+    else next[key] = value;
+  }
+  fs.mkdirSync(CONFIG_DIR, { recursive: true });
+  const tmp = `${CONFIG_PATH}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(next, null, 2) + '\n');
+  fs.renameSync(tmp, CONFIG_PATH);
+  return next;
+}
+
+// 設定の画面に出す、いま書いてある値（既定の値を足したもの）
+function rawConfig() {
+  let user = {};
+  try {
+    user = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+  } catch {
+    // 読めないときは既定の値を出す。画面の警告は loadConfig の error が出す
+  }
+  return { ...DEFAULT_CONFIG, ...user };
+}
+
+// 選べるテーマの名前。探す場所の順に並べ、同じ名前は先に見つかった方だけ
+function listThemes() {
+  const names = new Set();
+  for (const dir of THEME_DIRS) {
+    try {
+      for (const name of fs.readdirSync(dir).sort((a, b) => a.localeCompare(b))) {
+        if (!name.startsWith('.')) names.add(name);
+      }
+    } catch {
+      // 無い場所は飛ばす
+    }
+  }
+  return [...names];
+}
+
+module.exports = { CONFIG_DIR, CONFIG_PATH, ensureConfigFile, loadConfig, watchConfig, parseGhosttyTheme, updateConfig, rawConfig, listThemes };

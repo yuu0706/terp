@@ -4,6 +4,10 @@ contextBridge.exposeInMainWorld('terp', {
   // サンドボックスの preload では os を読めないため、本体から受け取る
   home: ipcRenderer.sendSync('home'),
   getConfig: () => ipcRenderer.invoke('config:get'),
+  rawConfig: () => ipcRenderer.invoke('config:raw'),
+  updateConfig: (patch) => ipcRenderer.invoke('config:update', patch),
+  listThemes: () => ipcRenderer.invoke('config:themes'),
+  openConfigFile: () => ipcRenderer.invoke('config:open-file'),
   onConfig: (fn) => ipcRenderer.on('config', (_e, config) => fn(config)),
   createPty: (opts) => ipcRenderer.invoke('pty:create', opts),
   restoreInfo: () => ipcRenderer.invoke('pty:restore-info'),

@@ -6,6 +6,7 @@ import { WebLinksAddon } from '../../node_modules/@xterm/addon-web-links/lib/add
 import { initGitPanel, refresh as refreshGit, setGitVisible } from './gitpanel.js';
 import { initFilesPanel, refreshFiles, setFilesVisible, markActiveFile } from './filespanel.js';
 import { renderFileView } from './fileview.js';
+import { initSettings, openSettings } from './settings.js';
 
 const terp = window.terp;
 const container = document.getElementById('terminals');
@@ -1166,6 +1167,9 @@ terp.onMenu((action, arg) => {
     case 'toggle-files':
       togglePanel('files');
       break;
+    case 'settings':
+      openSettings();
+      break;
     case 'add-project':
       addProject();
       break;
@@ -1211,6 +1215,7 @@ window.__terp = {
   openFile,
   closeKey,
   setPanel,
+  openSettings,
   get activeKey() {
     return activeKey;
   },
@@ -1249,6 +1254,10 @@ window.__terp = {
 
 applyConfig(config);
 initGitPanel({ activeCwd });
+initSettings({
+  agents: () => agentList,
+  onClose: () => (activeKey?.startsWith('t:') ? sessions.get(activeId)?.term.focus() : null),
+});
 initFilesPanel({
   activeCwd,
   activePath: () => (activeKey?.startsWith('f:') ? activeKey.slice(2) : null),

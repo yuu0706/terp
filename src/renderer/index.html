@@ -222,6 +222,20 @@
       </form>
     </dialog>
 
+    <div id="settings" class="settings" role="dialog" aria-modal="true" aria-labelledby="settings-heading" hidden>
+      <div class="settings__titlebar">
+        <h1 id="settings-heading" class="settings__heading">設定</h1>
+        <span id="settings-status" class="settings__status" role="status"></span>
+        <button id="settings-close" class="icon-btn" type="button" aria-label="設定を閉じる" title="閉じる（Esc）">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
+        </button>
+      </div>
+      <div class="settings__body">
+        <nav id="settings-nav" class="settings__nav" aria-label="設定の項目"></nav>
+        <section id="settings-content" class="settings__content"></section>
+      </div>
+    </div>
+
     <script type="module" src="app.js"></script>
   </body>
 </html>

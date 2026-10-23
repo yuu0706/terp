@@ -6,6 +6,59 @@ const { app, clipboard } = require('electron');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// TERP_SELFTEST_SETTINGS を付けると、設定の画面（左のメニュー・各項目の保存と反映・Esc で閉じる）を確かめる
+async function runSettingsTest({ win, js, check, outDir }) {
+  const { CONFIG_PATH } = require('./config');
+  const saved = () => JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+  const shot = (name) => win.webContents.capturePage().then((img) => fs.writeFileSync(path.join(outDir, `${name}.png`), img.toPNG()));
+  // 設定ファイルに画面に無い値を書いておき、画面で変えても消えないことを見る
+  fs.writeFileSync(CONFIG_PATH, JSON.stringify({ ...saved(), agents: [{ command: 'keep-me' }] }, null, 2));
+  await sleep(1200);
+
+  win.webContents.send('menu', 'settings');
+  await sleep(800);
+  check('⌘, で設定の画面が開く', (await js(`document.getElementById('settings').hidden`)) === false);
+  const navs = await js(`[...document.querySelectorAll('#settings-nav .settings__nav-item')].map((b) => b.textContent)`);
+  check('左にメニューが並ぶ', navs.join() === '外観,AI エージェント,詳しい設定', navs.join());
+  const themeCount = await js(`document.querySelectorAll('#setting-theme option').length`);
+  check('テーマを一覧から選べる', themeCount > 100, `${themeCount} 件`);
+  await shot('1-appearance');
+
+  await js(`(() => { const s = document.getElementById('setting-theme'); s.value = 'Sakura Night'; s.dispatchEvent(new Event('change')); })()`);
+  await sleep(1500);
+  check('テーマを選ぶと設定ファイルに書く', saved().theme === 'Sakura Night', saved().theme);
+  check('テーマを選ぶとすぐ反映される', (await js('window.__terp.config.chrome.accent')) === '#ff9ebb', await js('window.__terp.config.chrome.accent'));
+
+  await js(`(() => { const s = document.getElementById('setting-fontSize'); s.value = '16'; s.dispatchEvent(new Event('change')); })()`);
+  await sleep(1500);
+  const id = await js('window.__terp.activeId');
+  check('文字の大きさが端末に反映される', saved().fontSize === 16 && (await js(`window.__terp.sessions.get(${id}).term.options.fontSize`)) === 16);
+  await js(`(() => { const s = document.getElementById('setting-fontSize'); s.value = '99'; s.dispatchEvent(new Event('change')); })()`);
+  await sleep(500);
+  check('範囲の外の数は書かずに知らせる', saved().fontSize === 16 && (await js(`document.getElementById('settings-status').textContent`)).includes('9〜32'));
+
+  await js(`(() => { const s = document.getElementById('setting-backgroundBlur'); s.value = '0'; s.dispatchEvent(new Event('change')); })()`);
+  await sleep(500);
+  check('ぼかしを 0 にすると false で書く', saved().backgroundBlur === false, String(saved().backgroundBlur));
+
+  await js(`[...document.querySelectorAll('#settings-nav .settings__nav-item')].find((b) => b.textContent === 'AI エージェント').click()`);
+  await sleep(500);
+  check('メニューを押すとその設定に切り替わる', (await js(`document.querySelector('.settings__title').textContent`)) === 'AI エージェント');
+  await js(`document.getElementById('setting-skipApprovals').click()`);
+  await sleep(1500);
+  check('切り替えを押すと設定ファイルに書く', saved().skipApprovals === true);
+  check('切り替えが画面のボタンに反映される', (await js(`document.getElementById('tab-main-agent').dataset.bypass`)) === 'true');
+  await shot('2-agents');
+  await js(`(() => { const s = document.getElementById('setting-mainAgent'); s.value = 'codex'; s.dispatchEvent(new Event('change')); })()`);
+  await sleep(1500);
+  check('メインのエージェントを選べる', saved().mainAgent === 'codex' && (await js(`document.getElementById('tab-main-agent').dataset.command`)) === 'codex');
+  check('画面に無い設定は消さない', saved().agents?.[0]?.command === 'keep-me');
+
+  await js(`document.getElementById('settings').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
+  await sleep(300);
+  check('Esc で閉じる', await js(`document.getElementById('settings').hidden`));
+}
+
 // TERP_SELFTEST_FILES を付けると、一時フォルダのリポジトリで、右の面のファイルの木・ファイルのタブ・
 // 作業ごとのタブの切り替え・右の面の切り替えを確かめる
 async function runFilesTest({ win, js, check, outDir }) {
@@ -584,6 +637,13 @@ exports.run = (win) => {
 
     if (process.env.TERP_SELFTEST_GIT) {
       await runGitTest({ win, js, check, outDir });
+      fs.writeFileSync(path.join(outDir, 'result.txt'), log.join('\n') + '\n');
+      await finish();
+      return;
+    }
+
+    if (process.env.TERP_SELFTEST_SETTINGS) {
+      await runSettingsTest({ win, js, check, outDir });
       fs.writeFileSync(path.join(outDir, 'result.txt'), log.join('\n') + '\n');
       await finish();
       return;

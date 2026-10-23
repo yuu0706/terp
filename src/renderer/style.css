@@ -1485,3 +1485,214 @@ body {
 .project[data-drop='after']::before {
   bottom: -6px;
 }
+
+/* ---- 設定の画面（窓いっぱい。左にメニュー、右に選んだ項目） ---- */
+.settings {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-bg);
+}
+
+.settings[hidden] {
+  display: none;
+}
+
+/* 信号機ボタンの下を空け、ウィンドウをつかめるようにする */
+.settings__titlebar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  height: var(--titlebar-height);
+  padding: 0 var(--space-2) 0 88px;
+  border-bottom: 1px solid var(--color-border);
+  -webkit-app-region: drag;
+}
+
+.settings__titlebar .icon-btn {
+  -webkit-app-region: no-drag;
+}
+
+.settings__heading {
+  margin: 0;
+  font-size: var(--text-md);
+  font-weight: 600;
+}
+
+.settings__status {
+  flex: 1;
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+.settings__status[data-tone='error'] {
+  color: var(--color-warning);
+}
+
+.settings__body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.settings__nav {
+  flex: none;
+  width: 220px;
+  padding: var(--space-3) var(--space-2);
+  border-right: 1px solid var(--color-border);
+  overflow-y: auto;
+}
+
+.settings__nav-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  height: 36px;
+  padding: 0 var(--space-3);
+  border: 0;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--color-text-muted);
+  font: inherit;
+  font-size: var(--text-md);
+  text-align: left;
+  cursor: pointer;
+}
+
+.settings__nav-item:hover {
+  background: var(--color-bg-hover);
+}
+
+.settings__nav-item[aria-current='true'] {
+  background: var(--color-bg-active);
+  color: var(--color-text);
+}
+
+.settings__content {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  position: relative;
+  padding: var(--space-3) 32px 48px;
+}
+
+.settings__title {
+  margin: 0 0 var(--space-3);
+  padding-bottom: var(--space-2);
+  border-bottom: 1px solid var(--color-border);
+  font-size: 20px;
+}
+
+.settings__field {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  max-width: 560px;
+  padding: var(--space-3) 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-border) 60%, transparent);
+}
+
+.settings__field > .input {
+  width: 100%;
+}
+
+.settings__label {
+  font-size: var(--text-md);
+  font-weight: 600;
+}
+
+.settings__help {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+.settings__inline {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.settings__number {
+  width: 96px;
+}
+
+.settings__range {
+  width: 280px;
+  accent-color: var(--color-accent);
+}
+
+.settings__unit {
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.settings__color {
+  width: 40px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: transparent;
+}
+
+/* 切り替えのスイッチ。危険な設定は入れたときに危険の色にする */
+.switch {
+  position: relative;
+  display: inline-flex;
+  cursor: pointer;
+}
+
+.switch input {
+  position: absolute;
+  opacity: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  cursor: pointer;
+}
+
+.switch__track {
+  width: 40px;
+  height: 22px;
+  border-radius: 999px;
+  background: var(--color-bg-active);
+  border: 1px solid var(--color-border);
+  position: relative;
+  transition: background 120ms ease;
+}
+
+.switch__track::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--color-text);
+  transition: transform 120ms ease;
+}
+
+.switch input:checked + .switch__track {
+  background: var(--color-accent);
+}
+
+.switch input:checked + .switch__track[data-danger='true'] {
+  background: var(--color-danger);
+}
+
+.switch input:checked + .switch__track::after {
+  transform: translateX(18px);
+}
+
+.switch input:focus-visible + .switch__track {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}

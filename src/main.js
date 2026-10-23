@@ -163,6 +163,10 @@ const safe = (fn) => async (...args) => {
   }
 };
 
+ipcMain.handle('config:raw', safe(() => config.rawConfig()));
+ipcMain.handle('config:update', safe((_e, patch) => config.updateConfig(patch)));
+ipcMain.handle('config:themes', safe(() => config.listThemes()));
+ipcMain.handle('config:open-file', safe(() => shell.openPath(config.CONFIG_PATH)));
 ipcMain.handle('projects:list', safe(() => projects.list()));
 // dir を渡さないときはフォルダを選ぶ画面を出す
 ipcMain.handle(
@@ -241,7 +245,8 @@ function buildMenu() {
       submenu: [
         { role: 'about' },
         { type: 'separator' },
-        { label: '設定ファイルを開く', accelerator: 'CmdOrCtrl+,', click: () => shell.openPath(config.CONFIG_PATH) },
+        { label: '設定…', accelerator: 'CmdOrCtrl+,', click: send('settings') },
+        { label: '設定ファイルを開く', click: () => shell.openPath(config.CONFIG_PATH) },
         { type: 'separator' },
         { role: 'hide' },
         { role: 'hideOthers' },
