@@ -1198,7 +1198,8 @@ body {
   bottom: 0;
   display: flex;
   flex-direction: column;
-  background: var(--color-term-bg);
+  /* 背景は端末と同じ奥の面で塗り、Monaco の透過を保つ */
+  background: transparent;
 }
 
 .fileview[hidden] {
@@ -1238,39 +1239,39 @@ body {
   outline: none;
 }
 
-.fileview__text {
-  display: flex;
-  min-width: max-content;
-  font-family: var(--font-mono);
-  font-size: var(--diff-font-size);
-  line-height: 1.5;
+.fileview__editor {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
 }
 
-.fileview__gutter,
-.fileview__code {
-  margin: 0;
-  padding: var(--space-2) 0;
-  font: inherit;
-  line-height: inherit;
-}
-
-.fileview__gutter {
+.fileview__banner {
   flex: none;
-  position: sticky;
-  left: 0;
-  padding-right: var(--space-3);
-  padding-left: var(--space-3);
-  text-align: right;
-  color: var(--color-text-muted);
-  opacity: 0.6;
-  background: var(--color-term-bg);
-  user-select: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+  color: var(--color-warning);
+  background: var(--color-bg);
 }
 
-.fileview__code {
-  flex: 1;
-  padding-right: var(--space-3);
-  tab-size: 4;
+.fileview__banner[hidden],
+#file-dialog .btn[hidden] {
+  display: none;
+}
+
+#file-dialog .dialog__actions {
+  flex-wrap: wrap;
+}
+
+#file-dialog .dialog__note {
+  overflow-wrap: anywhere;
+}
+
+.tab[data-dirty='true'] .tab__name {
+  color: var(--color-warning);
 }
 
 .fileview__image {
@@ -1291,75 +1292,6 @@ body {
 
 .fileview__notice p {
   margin: 0;
-}
-
-/* 色付け。highlight.js の名前に、端末のテーマの色を当てる */
-.hljs-comment,
-.hljs-quote {
-  color: var(--ansi-brightBlack);
-  font-style: italic;
-}
-
-.hljs-keyword,
-.hljs-selector-tag,
-.hljs-literal,
-.hljs-section,
-.hljs-doctag {
-  color: var(--ansi-magenta);
-}
-
-.hljs-string,
-.hljs-regexp,
-.hljs-addition,
-.hljs-attribute,
-.hljs-meta .hljs-string {
-  color: var(--ansi-green);
-}
-
-.hljs-number,
-.hljs-symbol,
-.hljs-bullet,
-.hljs-variable.constant_ {
-  color: var(--ansi-yellow);
-}
-
-.hljs-title,
-.hljs-title.function_,
-.hljs-name {
-  color: var(--ansi-blue);
-}
-
-.hljs-type,
-.hljs-built_in,
-.hljs-class .hljs-title,
-.hljs-title.class_ {
-  color: var(--ansi-cyan);
-}
-
-.hljs-attr,
-.hljs-property,
-.hljs-variable,
-.hljs-template-variable,
-.hljs-selector-class,
-.hljs-selector-id {
-  color: var(--ansi-brightBlue);
-}
-
-.hljs-meta,
-.hljs-tag {
-  color: var(--ansi-brightBlack);
-}
-
-.hljs-deletion {
-  color: var(--ansi-red);
-}
-
-.hljs-emphasis {
-  font-style: italic;
-}
-
-.hljs-strong {
-  font-weight: 600;
 }
 
 /* ---- タブの並びの隣のボタンと、新しいタブのプルダウン ---- */

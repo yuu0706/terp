@@ -4,8 +4,13 @@
     <meta charset="utf-8" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; worker-src 'self' blob: file:"
     />
+    <!--
+      img-src data: は、開いた画像のファイル（本体が data: の URL にして渡す）を出すため。
+      font-src data: は、Monaco のアイコンの文字（codicon）が data: で入っているため。
+      worker-src blob: file: は、Monaco が作業用の部品を blob で包んで動かすため。無いと画面の処理の中で動き、固まりやすい。
+    -->
     <title>terp</title>
     <link rel="stylesheet" href="../../node_modules/@xterm/xterm/css/xterm.css" />
     <link rel="stylesheet" href="style.css" />
@@ -236,6 +241,18 @@
       </div>
     </div>
 
+    <dialog id="file-dialog" class="dialog" aria-labelledby="file-dialog-title">
+      <form method="dialog" class="dialog__body">
+        <h2 id="file-dialog-title" class="dialog__title"></h2>
+        <p class="dialog__note" data-field="message"></p>
+        <div class="dialog__actions">
+          <button class="btn" value="cancel" autofocus>キャンセル</button>
+          <button class="btn btn--danger" value="discard" hidden></button>
+          <button class="btn btn--primary" value="accept"></button>
+        </div>
+      </form>
+    </dialog>
+    <script src="../../node_modules/monaco-editor/min/vs/loader.js"></script>
     <script type="module" src="app.js"></script>
   </body>
 </html>

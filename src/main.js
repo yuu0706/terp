@@ -1,6 +1,7 @@
 const { app, BrowserWindow, Menu, dialog, ipcMain, shell } = require('electron');
 const { execFile } = require('child_process');
 const path = require('path');
+const { pathToFileURL } = require('url');
 const fs = require('fs');
 const os = require('os');
 const config = require('./config');
@@ -153,6 +154,16 @@ async function pollInfo() {
 ipcMain.on('home', (event) => {
   event.returnValue = os.homedir();
 });
+ipcMain.on('editor:worker', (event) => {
+  try {
+    const dir = path.join(__dirname, '..', 'node_modules', 'monaco-editor', 'min', 'vs', 'assets');
+    const worker = fs.readdirSync(dir).find((name) => name.startsWith('editor.worker-') && name.endsWith('.js'));
+    if (!worker) throw new Error('エディタの作業用ファイルが見つかりません');
+    event.returnValue = { ok: true, value: pathToFileURL(path.join(dir, worker)).href };
+  } catch (err) {
+    event.returnValue = { ok: false, error: err.message };
+  }
+});
 ipcMain.handle('config:get', () => config.loadConfig());
 
 // 失敗は例外のまま画面へ渡すと文言が崩れるため、{ error } の形で返す
@@ -195,6 +206,8 @@ ipcMain.handle('work:changes', safe((_e, dir) => gitops.changeCount(dir)));
 ipcMain.handle('files:root', safe((_e, dir) => files.root(dir)));
 ipcMain.handle('files:list', safe((_e, dir) => files.list(dir)));
 ipcMain.handle('files:read', safe((_e, file) => files.read(file)));
+ipcMain.handle('files:stat', safe((_e, file) => files.stat(file)));
+ipcMain.handle('files:write', safe((_e, { file, text, mtime, force }) => files.write(file, text, mtime, force)));
 // 既定のアプリで開く・Finder で見せる
 ipcMain.handle('files:open-external', safe((_e, file) => shell.openPath(file)));
 ipcMain.handle('files:reveal', safe((_e, file) => shell.showItemInFolder(file)));
@@ -265,6 +278,7 @@ function buildMenu() {
         { label: '新しい作業…', accelerator: 'CmdOrCtrl+N', click: send('new-work') },
         { label: 'リポジトリを追加…', click: send('add-project') },
         { label: 'タブを閉じる', accelerator: 'CmdOrCtrl+W', click: send('close') },
+        { label: '保存', accelerator: 'CmdOrCtrl+S', click: send('save') },
         { type: 'separator' },
         { label: '画面を消去', accelerator: 'CmdOrCtrl+K', click: send('clear') },
       ],
@@ -302,6 +316,31 @@ function buildMenu() {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
+let quitRequested = false;
+let allowClose = false;
+let closeRequest = null;
+let closeSerial = 0;
+
+function finishClose(allow) {
+  if (!closeRequest) return;
+  clearTimeout(closeRequest.timer);
+  closeRequest = null;
+  if (!allow) {
+    quitRequested = false;
+    return;
+  }
+  allowClose = true;
+  if (quitRequested) app.quit();
+  else win?.close();
+}
+
+ipcMain.on('window:close-reply', (event, id, answer) => {
+  if (!closeRequest || closeRequest.id !== id || event.sender !== win?.webContents) return;
+  // 画面が応答した後は、利用者が確認画面で選ぶまで待つ
+  if (answer === 'pending') clearTimeout(closeRequest.timer);
+  else if (typeof answer === 'boolean') finishClose(answer);
+});
+
 function createWindow() {
   const initial = config.loadConfig();
   win = new BrowserWindow({
@@ -319,6 +358,14 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
     },
+  });
+  win.on('close', (event) => {
+    if (allowClose) return;
+    event.preventDefault();
+    if (closeRequest) return;
+    const id = ++closeSerial;
+    closeRequest = { id, timer: setTimeout(() => finishClose(true), 2000) };
+    toWindow('window:close-request', id);
   });
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
   win.once('ready-to-show', () => {
@@ -344,6 +391,9 @@ app.whenReady().then(() => {
 
 // シェルは常駐のプロセスに残すため、ここでは止めない
 app.on('window-all-closed', () => app.quit());
-app.on('before-quit', () => saveSnapshot());
+app.on('before-quit', () => {
+  quitRequested = true;
+  saveSnapshot();
+});
 // 終わるときは常駐のプロセスとの接続を切り、出力が届かないようにする。シェルは常駐のプロセスに残る
 app.on('will-quit', () => client.socket?.destroy());

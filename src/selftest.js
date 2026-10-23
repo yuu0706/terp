@@ -90,9 +90,12 @@ async function runFilesTest({ win, js, check, outDir }) {
   check('ファイルを押すとタブで開く', (await js('window.__terp.activeKey')) === `f:${path.join(repo, 'src', 'a.js')}`, await js('window.__terp.activeKey'));
   const t1 = await tabs();
   check('上のタブにターミナルとファイルが並ぶ', t1.length === 2 && t1[1] === 'a.js', t1.join(', '));
-  const colored = await js(`document.querySelectorAll('.fileview:not([hidden]) .hljs-keyword').length`);
-  const gutter = await js(`document.querySelector('.fileview:not([hidden]) .fileview__gutter').textContent.split(String.fromCharCode(10)).length`);
-  check('ファイルに色付けと行番号が付く', colored > 0 && gutter === 4, `色 ${colored} / 行 ${gutter}`);
+  const editorPath = JSON.stringify(path.join(repo, 'src', 'a.js'));
+  const editorInfo = await js(`(() => {
+    const editor = window.__terp.editorOf(${editorPath});
+    return editor ? { language: editor.getModel().getLanguageId(), lines: editor.getModel().getLineCount() } : null;
+  })()`);
+  check('ファイルに色付けと行番号が付く', editorInfo?.language === 'javascript' && editorInfo.lines === 5, JSON.stringify(editorInfo));
   check('開いているファイルが木で分かる', await js(`document.querySelector('#files-tree [aria-current="true"] .files__name')?.textContent === 'a.js'`));
   await shot('1-file');
 
@@ -132,6 +135,115 @@ async function runFilesTest({ win, js, check, outDir }) {
   check('右の面を変更に切り替えられる', (await js(`document.getElementById('git-view').hidden`)) === false && (await js(`document.getElementById('files-view').hidden`)) === true);
   await shot('2-git');
   await js(`window.__terp.activateKey('t:${looseId}')`);
+}
+
+// TERP_SELFTEST_EDITOR を付けると、一時ファイルで編集・保存・外の変更・閉じる確認を確かめる
+async function runEditorTest({ win, js, check, outDir }) {
+  const dir = fs.mkdtempSync(path.join(outDir, 'editor-'));
+  const file = path.join(dir, 'sample.js');
+  const image = path.join(dir, 'icon.png');
+  const original = 'const answer = 42;\n';
+  fs.writeFileSync(file, original);
+  fs.copyFileSync(path.join(__dirname, '..', 'build', 'icon.png'), image);
+  const p = JSON.stringify(file);
+  const editor = `window.__terp.editorOf(${p})`;
+  const value = () => js(`${editor}?.getValue()`);
+  const tabName = () => js(`[...document.querySelectorAll('#tabs .tab')].find((t) => t.dataset.key === ${JSON.stringify(`f:${file}`)})?.querySelector('.tab__name').textContent`);
+  const wait = async (test, ms = 7000) => {
+    for (let t = 0; t < ms; t += 100) {
+      if (await test()) return true;
+      await sleep(100);
+    }
+    return false;
+  };
+  const edit = (text) => js(`(() => {
+    const e = ${editor};
+    const pos = e.getModel().getFullModelRange().getEndPosition();
+    e.executeEdits('selftest', [{ range: { startLineNumber: pos.lineNumber, startColumn: pos.column, endLineNumber: pos.lineNumber, endColumn: pos.column }, text: ${JSON.stringify(text)} }]);
+  })()`);
+  const dialog = () => js(`document.getElementById('file-dialog').open`);
+  // 確認の画面が開いた直後は押しても届かないことがあるため、少し待ってから押す
+  const choose = async (choice) => {
+    await sleep(300);
+    await js(`document.querySelector('#file-dialog [value="${choice}"]').click()`);
+  };
+  const banner = () => js(`document.querySelector('.fileview:not([hidden]) .fileview__banner:not([hidden])')?.textContent || ''`);
+  const external = (text) => {
+    const before = fs.statSync(file).mtimeMs;
+    fs.writeFileSync(file, text);
+    const time = new Date(Math.max(Date.now(), before + 20));
+    fs.utimesSync(file, time, time);
+  };
+  const close = () => { win.webContents.send('menu', 'close'); };
+
+  await js(`window.__terp.openFile(${p}).then(() => true)`);
+  check('文字のファイルが Monaco で開く', await js(`Boolean(${editor} && document.querySelector('.fileview:not([hidden]) .monaco-editor'))`) && (await value()) === original);
+  check('拡張子から言語を選ぶ', (await js(`${editor}.getModel().getLanguageId()`)) === 'javascript');
+  await edit('// edited\n');
+  check('編集するとタブに ● が付く', (await tabName()).endsWith(' ●'));
+  win.webContents.send('menu', 'save');
+  check('⌘S で保存して ● が消える', await wait(async () => fs.readFileSync(file, 'utf8') === original + '// edited\n' && !(await tabName()).includes('●')));
+
+  const next = 'const answer = 100;\n';
+  await js(`${editor}.setPosition({ lineNumber: 1, column: 5 })`);
+  external(next);
+  check('未保存の変更が無ければ外の変更を取り込む', await wait(async () => (await value()) === next));
+  check('外の変更を取り込んでもカーソルを保つ', await js(`${editor}.getPosition().column === 5`));
+
+  await edit('// local\n');
+  const local = await value();
+  const outside = 'const outside = true;\n';
+  external(outside);
+  check('未保存の変更があれば外の変更を帯で知らせる', await wait(async () => (await banner()).includes('外で変更されました')) && (await value()) === local);
+  await js(`[...document.querySelectorAll('.fileview:not([hidden]) .fileview__banner button')].find((b) => b.textContent === 'このまま').click()`);
+  check('このままを選ぶと帯を閉じる', (await banner()) === '');
+  win.webContents.send('menu', 'save');
+  check('このままの後の保存でも上書きを確認する', await wait(dialog) && fs.readFileSync(file, 'utf8') === outside);
+  await choose('cancel');
+  await wait(async () => !(await dialog()));
+  check('上書きのキャンセルでは外の内容を保つ', fs.readFileSync(file, 'utf8') === outside && (await tabName()).includes('●'));
+  win.webContents.send('menu', 'save');
+  await wait(dialog);
+  await choose('accept');
+  check('上書きを選ぶと保存する', await wait(async () => fs.readFileSync(file, 'utf8') === local && !(await tabName()).includes('●')));
+
+  await edit('// discard\n');
+  close();
+  check('未保存のタブを閉じると確認する', await wait(dialog));
+  await choose('cancel');
+  await wait(async () => !(await dialog()));
+  check('キャンセルでタブを残す', await js(`Boolean(${editor})`));
+  close();
+  await wait(dialog);
+  await choose('discard');
+  check('保存せずに閉じるとタブを閉じてファイルを保つ', await wait(async () => !(await js(`Boolean(${editor})`))) && fs.readFileSync(file, 'utf8') === local);
+
+  await js(`window.__terp.openFile(${p}).then(() => true)`);
+  check('開き直した文字のファイルもエディタになる', (await value()) === local);
+  await edit('// keep\n');
+  await js(`document.querySelector('.fileview:not([hidden]) .fileview__head button').click()`);
+  check('再読み込みでも未保存の変更を確認する', await wait(dialog));
+  await choose('cancel');
+  await wait(async () => !(await dialog()));
+  check('再読み込みのキャンセルで編集を保つ', (await value()) === local + '// keep\n');
+  external('// reloaded\n');
+  await wait(async () => (await banner()).includes('外で変更されました'));
+  await js(`[...document.querySelectorAll('.fileview:not([hidden]) .fileview__banner button')].find((b) => b.textContent.startsWith('読み直す')).click()`);
+  await wait(dialog);
+  await choose('accept');
+  check('帯から読み直すと画面の変更を捨てる', await wait(async () => (await value()) === '// reloaded\n' && !(await tabName()).includes('●')));
+  fs.unlinkSync(file);
+  check('削除されてもタブを残して帯で知らせる', await wait(async () => (await banner()).includes('このファイルは消えました')) && await js(`Boolean(${editor})`));
+  fs.writeFileSync(file, '// restored\n');
+  check('削除後に戻ったファイルを取り込む', await wait(async () => (await value()) === '// restored\n'));
+
+  await edit('// saved on close\n');
+  close();
+  await wait(dialog);
+  await choose('accept');
+  check('保存して閉じると書き込み後にタブを閉じる', await wait(async () => !(await js(`Boolean(${editor})`))) && fs.readFileSync(file, 'utf8') === '// restored\n// saved on close\n');
+  await js(`window.__terp.openFile(${JSON.stringify(image)}).then(() => true)`);
+  check('画像は閲覧の表示のまま開く', await js(`Boolean(document.querySelector('.fileview:not([hidden]) .fileview__image')) && !window.__terp.editorOf(${JSON.stringify(image)})`));
 }
 
 // TERP_SELFTEST_AGENTS を付けると、AI エージェントの検出と起動のボタンを確かめる。
@@ -666,6 +778,13 @@ exports.run = (win) => {
 
     if (process.env.TERP_SELFTEST_SETTINGS) {
       await runSettingsTest({ win, js, check, outDir });
+      fs.writeFileSync(path.join(outDir, 'result.txt'), log.join('\n') + '\n');
+      await finish();
+      return;
+    }
+
+    if (process.env.TERP_SELFTEST_EDITOR) {
+      await runEditorTest({ win, js, check, outDir });
       fs.writeFileSync(path.join(outDir, 'result.txt'), log.join('\n') + '\n');
       await finish();
       return;

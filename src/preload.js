@@ -3,6 +3,9 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('terp', {
   // サンドボックスの preload では os を読めないため、本体から受け取る
   home: ipcRenderer.sendSync('home'),
+  editorWorker: ipcRenderer.sendSync('editor:worker'),
+  onCloseRequest: (fn) => ipcRenderer.on('window:close-request', (_e, id) => fn(id)),
+  replyClose: (id, answer) => ipcRenderer.send('window:close-reply', id, answer),
   getConfig: () => ipcRenderer.invoke('config:get'),
   rawConfig: () => ipcRenderer.invoke('config:raw'),
   updateConfig: (patch) => ipcRenderer.invoke('config:update', patch),
@@ -34,6 +37,8 @@ contextBridge.exposeInMainWorld('terp', {
   filesRoot: (dir) => ipcRenderer.invoke('files:root', dir),
   listFiles: (dir) => ipcRenderer.invoke('files:list', dir),
   readFile: (file) => ipcRenderer.invoke('files:read', file),
+  statFile: (file) => ipcRenderer.invoke('files:stat', file),
+  writeFile: (opts) => ipcRenderer.invoke('files:write', opts),
   openExternalFile: (file) => ipcRenderer.invoke('files:open-external', file),
   revealFile: (file) => ipcRenderer.invoke('files:reveal', file),
   listAgents: () => ipcRenderer.invoke('agents:list'),

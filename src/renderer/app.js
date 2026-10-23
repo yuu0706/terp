@@ -5,7 +5,7 @@ import { Unicode11Addon } from '../../node_modules/@xterm/addon-unicode11/lib/ad
 import { WebLinksAddon } from '../../node_modules/@xterm/addon-web-links/lib/addon-web-links.mjs';
 import { initGitPanel, refresh as refreshGit, setGitVisible } from './gitpanel.js';
 import { initFilesPanel, refreshFiles, setFilesVisible, markActiveFile } from './filespanel.js';
-import { renderFileView } from './fileview.js';
+import { renderFileView, applyEditorConfig } from './fileview.js';
 import { initSettings, openSettings } from './settings.js';
 
 const terp = window.terp;
@@ -65,18 +65,15 @@ function terminalTheme(c) {
   return { ...c.terminal, background: 'rgba(0, 0, 0, 0)' };
 }
 
-// 設定（色・フォント・透過）を、開いているすべての端末と枠に反映する
+// 設定（色・フォント・透過）を、開いている端末・エディタ・枠に反映する
 function applyConfig(c) {
   config = c;
+  applyEditorConfig(c);
   const root = document.documentElement.style;
   for (const [key, value] of Object.entries(c.chrome)) root.setProperty(`--color-${key}`, value);
   root.setProperty('--surface-term', withAlpha(c.chrome['term-bg'], c.window.opacity));
   root.setProperty('--surface-sidebar', withAlpha(c.chrome.bg, c.window.opacity));
   root.setProperty('--font-mono', c.font.family);
-  // ファイルの色付けは端末のテーマの色を使う
-  for (const name of ['red', 'green', 'yellow', 'blue', 'magenta', 'cyan', 'brightBlack', 'brightRed', 'brightBlue']) {
-    root.setProperty(`--ansi-${name}`, c.terminal[name]);
-  }
   configError.textContent = c.error || '';
   configError.hidden = !c.error;
   // skipApprovals を切り替えたら、エージェントのボタンの説明と印も変える
@@ -218,7 +215,9 @@ function renderTabs(visible) {
   for (const tab of tabsEl.children) {
     const key = tab.dataset.key;
     tab.setAttribute('aria-selected', String(key === activeKey));
-    tab.querySelector('.tab__name').textContent = tabLabel(key);
+    const dirty = key.startsWith('f:') && fileViews.get(key.slice(2))?.view?.dirty;
+    tab.querySelector('.tab__name').textContent = tabLabel(key) + (dirty ? ' ●' : '');
+    tab.dataset.dirty = String(Boolean(dirty));
     tab.title = key.startsWith('t:') ? sessions.get(Number(key.slice(2)))?.cwd || '' : key.slice(2);
     if (key.startsWith('t:')) tab.dataset.state = stateOf(sessions.get(Number(key.slice(2))));
   }
@@ -692,8 +691,10 @@ async function openRemoveDialog(w) {
 async function submitRemove() {
   const w = removing;
   if (!w) return;
+  for (const path of [...fileViews.keys()]) {
+    if (workOfPath(path)?.path === w.path && !(await closeFile(path))) return;
+  }
   for (const s of [...sessions.values()]) if (workOf(s)?.path === w.path) closeSession(s.id);
-  for (const path of [...fileViews.keys()]) if (workOfPath(path)?.path === w.path) closeFile(path);
   const res = await terp.removeWork({ repo: w.repo, dir: w.path });
   if (!res.ok) {
     setDialogError(removeDialog, res.error);
@@ -825,7 +826,10 @@ function activateKey(key) {
     s.term.focus();
     s.li.scrollIntoView({ block: 'nearest' });
   } else {
-    target.el.querySelector('.fileview__body')?.focus({ preventScroll: true });
+    if (target.view?.editor) {
+      target.view.editor.layout();
+      target.view.editor.focus();
+    } else target.el.querySelector('.fileview__body')?.focus({ preventScroll: true });
   }
   refreshGit(true);
   refreshFiles(false);
@@ -876,23 +880,98 @@ async function openFile(path) {
   const at = tabOrder.indexOf(activeKey);
   tabOrder.splice(at < 0 ? tabOrder.length : at + 1, 0, key);
   activateKey(key);
-  await renderFileView(el, path, workOfPath(path)?.path || null);
+  f.view = renderFileView(el, path, workOfPath(path)?.path || null, {
+    confirm: confirmFile,
+    onChange: () => renderTabs(visibleKeys()),
+    isActive: () => activeKey === key,
+  });
+  await f.view.ready;
   return f;
 }
 
 function closeKey(key) {
   if (!key) return;
   if (key.startsWith('t:')) closeSession(Number(key.slice(2)));
-  else closeFile(key.slice(2));
+  else return closeFile(key.slice(2));
 }
 
 function closeFile(path) {
   const f = fileViews.get(path);
-  if (!f) return;
-  f.el.remove();
-  fileViews.delete(path);
-  dropTab(fileKey(path));
+  if (!f) return Promise.resolve(true);
+  if (!f.closing) f.closing = closeFileView(f).finally(() => { f.closing = null; });
+  return f.closing;
 }
+
+async function closeFileView(f) {
+  if (f.view.saving) await f.view.saving;
+  if (f.view.dirty) {
+    const answer = await confirmFile({
+      title: 'ファイルを閉じる', message: `${f.path} に未保存の変更あり`,
+      accept: '保存して閉じる', discard: '保存せずに閉じる',
+    });
+    if (answer === 'cancel' || (answer === 'accept' && !(await f.view.save()))) return false;
+  }
+  f.view.dispose();
+  f.el.remove();
+  fileViews.delete(f.path);
+  dropTab(fileKey(f.path));
+  return true;
+}
+
+// 閉じる確認の後に上書き確認が続いても、同じ部品で順に表示する
+let fileQuestions = Promise.resolve();
+function confirmFile({ title, message, accept, discard }) {
+  const question = fileQuestions.then(() => new Promise((resolve) => {
+    const dialog = document.getElementById('file-dialog');
+    dialog.querySelector('.dialog__title').textContent = title;
+    dialog.querySelector('[data-field="message"]').textContent = message;
+    dialog.querySelector('[value="accept"]').textContent = accept;
+    const discardButton = dialog.querySelector('[value="discard"]');
+    discardButton.hidden = !discard;
+    discardButton.textContent = discard || '';
+    dialog.returnValue = 'cancel';
+    dialog.addEventListener('close', () => {
+      resolve(['accept', 'discard'].includes(dialog.returnValue) ? dialog.returnValue : 'cancel');
+      const f = activeKey?.startsWith('f:') && fileViews.get(activeKey.slice(2));
+      if (f?.view.editor) f.view.editor.focus();
+      else if (activeKey?.startsWith('t:')) sessions.get(activeId)?.term.focus();
+    }, { once: true });
+    dialog.showModal();
+  }));
+  fileQuestions = question.catch(() => {});
+  return question;
+}
+
+let closingWindow = false;
+terp.onCloseRequest(async (id) => {
+  if (closingWindow) return;
+  closingWindow = true;
+  // 応答と確認の結果を分け、考えている間に2秒の期限で閉じないようにする
+  terp.replyClose(id, 'pending');
+  let allow = false;
+  try {
+    await Promise.allSettled([...fileViews.values()].map((f) => f.view?.saving));
+    const dirty = [...fileViews.values()].filter((f) => f.view?.dirty);
+    if (dirty.length === 0) allow = true;
+    else {
+      const answer = await confirmFile({
+        title: 'terp を終了', message: `${dirty.length} 件のファイルに未保存の変更あり`,
+        accept: 'すべて保存して終了', discard: '保存せずに終了',
+      });
+      if (answer === 'discard') allow = true;
+      else if (answer === 'accept') {
+        allow = true;
+        for (const f of fileViews.values()) {
+          if (f.view?.dirty && !(await f.view.save())) { allow = false; break; }
+        }
+        if ([...fileViews.values()].some((f) => f.view?.dirty)) allow = false;
+      }
+    }
+  } finally {
+    terp.replyClose(id, allow);
+    closingWindow = false;
+  }
+});
 
 // タブを並びから外す。表示中だったら、同じ作業の最近見たタブ、無ければ最近見たタブへ移る
 function dropTab(key) {
@@ -1172,13 +1251,19 @@ terp.onMenu((action, arg) => {
     case 'close':
       closeKey(activeKey);
       break;
+    case 'save':
+      if (activeKey?.startsWith('f:')) fileViews.get(activeKey.slice(2))?.view?.save();
+      break;
     case 'clear':
       s?.term.clear();
       break;
-    case 'select-all':
-      if (!s || ['INPUT', 'TEXTAREA'].includes(document.activeElement?.tagName)) document.execCommand('selectAll');
+    case 'select-all': {
+      const editor = activeKey?.startsWith('f:') && fileViews.get(activeKey.slice(2))?.view?.editor;
+      if (editor?.hasTextFocus()) editor.setSelection(editor.getModel().getFullModelRange());
+      else if (!s || ['INPUT', 'TEXTAREA'].includes(document.activeElement?.tagName)) document.execCommand('selectAll');
       else s.term.selectAll();
       break;
+    }
     case 'select-index': {
       const key = visibleKeys()[arg];
       if (key) activateKey(key);
@@ -1231,6 +1316,9 @@ window.addEventListener('focus', refreshAgents);
 
 // 出力中の印を時間で消すため、状態だけ定期的に描き直す
 setInterval(renderAll, 500);
+setInterval(() => {
+  for (const f of fileViews.values()) f.view?.checkExternal().catch(() => {});
+}, 2000);
 
 // 自己診断（TERP_SELFTEST）から操作するための口
 window.__terp = {
@@ -1241,7 +1329,9 @@ window.__terp = {
   open: (cwd) => openTerminal({ cwd }).then((s) => s.id),
   activate,
   activateKey,
-  openFile,
+  // 自己診断へは関数を含むものを渡せないため、開いたパスだけを返す
+  openFile: (path) => openFile(path).then(() => path),
+  editorOf: (path) => fileViews.get(path)?.view?.editor || null,
   closeKey,
   setPanel,
   openSettings,
