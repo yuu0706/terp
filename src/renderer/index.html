@@ -249,6 +249,54 @@
       </div>
     </div>
 
+    <dialog id="theme-ai-dialog" class="dialog theme-ai" aria-labelledby="theme-ai-title">
+      <form method="dialog" class="dialog__body">
+        <h2 id="theme-ai-title" class="dialog__title">AI で好みを作成</h2>
+        <fieldset id="theme-ai-questions" class="theme-ai__questions">
+          <legend class="theme-ai__legend">3つの質問</legend>
+          <fieldset class="theme-ai__question">
+            <legend>1. 明るさ</legend>
+            <div class="theme-ai__options">
+              <label><input type="radio" name="brightness" value="暗い" checked>暗い</label>
+              <label><input type="radio" name="brightness" value="明るい">明るい</label>
+            </div>
+          </fieldset>
+          <fieldset class="theme-ai__question">
+            <legend>2. 好きな色や雰囲気</legend>
+            <div class="theme-ai__options">
+              <label><input type="checkbox" name="mood" value="桜">桜</label>
+              <label><input type="checkbox" name="mood" value="海">海</label>
+              <label><input type="checkbox" name="mood" value="森">森</label>
+              <label><input type="checkbox" name="mood" value="夕焼け">夕焼け</label>
+              <label><input type="checkbox" name="mood" value="モノクロ">モノクロ</label>
+              <label><input type="checkbox" name="mood" value="ネオン">ネオン</label>
+            </div>
+            <label class="field">
+              <span class="field__label">自由に書く・書き足す</span>
+              <input class="input" name="moodText" maxlength="400" placeholder="例: 深い青に、少しだけ金色">
+            </label>
+          </fieldset>
+          <fieldset class="theme-ai__question">
+            <legend>3. くっきり具合</legend>
+            <div class="theme-ai__options">
+              <label><input type="radio" name="contrast" value="やわらかい">やわらかい</label>
+              <label><input type="radio" name="contrast" value="ふつう" checked>ふつう</label>
+              <label><input type="radio" name="contrast" value="くっきり">くっきり</label>
+            </div>
+          </fieldset>
+        </fieldset>
+        <p id="theme-ai-status" class="dialog__note" role="status"></p>
+        <p id="theme-ai-error" class="dialog__error" role="alert" hidden></p>
+        <div id="theme-ai-preview" hidden></div>
+        <div class="dialog__actions">
+          <button id="theme-ai-cancel" class="btn" type="button">やめる</button>
+          <button id="theme-ai-retry" class="btn" type="button" hidden>作り直す</button>
+          <button id="theme-ai-create" class="btn btn--primary" type="submit">作成</button>
+          <button id="theme-ai-apply" class="btn btn--primary" type="button" hidden>適用</button>
+        </div>
+      </form>
+    </dialog>
+
     <dialog id="file-dialog" class="dialog" aria-labelledby="file-dialog-title">
       <form method="dialog" class="dialog__body">
         <h2 id="file-dialog-title" class="dialog__title"></h2>

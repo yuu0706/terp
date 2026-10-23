@@ -20,11 +20,11 @@ async function runSettingsTest({ win, js, check, outDir }) {
   check('⌘, で設定の画面が開く', (await js(`document.getElementById('settings').hidden`)) === false);
   const navs = await js(`[...document.querySelectorAll('#settings-nav .settings__nav-item')].map((b) => b.textContent)`);
   check('左にメニューが並ぶ', navs.join() === '外観,AI エージェント,詳しい設定', navs.join());
-  const themeCount = await js(`document.querySelectorAll('#setting-theme option').length`);
+  const themeCount = await js(`document.querySelectorAll('.theme-picker__row').length`);
   check('テーマを一覧から選べる', themeCount > 100, `${themeCount} 件`);
   await shot('1-appearance');
 
-  await js(`(() => { const s = document.getElementById('setting-theme'); s.value = 'Sakura Night'; s.dispatchEvent(new Event('change')); })()`);
+  await js(`[...document.querySelectorAll('.theme-picker__row')].find((row) => row.dataset.theme === 'Sakura Night').click()`);
   await sleep(1500);
   check('テーマを選ぶと設定ファイルに書く', saved().theme === 'Sakura Night', saved().theme);
   check('テーマを選ぶとすぐ反映される', (await js('window.__terp.config.chrome.accent')) === '#ff9ebb', await js('window.__terp.config.chrome.accent'));
@@ -57,6 +57,139 @@ async function runSettingsTest({ win, js, check, outDir }) {
   await js(`document.getElementById('settings').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
   await sleep(300);
   check('Esc で閉じる', await js(`document.getElementById('settings').hidden`));
+}
+
+// TERP_SELFTEST_THEMEAI は、本物の claude を呼ばずにテーマの選択・作成・保存を確かめる
+async function runThemeAiTest({ win, js, check, outDir }) {
+  const config = require('./config');
+  if (!process.env.TERP_CONFIG_DIR) throw new Error('テーマの自己診断には一時フォルダの TERP_CONFIG_DIR が必要です');
+  const saved = () => JSON.parse(fs.readFileSync(config.CONFIG_PATH, 'utf8'));
+  const wait = async (code) => {
+    for (let n = 0; n < 100; n++) {
+      if (await js(code)) return true;
+      await sleep(50);
+    }
+    return false;
+  };
+  const stamp = Date.now();
+  const name = `ThemeAI ${stamp}`;
+  const theme = {
+    name, background: '#101820', foreground: '#f0f4f8', cursor: '#58c4ff', cursorText: '#101820',
+    selectionBackground: '#345678', selectionForeground: '#ffffff',
+    palette: ['#202830', '#ee6688', '#88cc88', '#eedd88', '#5599ee', '#bb88dd', '#66cccc', '#dddddd',
+      '#667788', '#ff88aa', '#aaffaa', '#ffeeaa', '#88bbff', '#ddaaff', '#88eeee', '#ffffff'],
+  };
+  const fixtureA = `Preview A ${stamp}`;
+  const fixtureB = `Preview B ${stamp}`;
+  const dir = path.join(config.CONFIG_DIR, 'themes');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, fixtureA), 'background = #101820\nforeground = #f0f4f8\ncursor-color = #58c4ff\n');
+  fs.writeFileSync(path.join(dir, fixtureB), 'background = #f0f4f8\nforeground = #101820\ncursor-color = #345678\n');
+  const fake = path.join(outDir, 'fake-theme-claude');
+  const countFile = `${fake}.count`;
+  const modeFile = `${fake}.mode`;
+  const promptFile = `${fake}.prompt`;
+  const shellQuote = (s) => "'" + s.replace(/'/g, "'\\''") + "'";
+  const envelope = (value) => JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: '```json\n' + JSON.stringify(value) + '\n```' });
+  fs.writeFileSync(fake, `#!/bin/sh
+count_file=${shellQuote(countFile)}
+mode_file=${shellQuote(modeFile)}
+n=0
+if [ -f "$count_file" ]; then n=$(cat "$count_file"); fi
+n=$((n + 1))
+printf '%s' "$n" > "$count_file"
+printf '%s' "$2" > ${shellQuote(promptFile)}
+mode=good
+if [ -f "$mode_file" ]; then mode=$(cat "$mode_file"); fi
+if [ "$mode" = slow ]; then sleep 1; fi
+if [ "$mode" = low ] || { [ "$mode" = recover ] && [ "$n" -eq 1 ]; }; then
+cat <<'THEME_JSON'
+${envelope({ ...theme, foreground: theme.background })}
+THEME_JSON
+else
+cat <<'THEME_JSON'
+${envelope(theme)}
+THEME_JSON
+fi
+`, { mode: 0o755 });
+  const previousBin = process.env.TERP_CLAUDE_BIN;
+  process.env.TERP_CLAUDE_BIN = fake;
+  const openAi = async () => {
+    await js(`document.getElementById('theme-ai-open').click()`);
+    return wait(`document.getElementById('theme-ai-dialog').open`);
+  };
+  const createAi = async () => {
+    await js(`document.getElementById('theme-ai-create').click()`);
+    return wait(`!document.getElementById('theme-ai-preview').hidden || !document.getElementById('theme-ai-error').hidden`);
+  };
+  try {
+    config.updateConfig({ theme: null, accent: null });
+    await sleep(400);
+    win.webContents.send('menu', 'settings');
+    await wait(`!!document.getElementById('setting-theme')`);
+    const before = fs.readFileSync(config.CONFIG_PATH, 'utf8');
+    await js(`(() => { const input = document.getElementById('setting-theme'); input.value = ${JSON.stringify(fixtureA.toUpperCase())}; input.dispatchEvent(new Event('input')); })()`);
+    check('名前を大文字小文字の区別なく絞り込める', await js(`document.querySelectorAll('.theme-picker__row').length === 1 && document.querySelector('.theme-picker__row').dataset.theme === ${JSON.stringify(fixtureA)}`));
+    await js(`document.querySelector('.theme-picker__row').dispatchEvent(new MouseEvent('mouseenter'))`);
+    check('マウスを載せるとプレビューが出る', await wait(`document.querySelector('#theme-preview .theme-preview__name')?.textContent === ${JSON.stringify(fixtureA)}`));
+    check('プレビューだけでは設定ファイルを書き換えない', before === fs.readFileSync(config.CONFIG_PATH, 'utf8'));
+    await js(`document.querySelector('.theme-picker__row').click()`);
+    await sleep(400);
+    check('行を押すとテーマを適用する', saved().theme === fixtureA && (await js('window.__terp.config.terminal.background')) === theme.background);
+    await js(`(() => { const input = document.getElementById('setting-theme'); input.value = 'Preview'; input.dispatchEvent(new Event('input')); input.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })); })()`);
+    check('下矢印ではプレビューだけを切り替える', await wait(`document.querySelector('#theme-preview .theme-preview__name')?.textContent === ${JSON.stringify(fixtureB)}`) && saved().theme === fixtureA);
+    await js(`document.getElementById('setting-theme').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))`);
+    await sleep(400);
+    check('Enter でテーマを適用する', saved().theme === fixtureB);
+
+    await openAi();
+    check('AI の画面に3つの質問がある', await js(`document.querySelectorAll('#theme-ai-questions > fieldset').length === 3`));
+    await js(`(() => { const f = document.querySelector('#theme-ai-dialog form'); f.querySelector('[name="brightness"][value="明るい"]').checked = true; f.querySelector('[name="mood"][value="海"]').checked = true; f.querySelector('[name="moodText"]').value = '金色を少し'; f.querySelector('[name="contrast"][value="くっきり"]').checked = true; })()`);
+    await createAi();
+    check('答えて作成するとプレビューが出る', await js(`!document.getElementById('theme-ai-preview').hidden && document.querySelector('#theme-ai-preview .theme-preview__name').textContent === ${JSON.stringify(name)}`));
+    const prompt = fs.readFileSync(promptFile, 'utf8');
+    check('3つの回答と雰囲気の追記を CLI に渡す', ['明るい', '海、金色を少し', 'くっきり'].every((answer) => prompt.includes(answer)));
+    check('作成だけではテーマを書かない', !fs.existsSync(path.join(dir, name)) && saved().theme === fixtureB);
+    await js(`document.getElementById('theme-ai-apply').click()`);
+    await wait(`!document.getElementById('theme-ai-dialog').open`);
+    await sleep(400);
+    check('適用でテーマのファイルを作り、カーソルの色を強調色にする', fs.existsSync(path.join(dir, name)) && saved().theme === name && (await js('window.__terp.config.chrome.accent')) === theme.cursor);
+    check('Ghostty の書式で16色を保存する', config.parseGhosttyTheme(fs.readFileSync(path.join(dir, name), 'utf8')).palette.join() === theme.palette.join());
+    await openAi();
+    await createAi();
+    await js(`document.getElementById('theme-ai-apply').click()`);
+    await wait(`!document.getElementById('theme-ai-dialog').open`);
+    check('同じ名前は上書きせず 2 を付ける', saved().theme === `${name} 2` && fs.existsSync(path.join(dir, `${name} 2`)) && fs.existsSync(path.join(dir, name)));
+
+    fs.writeFileSync(modeFile, 'recover');
+    fs.writeFileSync(countFile, '0');
+    await openAi();
+    await createAi();
+    check('コントラスト不足は1回作り直して成功できる', fs.readFileSync(countFile, 'utf8') === '2' && (await js(`!document.getElementById('theme-ai-preview').hidden`)));
+    await js(`document.getElementById('theme-ai-cancel').click()`);
+    fs.writeFileSync(modeFile, 'low');
+    fs.writeFileSync(countFile, '0');
+    await openAi();
+    await createAi();
+    check('作り直してもコントラスト不足なら理由と再試行を出す', fs.readFileSync(countFile, 'utf8') === '2' && (await js(`!document.getElementById('theme-ai-error').hidden && document.getElementById('theme-ai-error').textContent.includes('コントラスト') && document.getElementById('theme-ai-create').textContent === 'もう一度'`)));
+    fs.writeFileSync(modeFile, 'good');
+    await createAi();
+    check('失敗の後にもう一度作成できる', await js(`!document.getElementById('theme-ai-preview').hidden`));
+    await js(`document.getElementById('theme-ai-cancel').click()`);
+    fs.writeFileSync(modeFile, 'slow');
+    await openAi();
+    await js(`document.getElementById('theme-ai-create').click()`);
+    check('作成中は作成のボタンを押せない', await js(`document.getElementById('theme-ai-create').disabled && document.getElementById('theme-ai-status').textContent === '作成中…'`));
+    await js(`document.getElementById('theme-ai-cancel').click()`);
+    await openAi();
+    await sleep(1500);
+    check('作成中に閉じた結果を、開き直した画面に出さない', await js(`document.getElementById('theme-ai-preview').hidden && document.getElementById('theme-ai-status').textContent === ''`));
+    await js(`document.getElementById('theme-ai-cancel').click()`);
+    await win.webContents.capturePage().then((img) => fs.writeFileSync(path.join(outDir, 'theme-ai.png'), img.toPNG()));
+  } finally {
+    if (previousBin === undefined) delete process.env.TERP_CLAUDE_BIN;
+    else process.env.TERP_CLAUDE_BIN = previousBin;
+  }
 }
 
 // TERP_SELFTEST_FILES を付けると、一時フォルダのリポジトリで、右の面のファイルの木・ファイルのタブ・
@@ -886,6 +1019,14 @@ exports.run = (win) => {
 
     if (process.env.TERP_SELFTEST_GIT) {
       await runGitTest({ win, js, check, outDir });
+      fs.writeFileSync(path.join(outDir, 'result.txt'), log.join('\n') + '\n');
+      await finish();
+      return;
+    }
+
+    if (process.env.TERP_SELFTEST_THEMEAI) {
+      await runThemeAiTest({ win, js, check, outDir });
+      check('CSP の違反が無い', !log.some((line) => line.startsWith('console:') && line.includes('violates')));
       fs.writeFileSync(path.join(outDir, 'result.txt'), log.join('\n') + '\n');
       await finish();
       return;

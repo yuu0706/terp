@@ -20,7 +20,7 @@ export const SECTIONS = [
       {
         key: 'theme',
         label: 'テーマ',
-        type: 'select',
+        type: 'theme',
         help: 'Ghostty のテーマの書式のファイルを読む。自分で作ったテーマは ~/.config/terp/themes に置く',
         options: async () => {
           const res = await terp.listThemes();
@@ -101,6 +101,9 @@ let current = SECTIONS[0].id;
 let values = {};
 let onClose = () => {};
 let statusTimer = null;
+const themeColorCache = new Map();
+let refreshThemePreview = () => {};
+let cancelThemeAi = () => {};
 
 export function initSettings(context) {
   ctx = context;
@@ -122,6 +125,7 @@ export async function openSettings(sectionId) {
   if (sectionId) current = sectionId;
   const res = await terp.rawConfig();
   values = res.ok ? res.value : {};
+  themeColorCache.clear();
   overlay.hidden = false;
   renderNav();
   await renderSection();
@@ -129,6 +133,7 @@ export async function openSettings(sectionId) {
 }
 
 export function closeSettings() {
+  cancelThemeAi();
   overlay.hidden = true;
   onClose();
 }
@@ -148,6 +153,7 @@ async function save(key, value) {
   }
   values = { ...values, [key]: value };
   if (value === null) delete values[key];
+  if (key === 'accent') refreshThemePreview();
   showStatus('保存しました');
   return true;
 }
@@ -182,6 +188,7 @@ async function renderSection() {
 
 // 種類ごとの部品。どれも { el, } を返し、変えたら save を呼ぶ
 const FIELD_TYPES = {
+  theme: createThemePicker,
   async select(field, value, id) {
     const select = document.createElement('select');
     select.className = 'input';
@@ -336,7 +343,18 @@ async function renderField(field) {
     label.className = 'settings__label';
     label.htmlFor = id;
     label.textContent = field.label;
-    row.append(label);
+    if (field.type === 'theme') {
+      const heading = document.createElement('div');
+      heading.className = 'settings__field-heading';
+      const ai = document.createElement('button');
+      ai.id = 'theme-ai-open';
+      ai.type = 'button';
+      ai.className = 'btn btn--xs';
+      ai.textContent = 'AI で好みを作成';
+      ai.addEventListener('click', () => openThemeAi(() => control.reload()));
+      heading.append(label, ai);
+      row.append(heading);
+    } else row.append(label);
   }
   row.append(control);
   if (field.help) {
@@ -347,4 +365,291 @@ async function renderField(field) {
   }
   if (field.key) row.dataset.key = field.key;
   return row;
+}
+
+function element(tag, className, text) {
+  const el = document.createElement(tag);
+  if (className) el.className = className;
+  if (text !== undefined) el.textContent = text;
+  return el;
+}
+
+// 色はこの見本の要素にだけ当て、アプリ全体の CSS 変数には触らない
+function renderThemePreview(colors, name) {
+  const t = colors.terminal;
+  const c = colors.chrome;
+  const preview = element('div', 'theme-preview');
+  Object.assign(preview.style, { background: c.bg, color: c.text, borderColor: c.border });
+  preview.append(element('div', 'theme-preview__name', name || '内蔵の色'));
+  const terminal = element('pre', 'theme-preview__terminal');
+  Object.assign(terminal.style, { background: t.background, color: t.foreground });
+  const span = (text, color, background) => {
+    const el = element('span', '', text);
+    if (color) el.style.color = color;
+    if (background) el.style.background = background;
+    return el;
+  };
+  terminal.append(span('user@terp ', t.green), span('~/project', t.blue), span(' $ ls\n'),
+    span('src/  docs/  ', t.blue), span('build.sh*  ', t.green), span('README.md\n'),
+    span('$ git diff\n'), span('- const count = 1;\n', t.red), span('+ const count = 42;\n', t.green),
+    span('\n// 色の見本\n', t.brightBlack), span('const ', t.magenta), span('message = '), span('"hello"', t.green), span(';\n'),
+    span('return ', t.magenta), span('42', t.yellow), span('; '), span('選択した文字', t.selectionForeground, t.selectionBackground),
+    span('\n$ '), span(' ', t.cursorAccent, t.cursor));
+  preview.append(terminal);
+  const palette = element('div', 'theme-preview__palette');
+  const names = ['black', 'red', 'green', 'yellow', 'blue', 'magenta', 'cyan', 'white'];
+  [...names, ...names.map((n) => `bright${n[0].toUpperCase()}${n.slice(1)}`)].forEach((key, i) => {
+    const cell = element('div', 'theme-preview__color');
+    const swatch = element('span', 'theme-preview__swatch');
+    swatch.style.background = t[key];
+    swatch.title = `${i}: ${t[key]}`;
+    cell.append(swatch, element('span', '', String(i)));
+    palette.append(cell);
+  });
+  preview.append(palette);
+  const chrome = element('div', 'theme-preview__chrome');
+  const sidebar = element('div', 'theme-preview__sidebar');
+  Object.assign(sidebar.style, { background: c.bg, borderColor: c.border });
+  const muted = element('div', 'theme-preview__item', '作業');
+  muted.style.color = c['text-muted'];
+  const active = element('div', 'theme-preview__item', 'ターミナル');
+  active.style.background = c['bg-active'];
+  const hover = element('div', 'theme-preview__item', 'ファイル');
+  hover.style.background = c['bg-hover'];
+  sidebar.append(muted, active, hover);
+  const action = element('span', 'theme-preview__button', '新しいターミナル');
+  Object.assign(action.style, { background: c.accent, color: c.bg });
+  chrome.append(sidebar, action);
+  preview.append(chrome);
+  return preview;
+}
+
+function cachedThemeColors(name) {
+  const key = JSON.stringify([name, values.accent || null]);
+  if (!themeColorCache.has(key)) {
+    const pending = terp.themeColors(name).then((res) => {
+      if (!res.ok) themeColorCache.delete(key);
+      return res;
+    });
+    themeColorCache.set(key, pending);
+  }
+  return themeColorCache.get(key);
+}
+
+async function createThemePicker(field, value, id) {
+  const picker = element('div', 'theme-picker');
+  const left = element('div', 'theme-picker__choices');
+  const filter = element('input', 'input');
+  filter.id = id;
+  filter.type = 'search';
+  filter.placeholder = 'テーマを絞り込み';
+  filter.setAttribute('aria-label', 'テーマを絞り込み');
+  const list = element('div', 'theme-picker__list');
+  list.setAttribute('role', 'listbox');
+  list.setAttribute('aria-label', 'テーマ');
+  const detail = element('div', 'theme-picker__detail');
+  detail.id = 'theme-preview';
+  left.append(filter, list);
+  picker.append(left, detail);
+  let options = [];
+  let visible = [];
+  let active = value ?? null;
+  let previewRequest = 0;
+  let applying = false;
+
+  const showPreview = async (name) => {
+    active = name;
+    for (const row of list.querySelectorAll('.theme-picker__row')) {
+      const selected = row.dataset.theme === (name ?? '');
+      row.dataset.preview = String(selected);
+      row.tabIndex = selected ? 0 : -1;
+    }
+    const request = ++previewRequest;
+    detail.setAttribute('aria-busy', 'true');
+    const res = await cachedThemeColors(name);
+    if (request !== previewRequest) return;
+    detail.removeAttribute('aria-busy');
+    detail.replaceChildren(res.ok ? renderThemePreview(res.value, name) : element('p', 'dialog__error', res.error));
+  };
+  refreshThemePreview = () => { if (picker.isConnected) showPreview(active); };
+
+  const apply = async (name) => {
+    if (applying) return;
+    applying = true;
+    try {
+      if (await save(field.key, name)) {
+        const scrollTop = list.scrollTop;
+        renderList();
+        list.scrollTop = scrollTop;
+        list.querySelector('[data-preview="true"]')?.focus({ preventScroll: true });
+      }
+    } finally { applying = false; }
+  };
+  const renderList = () => {
+    const query = filter.value.toLocaleLowerCase();
+    visible = options.filter((o) => o.label.toLocaleLowerCase().includes(query));
+    list.textContent = '';
+    if (!visible.some((o) => o.value === active)) active = visible[0]?.value ?? null;
+    for (const option of visible) {
+      const row = element('button', 'theme-picker__row');
+      row.type = 'button';
+      row.dataset.theme = option.value ?? '';
+      row.dataset.preview = String(option.value === active);
+      row.tabIndex = option.value === active ? 0 : -1;
+      row.setAttribute('role', 'option');
+      const applied = option.value === (values.theme ?? null);
+      row.setAttribute('aria-selected', String(applied));
+      row.append(element('span', '', option.label));
+      if (applied) row.append(element('span', 'theme-picker__current', '使用中'));
+      row.addEventListener('mouseenter', () => showPreview(option.value));
+      row.addEventListener('focus', () => showPreview(option.value));
+      row.addEventListener('click', () => { showPreview(option.value); apply(option.value); });
+      list.append(row);
+    }
+    if (!visible.length) list.append(element('p', 'settings__help', '該当するテーマなし。絞り込みを変える'));
+  };
+  const move = (e) => {
+    if (!['ArrowDown', 'ArrowUp', 'Enter'].includes(e.key) || !visible.length) return;
+    e.preventDefault();
+    if (e.key === 'Enter') { apply(active); return; }
+    const at = visible.findIndex((o) => o.value === active);
+    const next = Math.max(0, Math.min(visible.length - 1, at + (e.key === 'ArrowDown' ? 1 : -1)));
+    showPreview(visible[next].value);
+    const row = list.children[next];
+    if (e.target !== filter) row.focus({ preventScroll: true });
+    row.scrollIntoView({ block: 'nearest' });
+  };
+  list.addEventListener('keydown', move);
+  filter.addEventListener('keydown', move);
+  filter.addEventListener('input', () => {
+    renderList();
+    if (visible.length) showPreview(active);
+    else {
+      previewRequest++;
+      detail.removeAttribute('aria-busy');
+      detail.textContent = '';
+    }
+  });
+  picker.reload = async () => {
+    options = await field.options(ctx);
+    const applied = values.theme ?? null;
+    if (!options.some((o) => o.value === applied)) options.push({ value: applied, label: `${applied}（見つかりません）` });
+    filter.value = '';
+    active = applied;
+    renderList();
+    showPreview(active);
+    requestAnimationFrame(() => {
+      const row = list.querySelector('[aria-selected="true"]');
+      if (row) list.scrollTop = Math.max(0, row.offsetTop - (list.clientHeight - row.offsetHeight) / 2);
+    });
+  };
+  await picker.reload();
+  return picker;
+}
+
+function openThemeAi(onApplied) {
+  const dialog = document.getElementById('theme-ai-dialog');
+  if (dialog.open) return;
+  const form = dialog.querySelector('form');
+  form.reset();
+  const questions = document.getElementById('theme-ai-questions');
+  const result = document.getElementById('theme-ai-preview');
+  const error = document.getElementById('theme-ai-error');
+  const status = document.getElementById('theme-ai-status');
+  const create = document.getElementById('theme-ai-create');
+  const apply = document.getElementById('theme-ai-apply');
+  const retry = document.getElementById('theme-ai-retry');
+  const cancel = document.getElementById('theme-ai-cancel');
+  let request = 0;
+  let generated = null;
+  let answers = null;
+  let busy = false;
+  let savedName = null;
+  const resetResult = () => {
+    generated = null;
+    savedName = null;
+    result.replaceChildren();
+    result.hidden = true;
+    apply.hidden = true;
+    retry.hidden = true;
+    create.hidden = false;
+    create.disabled = false;
+    create.textContent = '作成';
+    error.hidden = true;
+    status.textContent = '';
+    questions.disabled = false;
+  };
+  const close = () => {
+    request++;
+    if (dialog.open) dialog.close();
+  };
+  cancelThemeAi = close;
+  dialog.oncancel = (e) => { e.preventDefault(); close(); };
+  dialog.onclose = () => { request++; };
+  dialog.onkeydown = (e) => e.stopPropagation();
+  cancel.onclick = close;
+  const generate = async () => {
+    if (busy) return;
+    const data = new FormData(form);
+    answers = answers || {
+      brightness: data.get('brightness'),
+      mood: [...data.getAll('mood'), data.get('moodText')].filter(Boolean).join('、'),
+      contrast: data.get('contrast'),
+    };
+    resetResult();
+    busy = true;
+    questions.disabled = true;
+    create.disabled = true;
+    create.textContent = '作成中…';
+    status.textContent = '作成中…';
+    const token = ++request;
+    const res = await terp.generateTheme(answers);
+    if (token !== request || !dialog.open) return;
+    busy = false;
+    status.textContent = '';
+    create.disabled = false;
+    if (!res.ok) {
+      error.textContent = res.error;
+      error.hidden = false;
+      questions.disabled = false;
+      create.textContent = 'もう一度';
+      answers = null;
+      return;
+    }
+    generated = res.value.theme;
+    result.replaceChildren(renderThemePreview(res.value.colors, generated.name));
+    result.hidden = false;
+    create.hidden = true;
+    retry.hidden = false;
+    apply.hidden = false;
+    apply.disabled = false;
+    apply.focus();
+  };
+  form.onsubmit = (e) => { e.preventDefault(); generate(); };
+  retry.onclick = generate;
+  apply.onclick = async () => {
+    if (busy || !generated) return;
+    busy = true;
+    apply.disabled = true;
+    retry.disabled = true;
+    const token = ++request;
+    const res = savedName ? { ok: true, value: savedName } : await terp.saveTheme(generated);
+    if (token !== request || !dialog.open) return;
+    if (res.ok) savedName = res.value;
+    if (!res.ok || !(await save('theme', savedName))) {
+      if (token !== request || !dialog.open) return;
+      error.textContent = res.ok ? 'テーマを保存できませんでした。設定のエラーを確かめる' : res.error;
+      error.hidden = false;
+      busy = false;
+      apply.disabled = false;
+      retry.disabled = false;
+      return;
+    }
+    if (token !== request || !dialog.open) return;
+    await onApplied();
+    close();
+  };
+  resetResult();
+  retry.disabled = false;
+  dialog.showModal();
 }

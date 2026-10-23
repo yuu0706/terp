@@ -10,6 +10,7 @@ const projects = require('./projects');
 const gitops = require('./git');
 const gitpanel = require('./gitpanel');
 const agents = require('./agents');
+const themegen = require('./themegen');
 const subagents = require('./subagents');
 const files = require('./files');
 const snapshot = require('./snapshot');
@@ -179,6 +180,9 @@ const safe = (fn) => async (...args) => {
 ipcMain.handle('config:raw', safe(() => config.rawConfig()));
 ipcMain.handle('config:update', safe((_e, patch) => config.updateConfig(patch)));
 ipcMain.handle('config:themes', safe(() => config.listThemes()));
+ipcMain.handle('config:theme-colors', safe((_e, name) => config.getThemeColors(name)));
+ipcMain.handle('theme:generate', safe((_e, answers) => themegen.generate(answers)));
+ipcMain.handle('theme:save', safe((_e, theme) => themegen.saveTheme(theme)));
 ipcMain.handle('config:open-file', safe(() => shell.openPath(config.CONFIG_PATH)));
 ipcMain.handle('tabs:load', safe(() => tabs.load()));
 ipcMain.handle('tabs:save', safe((_e, state) => tabs.save(state)));

@@ -77,6 +77,9 @@ function normalizeHex(value) {
 }
 
 function findTheme(name) {
+  if (typeof name !== 'string' || !name || path.basename(name) !== name || name === '.' || name === '..') {
+    throw new Error('テーマの名前が正しくありません');
+  }
   for (const dir of THEME_DIRS) {
     const file = path.join(dir, name);
     if (fs.existsSync(file)) return file;
@@ -129,6 +132,22 @@ function xtermTheme(t) {
   return theme;
 }
 
+// 強調色の既定はカーソルの色。テーマの印象をいちばんよく表すため
+function themeColors(theme, accent = rawConfig().accent) {
+  return { terminal: xtermTheme(theme), chrome: chromeColors(theme, accent || theme.cursor || theme.palette[4]) };
+}
+
+function readTheme(name) {
+  if (name === null || name === undefined) return BUILTIN_THEME;
+  const file = findTheme(name);
+  if (!file) throw new Error(`テーマ「${name}」が見つかりません`);
+  return parseGhosttyTheme(fs.readFileSync(file, 'utf8'));
+}
+
+function getThemeColors(name) {
+  return themeColors(readTheme(name));
+}
+
 function ensureConfigFile() {
   if (fs.existsSync(CONFIG_PATH)) return;
   fs.mkdirSync(CONFIG_DIR, { recursive: true });
@@ -147,13 +166,11 @@ function loadConfig() {
   const config = { ...DEFAULT_CONFIG, ...user };
 
   let theme = BUILTIN_THEME;
-  if (config.theme) {
-    const file = findTheme(config.theme);
-    if (file) theme = parseGhosttyTheme(fs.readFileSync(file, 'utf8'));
-    else error = error || `テーマ「${config.theme}」が見つかりません`;
+  try {
+    theme = readTheme(config.theme);
+  } catch (err) {
+    error = error || err.message;
   }
-  // 強調色の既定はカーソルの色。テーマの印象をいちばんよく表すため
-  const accent = config.accent || theme.cursor || theme.palette[4];
   return {
     error,
     font: { family: config.fontFamily, size: config.fontSize },
@@ -162,8 +179,7 @@ function loadConfig() {
       // true は Ghostty と同じく半径 20。数値ならその半径
       blur: config.backgroundBlur === true ? 20 : Math.max(0, Math.min(100, Number(config.backgroundBlur) || 0)),
     },
-    terminal: xtermTheme(theme),
-    chrome: chromeColors(theme, accent),
+    ...themeColors(theme, config.accent),
     agents: Array.isArray(config.agents) ? config.agents : [],
     skipApprovals: config.skipApprovals === true,
     mainAgent: typeof config.mainAgent === 'string' ? config.mainAgent : null,
@@ -229,4 +245,4 @@ function listThemes() {
   return [...names];
 }
 
-module.exports = { CONFIG_DIR, CONFIG_PATH, ensureConfigFile, loadConfig, watchConfig, parseGhosttyTheme, updateConfig, rawConfig, listThemes };
+module.exports = { CONFIG_DIR, CONFIG_PATH, ensureConfigFile, loadConfig, watchConfig, parseGhosttyTheme, updateConfig, rawConfig, listThemes, getThemeColors, themeColors };
