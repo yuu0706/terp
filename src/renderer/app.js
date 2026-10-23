@@ -3,7 +3,9 @@ import { FitAddon } from '../../node_modules/@xterm/addon-fit/lib/addon-fit.mjs'
 import { WebglAddon } from '../../node_modules/@xterm/addon-webgl/lib/addon-webgl.mjs';
 import { Unicode11Addon } from '../../node_modules/@xterm/addon-unicode11/lib/addon-unicode11.mjs';
 import { WebLinksAddon } from '../../node_modules/@xterm/addon-web-links/lib/addon-web-links.mjs';
-import { initGitPanel, refresh as refreshGit, togglePanel as toggleGitPanel } from './gitpanel.js';
+import { initGitPanel, refresh as refreshGit, setGitVisible } from './gitpanel.js';
+import { initFilesPanel, refreshFiles, setFilesVisible, markActiveFile } from './filespanel.js';
+import { renderFileView } from './fileview.js';
 
 const terp = window.terp;
 const container = document.getElementById('terminals');
@@ -13,6 +15,8 @@ const looseList = looseSection.querySelector('.session-list');
 const noProjects = document.getElementById('no-projects');
 const empty = document.getElementById('empty');
 const configError = document.getElementById('config-error');
+const tabsEl = document.getElementById('tabs');
+const rightPanel = document.getElementById('right-panel');
 
 const SHELLS = new Set(['zsh', '-zsh', 'bash', '-bash', 'fish', 'sh', 'login']);
 const BUSY_MS = 2000;
@@ -29,13 +33,22 @@ function parseTitle(raw) {
   return { working: WORKING_MARKS.test(mark) && mark !== '✳', text: DEFAULT_TITLES.has(text) ? '' : text };
 }
 
-// 作った順に持つ。一覧の並び順は orderedIds() で一覧の DOM から読む
+// 作った順に持つ
 const sessions = new Map();
+// タブで開いているファイル。パスごとに1つ
+const fileViews = new Map();
 // projects.json のリポジトリと、その worktree。git から読み直す（refreshProjects）
 let projects = [];
+// タブは開いた順に並べる。キーはターミナルが 't:<番号>'、ファイルが 'f:<パス>'。
+// Orca と同じく、上のタブには表示中のタブと同じ作業（worktree）のものだけを出す
+let tabOrder = [];
+let activeKey = null;
+// 最後に表示したターミナル。ファイルのタブを表示している間も、新しいターミナルなどの基準に使う
 let activeId = null;
-// 最近表示した順。⌃Tab で直前へ戻るのに使う
+// 最近表示したタブのキーの順。⌃Tab で直前へ戻るのに使う
 let recent = [];
+// どの作業にも入らないタブのまとまり
+const LOOSE = '(loose)';
 let config = await terp.getConfig();
 
 function withAlpha(hex, alpha) {
@@ -56,6 +69,10 @@ function applyConfig(c) {
   root.setProperty('--surface-term', withAlpha(c.chrome['term-bg'], c.window.opacity));
   root.setProperty('--surface-sidebar', withAlpha(c.chrome.bg, c.window.opacity));
   root.setProperty('--font-mono', c.font.family);
+  // ファイルの色付けは端末のテーマの色を使う
+  for (const name of ['red', 'green', 'yellow', 'blue', 'magenta', 'cyan', 'brightBlack', 'brightRed', 'brightBlue']) {
+    root.setProperty(`--ansi-${name}`, c.terminal[name]);
+  }
   configError.textContent = c.error || '';
   configError.hidden = !c.error;
   // skipApprovals を切り替えたら、エージェントのボタンの説明と印も変える
@@ -110,16 +127,35 @@ function stateOf(s) {
 
 const STATE_LABELS = { busy: '出力中', unread: '未読の出力あり', notify: '通知あり', idle: '待機中' };
 
-// ⌘1〜⌘9 と前後の移動は、一覧に見えている順に従う
-function orderedIds() {
-  return [...document.querySelectorAll('#tree .session')].map((li) => Number(li.dataset.id));
+const termKey = (id) => `t:${id}`;
+const fileKey = (path) => `f:${path}`;
+
+function groupOf(key) {
+  if (key.startsWith('t:')) {
+    const s = sessions.get(Number(key.slice(2)));
+    return (s && workOf(s)?.path) || LOOSE;
+  }
+  return workOfPath(key.slice(2))?.path || LOOSE;
 }
 
-function renderItem(s, index = orderedIds().indexOf(s.id)) {
+// ⌘1〜⌘9 と前後の移動は、上のタブに見えている順に従う
+function visibleKeys() {
+  if (!activeKey) return [];
+  const group = groupOf(activeKey);
+  return tabOrder.filter((k) => groupOf(k) === group);
+}
+
+// 新しいターミナルやエージェントを開く場所: ファイルのタブならそのフォルダ、ターミナルならその作業場所
+function activeCwd() {
+  if (activeKey?.startsWith('f:')) return activeKey.slice(2).replace(/\/[^/]*$/, '');
+  return sessions.get(activeId)?.cwd || null;
+}
+
+function renderItem(s, index = visibleKeys().indexOf(termKey(s.id))) {
   const li = s.li;
   const state = stateOf(s);
   li.dataset.state = state;
-  li.setAttribute('aria-current', String(s.id === activeId));
+  li.setAttribute('aria-current', String(activeKey === termKey(s.id)));
   li.title = [s.title, shortPath(s.cwd)].filter(Boolean).join('\n');
   li.querySelector('.session__dot').setAttribute('aria-label', STATE_LABELS[state]);
   const nameEl = li.querySelector('.session__name');
@@ -128,19 +164,61 @@ function renderItem(s, index = orderedIds().indexOf(s.id)) {
   // 名前がプログラム名なら2行目で繰り返さない
   const program = isAgent(s) && name !== s.program ? s.program : '';
   li.querySelector('.session__sub').textContent = [program, placeLabel(s)].filter(Boolean).join(' · ');
-  li.querySelector('.session__key').textContent = index < 9 ? `⌘${index + 1}` : '';
+  // 番号は上のタブに出ているものだけに付ける（⌘1〜⌘9 はタブの順）
+  li.querySelector('.session__key').textContent = index >= 0 && index < 9 ? `⌘${index + 1}` : '';
   li.querySelector('.session__bypass').hidden = !s.bypass;
 }
 
 function renderAll() {
   placeSessions();
-  const order = orderedIds();
-  for (const s of sessions.values()) renderItem(s, order.indexOf(s.id));
+  const visible = visibleKeys();
+  for (const s of sessions.values()) renderItem(s, visible.indexOf(termKey(s.id)));
+  const group = activeKey ? groupOf(activeKey) : null;
   for (const el of projectsEl.querySelectorAll('.work')) {
-    const active = sessions.get(activeId);
-    el.querySelector('.work__row').setAttribute('aria-current', String(Boolean(active) && workOf(active)?.path === el.dataset.path));
+    el.querySelector('.work__row').setAttribute('aria-current', String(group === el.dataset.path));
   }
-  empty.hidden = sessions.size > 0;
+  renderTabs(visible);
+  empty.hidden = tabOrder.length > 0;
+}
+
+// ---- 上のタブ ----
+
+const TAB_FILE_ICON = `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" /><path d="M14 3v5h5" /></svg>`;
+
+function tabLabel(key) {
+  if (key.startsWith('t:')) return displayName(sessions.get(Number(key.slice(2))));
+  return key.split('/').pop();
+}
+
+function renderTabs(visible) {
+  // 状態の印は 0.5 秒ごとに変わるため、タブの並びが同じなら中身だけ書き換える
+  const same = tabsEl.children.length === visible.length && [...tabsEl.children].every((t, i) => t.dataset.key === visible[i]);
+  if (!same) {
+    tabsEl.textContent = '';
+    for (const key of visible) {
+      const tab = document.createElement('div');
+      tab.className = 'tab';
+      tab.dataset.key = key;
+      tab.setAttribute('role', 'tab');
+      tab.innerHTML = `${key.startsWith('t:') ? '<span class="session__dot tab__dot"></span>' : TAB_FILE_ICON}<span class="tab__name"></span>
+        <button class="tab__close" type="button" aria-label="閉じる" title="閉じる（⌘W）">${CLOSE_ICON}</button>`;
+      tab.addEventListener('click', (e) => {
+        if (e.target.closest('.tab__close')) closeKey(key);
+        else activateKey(key);
+      });
+      // 中ボタンで閉じる（ブラウザと同じ）
+      tab.addEventListener('auxclick', (e) => e.button === 1 && closeKey(key));
+      tabsEl.append(tab);
+    }
+  }
+  for (const tab of tabsEl.children) {
+    const key = tab.dataset.key;
+    tab.setAttribute('aria-selected', String(key === activeKey));
+    tab.querySelector('.tab__name').textContent = tabLabel(key);
+    tab.title = key.startsWith('t:') ? sessions.get(Number(key.slice(2)))?.cwd || '' : key.slice(2);
+    if (key.startsWith('t:')) tab.dataset.state = stateOf(sessions.get(Number(key.slice(2))));
+  }
+  tabsEl.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
 }
 
 // ---- 作業（worktree） ----
@@ -149,13 +227,17 @@ function allWorks() {
   return projects.flatMap((p) => p.worktrees.map((w) => ({ ...w, repo: p.path })));
 }
 
-// ターミナルの作業場所を含む worktree のうち、いちばん深いもの
-function workOf(s) {
+// その場所を含む worktree のうち、いちばん深いもの
+function workOfPath(p) {
   let found = null;
   for (const w of allWorks()) {
-    if ((s.cwd === w.path || s.cwd?.startsWith(w.path + '/')) && (!found || w.path.length > found.path.length)) found = w;
+    if ((p === w.path || p?.startsWith(w.path + '/')) && (!found || w.path.length > found.path.length)) found = w;
   }
   return found;
+}
+
+function workOf(s) {
+  return workOfPath(s.cwd);
 }
 
 function workLabel(w) {
@@ -254,10 +336,10 @@ async function refreshProjects() {
   renderProjects();
 }
 
-// 作業を開く: その作業のターミナルのうち最近見たものへ移る。無ければ新しく開く
+// 作業を開く: その作業のタブのうち最近見たものへ移る。無ければ新しくターミナルを開く
 function openWork(w) {
-  const inWork = recent.find((id) => workOf(sessions.get(id))?.path === w.path);
-  if (inWork !== undefined) activate(inWork);
+  const inWork = recent.find((key) => groupOf(key) === w.path);
+  if (inWork !== undefined) activateKey(inWork);
   else openTerminal({ cwd: w.path });
 }
 
@@ -318,7 +400,7 @@ function renderAgentButtons() {
 
 // 表示中のターミナルと同じ作業場所で新しいターミナルを開き、エージェントを起動する
 async function launchAgent(a, bypass) {
-  const cwd = sessions.get(activeId)?.cwd;
+  const cwd = activeCwd();
   const s = await openTerminal({ cwd });
   markBypass(s, bypass);
   // シェルは起動前の入力をためておくため、すぐ送ってよい
@@ -428,6 +510,7 @@ async function submitRemove() {
   const w = removing;
   if (!w) return;
   for (const s of [...sessions.values()]) if (workOf(s)?.path === w.path) closeSession(s.id);
+  for (const path of [...fileViews.keys()]) if (workOfPath(path)?.path === w.path) closeFile(path);
   const res = await terp.removeWork({ repo: w.repo, dir: w.path });
   if (!res.ok) {
     setDialogError(removeDialog, res.error);
@@ -527,27 +610,118 @@ function detachWebgl(s) {
   s.webgl = null;
 }
 
-function activate(id) {
-  const s = sessions.get(id);
-  if (!s) return;
-  const prev = sessions.get(activeId);
-  if (prev && prev !== s) {
-    prev.el.hidden = true;
-    detachWebgl(prev);
+function hideView(key) {
+  if (key.startsWith('t:')) {
+    const s = sessions.get(Number(key.slice(2)));
+    if (!s) return;
+    s.el.hidden = true;
+    detachWebgl(s);
+  } else {
+    const f = fileViews.get(key.slice(2));
+    if (f) f.el.hidden = true;
   }
-  activeId = id;
-  recent = [id, ...recent.filter((r) => r !== id)];
-  s.lastActive = Date.now();
-  terp.setMeta(id, { lastActive: s.lastActive });
+}
+
+function activateKey(key) {
+  const isTerm = key.startsWith('t:');
+  const target = isTerm ? sessions.get(Number(key.slice(2))) : fileViews.get(key.slice(2));
+  if (!target) return;
+  if (activeKey && activeKey !== key) hideView(activeKey);
+  activeKey = key;
+  recent = [key, ...recent.filter((k) => k !== key)];
+  target.el.hidden = false;
+  target.lastActive = Date.now();
+  if (isTerm) {
+    const s = target;
+    activeId = s.id;
+    terp.setMeta(s.id, { lastActive: s.lastActive });
+    s.unread = false;
+    s.notify = false;
+    attachWebgl(s);
+    s.fit.fit();
+    s.term.focus();
+    s.li.scrollIntoView({ block: 'nearest' });
+  } else {
+    target.el.querySelector('.fileview__body')?.focus({ preventScroll: true });
+  }
   refreshGit(true);
-  s.el.hidden = false;
-  s.unread = false;
-  s.notify = false;
-  attachWebgl(s);
-  s.fit.fit();
-  s.term.focus();
+  refreshFiles(false);
+  markActiveFile();
   renderAll();
-  s.li.scrollIntoView({ block: 'nearest' });
+}
+
+function activate(id) {
+  activateKey(termKey(id));
+}
+
+// ---- タブで開くファイル ----
+
+async function openFile(path) {
+  const key = fileKey(path);
+  if (fileViews.has(path)) return activateKey(key);
+  const el = document.createElement('section');
+  el.className = 'fileview';
+  el.hidden = true;
+  container.appendChild(el);
+  const f = { path, el, lastActive: Date.now() };
+  fileViews.set(path, f);
+  // 表示中のタブの隣に開く
+  const at = tabOrder.indexOf(activeKey);
+  tabOrder.splice(at < 0 ? tabOrder.length : at + 1, 0, key);
+  activateKey(key);
+  await renderFileView(el, path, workOfPath(path)?.path || null);
+  return f;
+}
+
+function closeKey(key) {
+  if (!key) return;
+  if (key.startsWith('t:')) closeSession(Number(key.slice(2)));
+  else closeFile(key.slice(2));
+}
+
+function closeFile(path) {
+  const f = fileViews.get(path);
+  if (!f) return;
+  f.el.remove();
+  fileViews.delete(path);
+  dropTab(fileKey(path));
+}
+
+// タブを並びから外す。表示中だったら、同じ作業の最近見たタブ、無ければ最近見たタブへ移る
+function dropTab(key) {
+  const group = groupOf(key);
+  const wasActive = activeKey === key;
+  tabOrder = tabOrder.filter((k) => k !== key);
+  recent = recent.filter((k) => k !== key);
+  if (wasActive) {
+    activeKey = null;
+    const next = recent.find((k) => groupOf(k) === group) ?? recent[0];
+    if (next) activateKey(next);
+  }
+  renderAll();
+}
+
+// ---- 右の面（ファイル・変更） ----
+
+let panelTab = null;
+
+function setPanel(tab) {
+  panelTab = tab;
+  rightPanel.hidden = !tab;
+  setFilesVisible(tab === 'files');
+  setGitVisible(tab === 'git');
+  for (const [id, name] of [['panel-tab-files', 'files'], ['panel-tab-git', 'git'], ['files-toggle', 'files'], ['git-toggle', 'git']]) {
+    const el = document.getElementById(id);
+    el.setAttribute(el.getAttribute('role') === 'tab' ? 'aria-selected' : 'aria-pressed', String(tab === name));
+  }
+  // 面の幅のぶん端末の幅が変わるため、表示中の端末を合わせ直させる
+  window.dispatchEvent(new Event('resize'));
+  if (!tab) sessions.get(activeId)?.term.focus();
+}
+
+// 上の帯のボタン: 閉じていれば開き、同じ切り替え先が開いていれば閉じる
+function togglePanel(tab) {
+  setPanel(panelTab === tab ? null : tab);
 }
 
 function handleKey(s, event) {
@@ -646,6 +820,7 @@ async function openTerminal({ cwd } = {}) {
   const view = buildTerminal();
   const { id, cwd: startCwd } = await terp.createPty({ cols: view.term.cols, rows: view.term.rows, cwd });
   const s = registerSession(id, view, { cwd: startCwd });
+  tabOrder.push(termKey(id));
   activate(id);
   return s;
 }
@@ -662,6 +837,7 @@ async function attachTerminal(e) {
     bypass: Boolean(e.meta.bypass),
     pending: [],
   });
+  tabOrder.push(termKey(e.id));
   const res = await terp.attach(e.id);
   if (res.replay) s.term.write(res.replay);
   for (const data of s.pending) s.term.write(data);
@@ -701,7 +877,7 @@ async function restoreSessions() {
 }
 
 function markNotify(s) {
-  if (s.id === activeId && document.hasFocus()) return;
+  if (activeKey === termKey(s.id) && document.hasFocus()) return;
   s.notify = true;
   renderItem(s);
 }
@@ -713,35 +889,39 @@ function closeSession(id) {
 function removeSession(id) {
   const s = sessions.get(id);
   if (!s) return;
-  const order = [...sessions.keys()];
-  const index = order.indexOf(id);
+  // 所属の作業を先に求める（消した後は求められない）
+  const key = termKey(id);
+  const group = groupOf(key);
   detachWebgl(s);
   s.term.dispose();
   s.el.remove();
   s.li.remove();
   sessions.delete(id);
-  recent = recent.filter((r) => r !== id);
-  if (activeId === id) {
-    activeId = null;
-    const next = recent[0] ?? order[index + 1] ?? order[index - 1];
-    if (next !== undefined && sessions.has(next)) activate(next);
+  if (activeId === id) activeId = null;
+  const wasActive = activeKey === key;
+  tabOrder = tabOrder.filter((k) => k !== key);
+  recent = recent.filter((k) => k !== key);
+  if (wasActive) {
+    activeKey = null;
+    const next = recent.find((k) => groupOf(k) === group) ?? recent[0];
+    if (next) activateKey(next);
   }
   renderAll();
 }
 
 function switchRecent() {
-  if (recent.length > 1) activate(recent[1]);
+  if (recent.length > 1) activateKey(recent[1]);
 }
 
 function switchOffset(offset) {
-  const order = orderedIds();
+  const order = visibleKeys();
   if (order.length === 0) return;
-  const index = order.indexOf(activeId);
-  activate(order[(index + offset + order.length) % order.length]);
+  const index = order.indexOf(activeKey);
+  activateKey(order[(index + offset + order.length) % order.length]);
 }
 
 function newTerminal() {
-  return openTerminal({ cwd: sessions.get(activeId)?.cwd });
+  return openTerminal({ cwd: activeCwd() });
 }
 
 terp.onData((id, data) => {
@@ -753,7 +933,7 @@ terp.onData((id, data) => {
   }
   s.term.write(data);
   s.lastOutput = Date.now();
-  if (id !== activeId) s.unread = true;
+  if (activeKey !== termKey(id)) s.unread = true;
 });
 
 terp.onExit((id) => removeSession(id));
@@ -774,24 +954,25 @@ terp.onInfo((info) => {
 });
 
 terp.onMenu((action, arg) => {
-  const s = sessions.get(activeId);
+  // ファイルのタブを表示している間は、端末向けの操作（消去・すべて選択）を端末に向けない
+  const s = activeKey?.startsWith('t:') ? sessions.get(activeId) : null;
   switch (action) {
     case 'new':
       newTerminal();
       break;
     case 'close':
-      if (s) closeSession(s.id);
+      closeKey(activeKey);
       break;
     case 'clear':
       s?.term.clear();
       break;
     case 'select-all':
-      if (document.activeElement?.tagName === 'INPUT') document.execCommand('selectAll');
-      else s?.term.selectAll();
+      if (!s || ['INPUT', 'TEXTAREA'].includes(document.activeElement?.tagName)) document.execCommand('selectAll');
+      else s.term.selectAll();
       break;
     case 'select-index': {
-      const id = orderedIds()[arg];
-      if (id !== undefined) activate(id);
+      const key = visibleKeys()[arg];
+      if (key) activateKey(key);
       break;
     }
     case 'recent':
@@ -801,7 +982,10 @@ terp.onMenu((action, arg) => {
       openWorkDialog();
       break;
     case 'toggle-git':
-      toggleGitPanel();
+      togglePanel('git');
+      break;
+    case 'toggle-files':
+      togglePanel('files');
       break;
     case 'add-project':
       addProject();
@@ -816,6 +1000,12 @@ terp.onMenu((action, arg) => {
 });
 
 document.getElementById('new-terminal').addEventListener('click', () => newTerminal());
+document.getElementById('files-toggle').addEventListener('click', () => togglePanel('files'));
+document.getElementById('git-toggle').addEventListener('click', () => togglePanel('git'));
+document.getElementById('panel-tab-files').addEventListener('click', () => setPanel('files'));
+document.getElementById('panel-tab-git').addEventListener('click', () => setPanel('git'));
+document.getElementById('panel-close').addEventListener('click', () => setPanel(null));
+document.getElementById('panel-refresh').addEventListener('click', () => (panelTab === 'files' ? refreshFiles(true) : refreshGit(true)));
 document.getElementById('empty-new').addEventListener('click', () => newTerminal());
 document.getElementById('new-work').addEventListener('click', () => openWorkDialog());
 document.getElementById('add-project').addEventListener('click', () => addProject());
@@ -838,6 +1028,17 @@ window.__terp = {
   },
   open: (cwd) => openTerminal({ cwd }).then((s) => s.id),
   activate,
+  activateKey,
+  openFile,
+  closeKey,
+  setPanel,
+  get activeKey() {
+    return activeKey;
+  },
+  get tabOrder() {
+    return tabOrder;
+  },
+  visibleKeys,
   get config() {
     return config;
   },
@@ -868,9 +1069,11 @@ window.__terp = {
 };
 
 applyConfig(config);
-initGitPanel({
-  activeCwd: () => sessions.get(activeId)?.cwd || null,
-  focusTerminal: () => sessions.get(activeId)?.term.focus(),
+initGitPanel({ activeCwd });
+initFilesPanel({
+  activeCwd,
+  activePath: () => (activeKey?.startsWith('f:') ? activeKey.slice(2) : null),
+  openFile,
 });
 await refreshProjects();
 noProjects.hidden = projects.length > 0;

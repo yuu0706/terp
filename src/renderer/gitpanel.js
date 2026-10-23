@@ -1,8 +1,8 @@
-// 右の「変更」の面と差分の表示。対象は、表示中のターミナルの作業場所を含む worktree
+// 右の面の「変更」と差分の表示。対象は、表示中のタブの作業場所を含む worktree。
+// 右の面の開け閉めと切り替えは app.js が受け持ち、ここは setGitVisible で見えているかだけを受け取る
 const terp = window.terp;
 
-const panel = document.getElementById('git-panel');
-const toggle = document.getElementById('git-toggle');
+const panel = document.getElementById('git-view');
 const toggleCount = document.getElementById('git-toggle-count');
 const emptyEl = document.getElementById('git-empty');
 const content = document.getElementById('git-content');
@@ -23,19 +23,15 @@ const PLUS_ICON = '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><pat
 const MINUS_ICON = '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14" /></svg>';
 
 let getCwd = () => null;
-let onFocusTerminal = () => {};
 let state = null;
 let lastJson = '';
 let busy = false;
 // 開いている差分。読み直しても同じファイルを出し続ける
 let openDiff = null;
+let visible = false;
 
-export function initGitPanel({ activeCwd, focusTerminal }) {
+export function initGitPanel({ activeCwd }) {
   getCwd = activeCwd;
-  onFocusTerminal = focusTerminal;
-  toggle.addEventListener('click', togglePanel);
-  document.getElementById('git-close').addEventListener('click', () => setOpen(false));
-  document.getElementById('git-refresh').addEventListener('click', () => refresh(true));
   document.getElementById('git-fetch').addEventListener('click', () => runSync('fetch'));
   document.getElementById('git-pull').addEventListener('click', () => runSync('pull'));
   document.getElementById('git-push').addEventListener('click', () => runSync('push'));
@@ -64,22 +60,11 @@ export function initGitPanel({ activeCwd, focusTerminal }) {
   setInterval(() => refresh(false), 3000);
 }
 
-export function isOpen() {
-  return !panel.hidden;
-}
-
-export function togglePanel() {
-  setOpen(panel.hidden);
-}
-
-function setOpen(open) {
+export function setGitVisible(open) {
+  visible = open;
   panel.hidden = !open;
-  toggle.setAttribute('aria-pressed', String(open));
   if (!open) closeDiff();
   refresh(true);
-  // 面の幅のぶん端末の幅が変わるため、表示中の端末を合わせ直させる
-  window.dispatchEvent(new Event('resize'));
-  if (!open) onFocusTerminal();
 }
 
 function showResult(text, tone = '') {
@@ -100,7 +85,7 @@ export async function refresh(force) {
   if (!force && json === lastJson) return;
   lastJson = json;
   state = next;
-  if (panel.hidden) return;
+  if (!visible) return;
   render(res);
 }
 

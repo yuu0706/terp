@@ -63,14 +63,23 @@
     </nav>
     <main id="terminals">
       <div class="topbar">
-        <button id="git-toggle" class="btn topbar__btn" type="button" aria-pressed="false" title="変更の一覧（⌘⇧G）">
-          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
-            <circle cx="6" cy="6" r="2" /><circle cx="6" cy="18" r="2" /><circle cx="18" cy="8" r="2" />
-            <path d="M6 8v8M18 10c0 4-6 3-6 8" />
-          </svg>
-          <span>変更</span>
-          <span id="git-toggle-count" class="badge" hidden></span>
-        </button>
+        <div id="tabs" class="tabs" role="tablist" aria-label="開いているターミナルとファイル"></div>
+        <div class="topbar__actions">
+          <button id="files-toggle" class="btn topbar__btn" type="button" aria-pressed="false" title="ファイル（⌘⇧E）">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+            </svg>
+            <span>ファイル</span>
+          </button>
+          <button id="git-toggle" class="btn topbar__btn" type="button" aria-pressed="false" title="変更の一覧（⌘⇧G）">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="6" cy="6" r="2" /><circle cx="6" cy="18" r="2" /><circle cx="18" cy="8" r="2" />
+              <path d="M6 8v8M18 10c0 4-6 3-6 8" />
+            </svg>
+            <span>変更</span>
+            <span id="git-toggle-count" class="badge" hidden></span>
+          </button>
+        </div>
       </div>
       <section id="diff-view" class="diff" hidden aria-labelledby="diff-title">
         <div class="diff__head">
@@ -91,16 +100,25 @@
       </div>
     </main>
 
-    <aside id="git-panel" class="panel" aria-label="変更" hidden>
+    <aside id="right-panel" class="panel" aria-label="右の面" hidden>
       <div class="panel__head">
-        <span class="panel__title">変更</span>
-        <button id="git-refresh" class="icon-btn" type="button" aria-label="読み直す" title="読み直す">
+        <div class="segmented" role="tablist" aria-label="右の面の切り替え">
+          <button id="panel-tab-files" class="segmented__btn" type="button" role="tab" aria-selected="false">ファイル</button>
+          <button id="panel-tab-git" class="segmented__btn" type="button" role="tab" aria-selected="false">変更</button>
+        </div>
+        <button id="panel-refresh" class="icon-btn" type="button" aria-label="読み直す" title="読み直す">
           <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.3-5.6M20 4v5h-5" /></svg>
         </button>
-        <button id="git-close" class="icon-btn" type="button" aria-label="変更の一覧を閉じる" title="閉じる（⌘⇧G）">
+        <button id="panel-close" class="icon-btn" type="button" aria-label="右の面を閉じる" title="閉じる">
           <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
         </button>
       </div>
+      <section id="files-view" class="panel__section" aria-label="ファイル" hidden>
+        <div class="files__root" id="files-root"></div>
+        <p id="files-empty" class="panel__empty" hidden></p>
+        <ul id="files-tree" class="files__tree" role="tree"></ul>
+      </section>
+      <section id="git-view" class="panel__section" aria-label="変更" hidden>
       <p id="git-empty" class="panel__empty" hidden></p>
       <div id="git-content" class="panel__content" hidden>
         <div class="git__branch">
@@ -146,6 +164,7 @@
         </form>
         <p id="git-result" class="git__result" role="status" hidden></p>
       </div>
+      </section>
     </aside>
 
     <dialog id="work-dialog" class="dialog" aria-labelledby="work-dialog-title">

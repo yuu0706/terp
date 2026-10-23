@@ -473,9 +473,121 @@ body {
   height: var(--titlebar-height);
   display: flex;
   align-items: center;
-  justify-content: flex-end;
+  gap: var(--space-2);
   padding: 0 var(--space-2);
   -webkit-app-region: drag;
+}
+
+.topbar__actions {
+  flex: none;
+  display: flex;
+  gap: var(--space-1);
+}
+
+/* ---- 上のタブ（表示中の作業のターミナルとファイル） ---- */
+.tabs {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.tab {
+  -webkit-app-region: no-drag;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  max-width: 220px;
+  height: 32px;
+  padding: 0 var(--space-1) 0 var(--space-3);
+  border: 1px solid transparent;
+  border-bottom: 0;
+  border-radius: var(--radius) var(--radius) 0 0;
+  color: var(--color-text-muted);
+  font-size: var(--text-md);
+  cursor: pointer;
+  user-select: none;
+}
+
+.tab:hover {
+  background: var(--color-bg-hover);
+}
+
+.tab[aria-selected='true'] {
+  color: var(--color-text);
+  background: var(--color-bg-active);
+  border-color: var(--color-border);
+}
+
+.tab .icon {
+  flex: none;
+  width: 14px;
+  height: 14px;
+}
+
+.tab__name {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.tab__close {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  visibility: hidden;
+}
+
+.tab:hover .tab__close,
+.tab[aria-selected='true'] .tab__close,
+.tab__close:focus-visible {
+  visibility: visible;
+}
+
+.tab__close:hover {
+  background: var(--color-bg-hover);
+  color: var(--color-text);
+}
+
+/* 状態の印は一覧の行と同じ色の決まりを使う */
+.tab__dot {
+  flex: none;
+}
+
+.tab[data-state='busy'] .tab__dot {
+  background: var(--color-busy);
+  border-color: var(--color-busy);
+  opacity: 1;
+}
+
+.tab[data-state='unread'] .tab__dot {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  opacity: 1;
+}
+
+.tab[data-state='notify'] .tab__dot {
+  background: var(--color-warning);
+  border-color: var(--color-warning);
+  opacity: 1;
 }
 
 .topbar__btn[aria-pressed='true'] {
@@ -963,4 +1075,286 @@ body {
 /* 確認なしで起動するボタンは、縁を危険の色にして普段と見分ける */
 .btn--agent[data-bypass='true'] {
   border-color: color-mix(in srgb, var(--color-danger) 60%, var(--color-border));
+}
+
+/* ---- 右の面の切り替え ---- */
+.segmented {
+  -webkit-app-region: no-drag;
+  flex: 1;
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+}
+
+.segmented__btn {
+  flex: 1;
+  height: 24px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--color-text-muted);
+  font: inherit;
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+
+.segmented__btn[aria-selected='true'] {
+  background: var(--color-bg-active);
+  color: var(--color-text);
+}
+
+.panel__section {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.panel__section[hidden] {
+  display: none;
+}
+
+/* ---- ファイルの木 ---- */
+.files__root {
+  flex: none;
+  padding: var(--space-1) var(--space-3);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--color-text-muted);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.files__tree {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  position: relative;
+  list-style: none;
+  margin: 0;
+  padding: 0 var(--space-2) var(--space-2);
+}
+
+.files__item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding-left: calc(var(--space-1) + var(--depth) * 14px);
+  padding-right: var(--space-1);
+  border-radius: var(--radius);
+  font-size: var(--text-md);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.files__item:hover {
+  background: var(--color-bg-hover);
+}
+
+.files__item[aria-current='true'] {
+  background: var(--color-bg-active);
+  color: var(--color-accent);
+}
+
+.files__item .icon {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  color: var(--color-text-muted);
+}
+
+.files__chevron {
+  transition: transform 120ms ease;
+}
+
+.files__item[aria-expanded='true'] .files__chevron {
+  transform: rotate(90deg);
+}
+
+.files__spacer {
+  flex: none;
+  width: 14px;
+}
+
+.files__name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ---- タブで開いたファイル ---- */
+.fileview {
+  position: absolute;
+  top: var(--titlebar-height);
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-term-bg);
+}
+
+.fileview[hidden] {
+  display: none;
+}
+
+.fileview__head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: 36px;
+  padding: 0 var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.fileview__title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: var(--text-md);
+}
+
+.fileview__meta {
+  flex: none;
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+.fileview__body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  position: relative;
+  outline: none;
+}
+
+.fileview__text {
+  display: flex;
+  min-width: max-content;
+  font-family: var(--font-mono);
+  font-size: var(--diff-font-size);
+  line-height: 1.5;
+}
+
+.fileview__gutter,
+.fileview__code {
+  margin: 0;
+  padding: var(--space-2) 0;
+  font: inherit;
+  line-height: inherit;
+}
+
+.fileview__gutter {
+  flex: none;
+  position: sticky;
+  left: 0;
+  padding-right: var(--space-3);
+  padding-left: var(--space-3);
+  text-align: right;
+  color: var(--color-text-muted);
+  opacity: 0.6;
+  background: var(--color-term-bg);
+  user-select: none;
+}
+
+.fileview__code {
+  flex: 1;
+  padding-right: var(--space-3);
+  tab-size: 4;
+}
+
+.fileview__image {
+  display: block;
+  max-width: calc(100% - 32px);
+  margin: 16px;
+  background: repeating-conic-gradient(#8882 0 25%, transparent 0 50%) 0 0 / 16px 16px;
+}
+
+.fileview__notice {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  color: var(--color-text-muted);
+}
+
+.fileview__notice p {
+  margin: 0;
+}
+
+/* 色付け。highlight.js の名前に、端末のテーマの色を当てる */
+.hljs-comment,
+.hljs-quote {
+  color: var(--ansi-brightBlack);
+  font-style: italic;
+}
+
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-literal,
+.hljs-section,
+.hljs-doctag {
+  color: var(--ansi-magenta);
+}
+
+.hljs-string,
+.hljs-regexp,
+.hljs-addition,
+.hljs-attribute,
+.hljs-meta .hljs-string {
+  color: var(--ansi-green);
+}
+
+.hljs-number,
+.hljs-symbol,
+.hljs-bullet,
+.hljs-variable.constant_ {
+  color: var(--ansi-yellow);
+}
+
+.hljs-title,
+.hljs-title.function_,
+.hljs-name {
+  color: var(--ansi-blue);
+}
+
+.hljs-type,
+.hljs-built_in,
+.hljs-class .hljs-title,
+.hljs-title.class_ {
+  color: var(--ansi-cyan);
+}
+
+.hljs-attr,
+.hljs-property,
+.hljs-variable,
+.hljs-template-variable,
+.hljs-selector-class,
+.hljs-selector-id {
+  color: var(--ansi-brightBlue);
+}
+
+.hljs-meta,
+.hljs-tag {
+  color: var(--ansi-brightBlack);
+}
+
+.hljs-deletion {
+  color: var(--ansi-red);
+}
+
+.hljs-emphasis {
+  font-style: italic;
+}
+
+.hljs-strong {
+  font-weight: 600;
 }

@@ -9,6 +9,7 @@ const projects = require('./projects');
 const gitops = require('./git');
 const gitpanel = require('./gitpanel');
 const agents = require('./agents');
+const files = require('./files');
 const snapshot = require('./snapshot');
 const { PtyClient } = require('./ptyclient');
 
@@ -183,6 +184,12 @@ ipcMain.handle('projects:remove', safe((_e, repo) => projects.remove(repo)));
 ipcMain.handle('work:create', safe((_e, { repo, branch, base }) => gitops.addWorktree(repo, branch, base)));
 ipcMain.handle('work:remove', safe((_e, { repo, dir }) => gitops.removeWorktree(repo, dir)));
 ipcMain.handle('work:changes', safe((_e, dir) => gitops.changeCount(dir)));
+ipcMain.handle('files:root', safe((_e, dir) => files.root(dir)));
+ipcMain.handle('files:list', safe((_e, dir) => files.list(dir)));
+ipcMain.handle('files:read', safe((_e, file) => files.read(file)));
+// 既定のアプリで開く・Finder で見せる
+ipcMain.handle('files:open-external', safe((_e, file) => shell.openPath(file)));
+ipcMain.handle('files:reveal', safe((_e, file) => shell.showItemInFolder(file)));
 ipcMain.handle('agents:list', safe(() => agents.detect(config.loadConfig().agents)));
 ipcMain.handle('git:status', safe((_e, dir) => gitpanel.status(dir)));
 ipcMain.handle('git:diff', safe((_e, { top, file, kind }) => gitpanel.diff(top, file, kind)));
@@ -223,7 +230,7 @@ ipcMain.on('open-external', (_e, url) => {
 function buildMenu() {
   const send = (action, arg) => () => toWindow('menu', action, arg);
   const selectItems = Array.from({ length: 9 }, (_, i) => ({
-    label: `ターミナル ${i + 1}`,
+    label: `タブ ${i + 1}`,
     accelerator: `CmdOrCtrl+${i + 1}`,
     click: send('select-index', i),
   }));
@@ -248,7 +255,7 @@ function buildMenu() {
         { label: '新しいターミナル', accelerator: 'CmdOrCtrl+T', click: send('new') },
         { label: '新しい作業…', accelerator: 'CmdOrCtrl+N', click: send('new-work') },
         { label: 'リポジトリを追加…', click: send('add-project') },
-        { label: 'ターミナルを閉じる', accelerator: 'CmdOrCtrl+W', click: send('close') },
+        { label: 'タブを閉じる', accelerator: 'CmdOrCtrl+W', click: send('close') },
         { type: 'separator' },
         { label: '画面を消去', accelerator: 'CmdOrCtrl+K', click: send('clear') },
       ],
@@ -265,9 +272,9 @@ function buildMenu() {
       label: '移動',
       submenu: [
         // ⌃Tab は端末が先に受け取るため、画面側で処理し、メニューには表示だけする
-        { label: '直前のターミナル', accelerator: 'Ctrl+Tab', registerAccelerator: false, click: send('recent') },
-        { label: '前のターミナル', accelerator: 'CmdOrCtrl+Shift+[', click: send('prev') },
-        { label: '次のターミナル', accelerator: 'CmdOrCtrl+Shift+]', click: send('next') },
+        { label: '直前のタブ', accelerator: 'Ctrl+Tab', registerAccelerator: false, click: send('recent') },
+        { label: '前のタブ', accelerator: 'CmdOrCtrl+Shift+[', click: send('prev') },
+        { label: '次のタブ', accelerator: 'CmdOrCtrl+Shift+]', click: send('next') },
         { type: 'separator' },
         ...selectItems,
       ],
@@ -275,6 +282,7 @@ function buildMenu() {
     {
       label: '表示',
       submenu: [
+        { label: 'ファイル', accelerator: 'CmdOrCtrl+Shift+E', click: send('toggle-files') },
         { label: '変更の一覧', accelerator: 'CmdOrCtrl+Shift+G', click: send('toggle-git') },
         { type: 'separator' },
         { role: 'toggleDevTools', label: '開発者ツール' },
@@ -294,6 +302,8 @@ function createWindow() {
     transparent: true,
     backgroundColor: '#00000000',
     titleBarStyle: 'hiddenInset',
+    // 自己診断の窓は手前に出さない。利用者が別の窓で打っている文字を奪わないため
+    show: !process.env.TERP_SELFTEST,
     trafficLightPosition: { x: 14, y: 14 },
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -302,7 +312,10 @@ function createWindow() {
     },
   });
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
-  win.once('ready-to-show', () => setBlur(win, initial.window.blur));
+  win.once('ready-to-show', () => {
+    setBlur(win, initial.window.blur);
+    if (process.env.TERP_SELFTEST) win.showInactive();
+  });
   if (process.env.TERP_SELFTEST) require('./selftest').run(win);
 }
 

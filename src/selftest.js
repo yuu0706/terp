@@ -6,6 +6,81 @@ const { app, clipboard } = require('electron');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// TERP_SELFTEST_FILES を付けると、一時フォルダのリポジトリで、右の面のファイルの木・ファイルのタブ・
+// 作業ごとのタブの切り替え・右の面の切り替えを確かめる
+async function runFilesTest({ win, js, check, outDir }) {
+  const { execFileSync } = require('child_process');
+  const repo = path.join(outDir, 'files-repo');
+  fs.mkdirSync(path.join(repo, 'src'), { recursive: true });
+  fs.writeFileSync(path.join(repo, 'src', 'a.js'), 'const answer = 42;\nfunction hello(name) {\n  return `hi ${name}`;\n}\n');
+  fs.writeFileSync(path.join(repo, 'README.md'), '# sample\n');
+  fs.copyFileSync(path.join(__dirname, '..', 'build', 'icon.png'), path.join(repo, 'icon.png'));
+  fs.writeFileSync(path.join(repo, 'data.bin'), Buffer.from([0, 1, 2, 3, 0, 255]));
+  execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repo });
+  const shot = (name) => win.webContents.capturePage().then((img) => fs.writeFileSync(path.join(outDir, `${name}.png`), img.toPNG()));
+  const tabs = () => js(`[...document.querySelectorAll('#tabs .tab')].map((t) => t.querySelector('.tab__name').textContent)`);
+  const treeNames = () => js(`[...document.querySelectorAll('#files-tree .files__name')].map((n) => n.textContent)`);
+  const clickTree = (name) => js(`[...document.querySelectorAll('#files-tree .files__item')].find((li) => li.querySelector('.files__name').textContent === ${JSON.stringify(name)}).click()`);
+
+  await js(`window.__terp.addProject(${JSON.stringify(repo)})`);
+  const termId = await js(`window.__terp.open(${JSON.stringify(repo)})`);
+  await sleep(2500);
+  await js(`document.getElementById('files-toggle').click()`);
+  await sleep(1000);
+  const names = await treeNames();
+  check('右の面にリポジトリの中身が出る', names.includes('src') && names.includes('README.md') && !names.includes('.git'), names.join(', '));
+  await clickTree('src');
+  await sleep(800);
+  check('フォルダを開くと中身が出る', (await treeNames()).includes('a.js'));
+  await clickTree('a.js');
+  await sleep(1200);
+  check('ファイルを押すとタブで開く', (await js('window.__terp.activeKey')) === `f:${path.join(repo, 'src', 'a.js')}`, await js('window.__terp.activeKey'));
+  const t1 = await tabs();
+  check('上のタブにターミナルとファイルが並ぶ', t1.length === 2 && t1[1] === 'a.js', t1.join(', '));
+  const colored = await js(`document.querySelectorAll('.fileview:not([hidden]) .hljs-keyword').length`);
+  const gutter = await js(`document.querySelector('.fileview:not([hidden]) .fileview__gutter').textContent.split(String.fromCharCode(10)).length`);
+  check('ファイルに色付けと行番号が付く', colored > 0 && gutter === 4, `色 ${colored} / 行 ${gutter}`);
+  check('開いているファイルが木で分かる', await js(`document.querySelector('#files-tree [aria-current="true"] .files__name')?.textContent === 'a.js'`));
+  await shot('1-file');
+
+  await clickTree('icon.png');
+  await sleep(1000);
+  check('画像は画像として出る', await js(`Boolean(document.querySelector('.fileview:not([hidden]) .fileview__image'))`));
+  await clickTree('data.bin');
+  await sleep(1000);
+  check('バイナリは中身を出さない', (await js(`document.querySelector('.fileview:not([hidden]) .fileview__notice')?.textContent || ''`)).includes('バイナリ'));
+
+  // ⌘1 相当で1つ目のタブ（ターミナル）へ
+  await js(`window.__terp.activateKey(window.__terp.visibleKeys()[0])`);
+  await sleep(500);
+  check('1つ目のタブへ移れる', (await js('window.__terp.activeKey')) === `t:${termId}`);
+
+  // 作業の外のターミナルを開くと、上のタブはそのまとまりに切り替わる
+  const looseId = await js(`window.__terp.open(${JSON.stringify(os.homedir())})`);
+  await sleep(2000);
+  const t2 = await tabs();
+  // 起動したときの ~ のターミナルも作業の外のため、同じまとまりに並ぶ
+  check('作業の外のターミナルではタブが切り替わる', !t2.includes('a.js') && t2.every((n) => n === '~'), t2.join(', '));
+  // 作業の行を押すと、その作業のタブに戻る
+  await js(`document.querySelector('.work[data-path=${JSON.stringify(repo)}] .work__row').click()`);
+  await sleep(800);
+  const t3 = await tabs();
+  check('作業の行を押すとその作業のタブに戻る', t3.length === 4, t3.join(', '));
+
+  // タブの × で閉じる
+  const before = (await tabs()).length;
+  await js(`[...document.querySelectorAll('#tabs .tab')].find((t) => t.querySelector('.tab__name').textContent === 'data.bin').querySelector('.tab__close').click()`);
+  await sleep(500);
+  check('タブの × でファイルを閉じる', (await tabs()).length === before - 1);
+
+  // 右の面を「変更」に切り替える
+  await js(`document.getElementById('panel-tab-git').click()`);
+  await sleep(1200);
+  check('右の面を変更に切り替えられる', (await js(`document.getElementById('git-view').hidden`)) === false && (await js(`document.getElementById('files-view').hidden`)) === true);
+  await shot('2-git');
+  await js(`window.__terp.activateKey('t:${looseId}')`);
+}
+
 // TERP_SELFTEST_AGENTS を付けると、AI エージェントの検出と起動のボタンを確かめる。
 // 偽のエージェント（引数を表示するだけのスクリプト）を設定ファイルの agents に足して押す
 async function runAgentsTest({ js, check, outDir }) {
@@ -24,6 +99,7 @@ async function runAgentsTest({ js, check, outDir }) {
   ];
   config.skipApprovals = true;
   fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2));
+  await sleep(1200);
   await js('window.__terp.refreshAgents()');
   const after = await commands();
   check('設定ファイルに書いたエージェントが足される', after.includes(fake), after.join(', '));
@@ -93,7 +169,7 @@ async function runGitTest({ win, js, check, outDir }) {
   const text = (selector) => js(`document.querySelector(${JSON.stringify(selector)})?.textContent || ''`);
   const count = (group) => js(`document.querySelectorAll('[data-group="${group}"] .git__file').length`);
   const settle = async () => {
-    await js(`document.getElementById('git-refresh').click()`);
+    await js(`document.getElementById('panel-refresh').click()`);
     await sleep(800);
   };
 
@@ -443,6 +519,13 @@ exports.run = (win) => {
 
     if (process.env.TERP_SELFTEST_GIT) {
       await runGitTest({ win, js, check, outDir });
+      fs.writeFileSync(path.join(outDir, 'result.txt'), log.join('\n') + '\n');
+      await finish();
+      return;
+    }
+
+    if (process.env.TERP_SELFTEST_FILES) {
+      await runFilesTest({ win, js, check, outDir });
       fs.writeFileSync(path.join(outDir, 'result.txt'), log.join('\n') + '\n');
       await finish();
       return;
