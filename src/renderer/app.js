@@ -6,7 +6,10 @@ import { WebLinksAddon } from '../../node_modules/@xterm/addon-web-links/lib/add
 
 const terp = window.terp;
 const container = document.getElementById('terminals');
-const list = document.getElementById('session-list');
+const projectsEl = document.getElementById('projects');
+const looseSection = document.getElementById('loose');
+const looseList = looseSection.querySelector('.session-list');
+const noProjects = document.getElementById('no-projects');
 const empty = document.getElementById('empty');
 const configError = document.getElementById('config-error');
 
@@ -25,8 +28,10 @@ function parseTitle(raw) {
   return { working: WORKING_MARKS.test(mark) && mark !== '✳', text: DEFAULT_TITLES.has(text) ? '' : text };
 }
 
-// 一覧の並び順どおりに持つ
+// 作った順に持つ。一覧の並び順は orderedIds() で一覧の DOM から読む
 const sessions = new Map();
+// projects.json のリポジトリと、その worktree。git から読み直す（refreshProjects）
+let projects = [];
 let activeId = null;
 // 最近表示した順。⌃Tab で直前へ戻るのに使う
 let recent = [];
@@ -68,12 +73,27 @@ function isAgent(s) {
   return Boolean(s.program) && !SHELLS.has(s.program);
 }
 
-// 名前の優先順: 自分で付けた名前 > claude などが作った題名 > 作業場所のフォルダ名
+// 作業（worktree）の下での場所。作業の一番上なら空
+function placeInWork(s, w) {
+  return s.cwd === w.path ? '' : s.cwd.slice(w.path.length + 1);
+}
+
+// 名前の優先順: 自分で付けた名前 > claude などが作った題名 > 作業の下ならプログラム名 > 作業場所のフォルダ名
 function displayName(s) {
   if (s.customName) return s.customName;
   if (isAgent(s) && s.agentTitle) return s.agentTitle;
+  const w = workOf(s);
+  // 作業の行に名前が出ているため、ターミナルの行で同じ名前を繰り返さない
+  if (w) return isAgent(s) ? s.program : 'シェル';
   if (!s.cwd || s.cwd === terp.home) return '~';
   return s.cwd.split('/').pop();
+}
+
+// 2行目: 作業の下なら作業からの場所、それ以外は ~ からの場所
+function placeLabel(s) {
+  const w = workOf(s);
+  if (w) return placeInWork(s, w);
+  return shortPath(s.cwd) === displayName(s) ? '' : shortPath(s.cwd);
 }
 
 function stateOf(s) {
@@ -86,31 +106,274 @@ function stateOf(s) {
 
 const STATE_LABELS = { busy: '出力中', unread: '未読の出力あり', notify: '通知あり', idle: '待機中' };
 
-function renderItem(s) {
+// ⌘1〜⌘9 と前後の移動は、一覧に見えている順に従う
+function orderedIds() {
+  return [...document.querySelectorAll('#tree .session')].map((li) => Number(li.dataset.id));
+}
+
+function renderItem(s, index = orderedIds().indexOf(s.id)) {
   const li = s.li;
-  const index = [...sessions.keys()].indexOf(s.id);
   const state = stateOf(s);
   li.dataset.state = state;
   li.setAttribute('aria-current', String(s.id === activeId));
   li.title = [s.title, shortPath(s.cwd)].filter(Boolean).join('\n');
   li.querySelector('.session__dot').setAttribute('aria-label', STATE_LABELS[state]);
-  const name = li.querySelector('.session__name');
-  if (name) name.textContent = displayName(s);
-  const program = isAgent(s) ? s.program : '';
-  // 名前と同じ「~」を2行に重ねて出さない
-  const place = shortPath(s.cwd) === displayName(s) ? '' : shortPath(s.cwd);
-  li.querySelector('.session__sub').textContent = [program, place].filter(Boolean).join(' · ');
+  const nameEl = li.querySelector('.session__name');
+  if (nameEl) nameEl.textContent = displayName(s);
+  const name = displayName(s);
+  // 名前がプログラム名なら2行目で繰り返さない
+  const program = isAgent(s) && name !== s.program ? s.program : '';
+  li.querySelector('.session__sub').textContent = [program, placeLabel(s)].filter(Boolean).join(' · ');
   li.querySelector('.session__key').textContent = index < 9 ? `⌘${index + 1}` : '';
 }
 
 function renderAll() {
-  for (const s of sessions.values()) renderItem(s);
+  placeSessions();
+  const order = orderedIds();
+  for (const s of sessions.values()) renderItem(s, order.indexOf(s.id));
+  for (const el of projectsEl.querySelectorAll('.work')) {
+    const active = sessions.get(activeId);
+    el.querySelector('.work__row').setAttribute('aria-current', String(Boolean(active) && workOf(active)?.path === el.dataset.path));
+  }
   empty.hidden = sessions.size > 0;
 }
+
+// ---- 作業（worktree） ----
+
+function allWorks() {
+  return projects.flatMap((p) => p.worktrees.map((w) => ({ ...w, repo: p.path })));
+}
+
+// ターミナルの作業場所を含む worktree のうち、いちばん深いもの
+function workOf(s) {
+  let found = null;
+  for (const w of allWorks()) {
+    if ((s.cwd === w.path || s.cwd?.startsWith(w.path + '/')) && (!found || w.path.length > found.path.length)) found = w;
+  }
+  return found;
+}
+
+function workLabel(w) {
+  return w.branch || `（ブランチなし）${w.head}`;
+}
+
+const BRANCH_ICON = `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="6" r="2" /><circle cx="6" cy="18" r="2" /><circle cx="18" cy="8" r="2" /><path d="M6 8v8M18 10c0 4-6 3-6 8" /></svg>`;
+const PLUS_ICON = `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>`;
+const CLOSE_ICON = `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>`;
+const TRASH_ICON = `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V4h6v3" /></svg>`;
+
+function escapeHtml(text) {
+  return String(text).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+}
+
+// リポジトリと作業の行を描き直す。ターミナルの行（li）は作り直さず、placeSessions で入れ替える
+function renderProjects() {
+  // 描き直す前に、ターミナルの行を退避しておく
+  for (const s of sessions.values()) looseList.appendChild(s.li);
+  projectsEl.innerHTML = '';
+  for (const p of projects) {
+    const section = document.createElement('section');
+    section.className = 'project';
+    section.dataset.path = p.path;
+    section.innerHTML = `
+      <div class="project__head" title="${escapeHtml(shortPath(p.path))}">
+        <span class="project__name">${escapeHtml(p.name)}</span>
+        <button class="icon-btn" type="button" data-action="new-work" aria-label="${escapeHtml(p.name)} に新しい作業を作る" title="新しい作業">${PLUS_ICON}</button>
+        <button class="icon-btn icon-btn--hover" type="button" data-action="forget" aria-label="${escapeHtml(p.name)} を一覧から外す" title="一覧から外す（ファイルは消さない）">${CLOSE_ICON}</button>
+      </div>`;
+    section.querySelector('[data-action="new-work"]').addEventListener('click', () => openWorkDialog(p.path));
+    section.querySelector('[data-action="forget"]').addEventListener('click', async () => {
+      await terp.removeProject(p.path);
+      refreshProjects();
+    });
+    if (p.error) {
+      const err = document.createElement('p');
+      err.className = 'project__error';
+      err.textContent = p.error;
+      section.appendChild(err);
+    }
+    for (const w of p.worktrees) {
+      const work = document.createElement('div');
+      work.className = 'work';
+      work.dataset.path = w.path;
+      const changes = w.changes ? `<span class="badge" title="変更のあるファイル">${w.changes}</span>` : '';
+      const main = w.main ? '<span class="work__tag">本体</span>' : '';
+      const remove = w.main
+        ? ''
+        : `<button class="icon-btn icon-btn--hover" type="button" data-action="remove" aria-label="作業 ${escapeHtml(workLabel(w))} を削除" title="作業を削除">${TRASH_ICON}</button>`;
+      work.innerHTML = `
+        <div class="work__row" role="button" tabindex="0" title="${escapeHtml(shortPath(w.path))}">
+          ${BRANCH_ICON}
+          <span class="work__name">${escapeHtml(workLabel(w))}</span>
+          ${main}${changes}${remove}
+        </div>
+        <ul class="session-list"></ul>`;
+      const row = work.querySelector('.work__row');
+      row.addEventListener('click', (e) => {
+        if (e.target.closest('[data-action="remove"]')) return;
+        openWork({ ...w, repo: p.path });
+      });
+      row.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') openWork({ ...w, repo: p.path });
+      });
+      work.querySelector('[data-action="remove"]')?.addEventListener('click', () => openRemoveDialog({ ...w, repo: p.path }));
+      section.appendChild(work);
+    }
+    projectsEl.appendChild(section);
+  }
+  noProjects.hidden = projects.length > 0;
+  renderAll();
+}
+
+// 各ターミナルの行を、作業場所を含む作業の下へ動かす。どれにも入らないものは「その他」へ
+function placeSessions() {
+  for (const s of sessions.values()) {
+    const w = workOf(s);
+    const target = (w && projectsEl.querySelector(`.work[data-path="${CSS.escape(w.path)}"] .session-list`)) || looseList;
+    // 名前の編集中に動かすと入力欄の選択が外れるため、動かす必要があるときだけ動かす
+    if (s.li.parentElement !== target) {
+      const after = [...target.children].find((li) => Number(li.dataset.id) > s.id);
+      target.insertBefore(s.li, after || null);
+    }
+  }
+  looseSection.hidden = looseList.children.length === 0;
+}
+
+async function refreshProjects() {
+  const res = await terp.listProjects();
+  if (!res.ok) return;
+  const next = res.value;
+  // 変わっていなければ描き直さない（ホバー中のボタンがちらつくため）
+  if (JSON.stringify(next) === JSON.stringify(projects)) return;
+  projects = next;
+  renderProjects();
+}
+
+// 作業を開く: その作業のターミナルのうち最近見たものへ移る。無ければ新しく開く
+function openWork(w) {
+  const inWork = recent.find((id) => workOf(sessions.get(id))?.path === w.path);
+  if (inWork !== undefined) activate(inWork);
+  else openTerminal({ cwd: w.path });
+}
+
+async function addProject(dir) {
+  const res = await terp.addProject(dir);
+  if (res.ok && res.value) await refreshProjects();
+  return res;
+}
+
+// ---- 作業の作成と削除の画面 ----
+
+const workDialog = document.getElementById('work-dialog');
+const removeDialog = document.getElementById('remove-dialog');
+
+function setDialogError(dialog, message) {
+  const el = dialog.querySelector('.dialog__error');
+  el.textContent = message || '';
+  el.hidden = !message;
+}
+
+function openWorkDialog(repo) {
+  if (projects.length === 0) {
+    addProject().then((res) => res.ok && res.value && openWorkDialog(res.value));
+    return;
+  }
+  const form = workDialog.querySelector('form');
+  const select = form.elements.repo;
+  const current = repo || workOf(sessions.get(activeId) || {})?.repo || projects[0].path;
+  select.innerHTML = projects
+    .map((p) => `<option value="${escapeHtml(p.path)}"${p.path === current ? ' selected' : ''}>${escapeHtml(p.name)}</option>`)
+    .join('');
+  const syncBase = () => (form.elements.base.value = projects.find((p) => p.path === select.value)?.base || '');
+  select.onchange = syncBase;
+  syncBase();
+  form.elements.branch.value = '';
+  setDialogError(workDialog, '');
+  workDialog.showModal();
+  form.elements.branch.focus();
+}
+
+async function submitWork() {
+  const form = workDialog.querySelector('form');
+  const submit = form.querySelector('[data-action="submit"]');
+  const opts = { repo: form.elements.repo.value, branch: form.elements.branch.value.trim(), base: form.elements.base.value.trim() };
+  if (!opts.branch || !opts.base) {
+    setDialogError(workDialog, 'ブランチ名と元にするブランチを入れてください');
+    return;
+  }
+  submit.disabled = true;
+  submit.textContent = '作成中…';
+  const res = await terp.createWork(opts);
+  submit.disabled = false;
+  submit.textContent = '作成';
+  if (!res.ok) {
+    setDialogError(workDialog, res.error);
+    return;
+  }
+  workDialog.close();
+  await refreshProjects();
+  const s = await openTerminal({ cwd: res.value });
+  // シェルは起動前の入力をためておくため、すぐ送ってよい
+  const command = form.elements.command.value;
+  if (command) terp.write(s.id, command + '\r');
+}
+
+let removing = null;
+
+async function openRemoveDialog(w) {
+  removing = w;
+  const terminals = [...sessions.values()].filter((s) => workOf(s)?.path === w.path).length;
+  const res = await terp.workChanges(w.path);
+  const changes = res.ok ? res.value : 0;
+  removeDialog.querySelector('[data-field="branch"]').textContent = workLabel(w);
+  removeDialog.querySelector('[data-field="path"]').textContent = shortPath(w.path);
+  const submit = removeDialog.querySelector('[data-action="submit"]');
+  const note = removeDialog.querySelector('[data-field="note"]');
+  if (changes > 0) {
+    note.textContent = `変更のあるファイルが ${changes} 件残っているため削除できません。コミットするか、変更を片付けてから削除してください。`;
+    note.dataset.tone = 'warning';
+    submit.disabled = true;
+  } else {
+    const closing = terminals ? `この作業のターミナル ${terminals} 枚を閉じます。` : '';
+    note.textContent = `${closing}作業の場所を削除します。ブランチ ${workLabel(w)} は残ります。`;
+    note.dataset.tone = '';
+    submit.disabled = false;
+  }
+  setDialogError(removeDialog, '');
+  removeDialog.showModal();
+}
+
+async function submitRemove() {
+  const w = removing;
+  if (!w) return;
+  for (const s of [...sessions.values()]) if (workOf(s)?.path === w.path) closeSession(s.id);
+  const res = await terp.removeWork({ repo: w.repo, dir: w.path });
+  if (!res.ok) {
+    setDialogError(removeDialog, res.error);
+    return;
+  }
+  removeDialog.close();
+  removing = null;
+  refreshProjects();
+}
+
+for (const dialog of [workDialog, removeDialog]) {
+  dialog.querySelector('[data-action="cancel"]').addEventListener('click', () => dialog.close());
+  dialog.addEventListener('close', () => sessions.get(activeId)?.term.focus());
+}
+workDialog.querySelector('form').addEventListener('submit', (e) => {
+  e.preventDefault();
+  submitWork();
+});
+removeDialog.querySelector('form').addEventListener('submit', (e) => {
+  e.preventDefault();
+  submitRemove();
+});
 
 function createItem(s) {
   const li = document.createElement('li');
   li.className = 'session';
+  li.dataset.id = String(s.id);
   li.innerHTML = `
     <span class="session__dot" role="img"></span>
     <span class="session__name"></span>
@@ -128,7 +391,7 @@ function createItem(s) {
     if (e.target.closest('.session__close')) return;
     startRename(s);
   });
-  list.appendChild(li);
+  looseList.appendChild(li);
   return li;
 }
 
@@ -318,7 +581,7 @@ function switchRecent() {
 }
 
 function switchOffset(offset) {
-  const order = [...sessions.keys()];
+  const order = orderedIds();
   if (order.length === 0) return;
   const index = order.indexOf(activeId);
   activate(order[(index + offset + order.length) % order.length]);
@@ -366,12 +629,18 @@ terp.onMenu((action, arg) => {
       else s?.term.selectAll();
       break;
     case 'select-index': {
-      const id = [...sessions.keys()][arg];
+      const id = orderedIds()[arg];
       if (id !== undefined) activate(id);
       break;
     }
     case 'recent':
       switchRecent();
+      break;
+    case 'new-work':
+      openWorkDialog();
+      break;
+    case 'add-project':
+      addProject();
       break;
     case 'prev':
       switchOffset(-1);
@@ -384,6 +653,13 @@ terp.onMenu((action, arg) => {
 
 document.getElementById('new-terminal').addEventListener('click', () => newTerminal());
 document.getElementById('empty-new').addEventListener('click', () => newTerminal());
+document.getElementById('new-work').addEventListener('click', () => openWorkDialog());
+document.getElementById('add-project').addEventListener('click', () => addProject());
+document.getElementById('empty-add-project').addEventListener('click', () => addProject());
+
+// 外で作った worktree や変更の数を拾うため、定期的に git から読み直す
+setInterval(refreshProjects, 5000);
+window.addEventListener('focus', refreshProjects);
 
 // 出力中の印を時間で消すため、状態だけ定期的に描き直す
 setInterval(renderAll, 500);
@@ -399,6 +675,14 @@ window.__terp = {
   get config() {
     return config;
   },
+  get projects() {
+    return projects;
+  },
+  addProject,
+  refreshProjects,
+  openWorkDialog,
+  openRemoveDialog,
+  workOf: (id) => workOf(sessions.get(id))?.path || null,
   bufferText(id) {
     const buf = sessions.get(id).term.buffer.active;
     const lines = [];
@@ -408,4 +692,6 @@ window.__terp = {
 };
 
 applyConfig(config);
+await refreshProjects();
+noProjects.hidden = projects.length > 0;
 openTerminal();

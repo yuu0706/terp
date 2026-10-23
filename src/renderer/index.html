@@ -11,13 +11,45 @@
     <link rel="stylesheet" href="style.css" />
   </head>
   <body>
-    <nav id="sidebar" aria-label="ターミナルの一覧">
+    <nav id="sidebar" aria-label="作業とターミナルの一覧">
       <div class="sidebar__head">
-        <span class="sidebar__title">ターミナル</span>
+        <span class="sidebar__title">作業</span>
+        <button id="add-project" class="icon-btn" type="button" aria-label="リポジトリを追加" title="リポジトリを追加">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+            <path d="M12 11v5M9.5 13.5h5" />
+          </svg>
+        </button>
       </div>
-      <ul id="session-list" class="session-list"></ul>
+      <div id="tree" class="tree">
+        <div id="no-projects" class="tree__empty" hidden>
+          <p>リポジトリを追加すると、作業（worktree）ごとにターミナルをまとめられます</p>
+          <button id="empty-add-project" class="btn" type="button">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+              <path d="M12 11v5M9.5 13.5h5" />
+            </svg>
+            <span>リポジトリを追加</span>
+          </button>
+        </div>
+        <div id="projects"></div>
+        <section id="loose" class="project" hidden>
+          <div class="project__head">
+            <span class="project__name">その他のターミナル</span>
+          </div>
+          <ul class="session-list"></ul>
+        </section>
+      </div>
       <p id="config-error" class="config-error" role="alert" hidden></p>
       <div class="sidebar__foot">
+        <button id="new-work" class="btn btn--block-sm" type="button">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="6" cy="6" r="2" /><circle cx="6" cy="18" r="2" /><circle cx="18" cy="8" r="2" />
+            <path d="M6 8v8M18 10c0 4-6 3-6 8" />
+          </svg>
+          <span>新しい作業</span>
+          <kbd class="btn__key">⌘N</kbd>
+        </button>
         <button id="new-terminal" class="btn btn--primary btn--block" type="button">
           <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
           <span>新しいターミナル</span>
@@ -34,6 +66,56 @@
         </button>
       </div>
     </main>
+
+    <dialog id="work-dialog" class="dialog" aria-labelledby="work-dialog-title">
+      <form method="dialog" class="dialog__body">
+        <h2 id="work-dialog-title" class="dialog__title">新しい作業</h2>
+        <label class="field">
+          <span class="field__label">リポジトリ</span>
+          <select name="repo" class="input" required></select>
+        </label>
+        <label class="field">
+          <span class="field__label">ブランチ名</span>
+          <input name="branch" class="input" required autocomplete="off" spellcheck="false" placeholder="feature/add-login" />
+        </label>
+        <label class="field">
+          <span class="field__label">元にするブランチ</span>
+          <input name="base" class="input" required autocomplete="off" spellcheck="false" />
+        </label>
+        <label class="field">
+          <span class="field__label">作ったら起動する</span>
+          <select name="command" class="input">
+            <option value="claude">claude</option>
+            <option value="codex">codex</option>
+            <option value="">起動しない</option>
+          </select>
+        </label>
+        <p class="dialog__error" role="alert" hidden></p>
+        <div class="dialog__actions">
+          <button type="button" class="btn" data-action="cancel">キャンセル</button>
+          <button type="submit" class="btn btn--primary" data-action="submit">作成</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="remove-dialog" class="dialog" aria-labelledby="remove-dialog-title">
+      <form method="dialog" class="dialog__body">
+        <h2 id="remove-dialog-title" class="dialog__title">作業を削除</h2>
+        <dl class="dialog__facts">
+          <dt>ブランチ</dt>
+          <dd data-field="branch"></dd>
+          <dt>場所</dt>
+          <dd data-field="path"></dd>
+        </dl>
+        <p class="dialog__note" data-field="note"></p>
+        <p class="dialog__error" role="alert" hidden></p>
+        <div class="dialog__actions">
+          <button type="button" class="btn" data-action="cancel">キャンセル</button>
+          <button type="submit" class="btn btn--danger" data-action="submit">削除</button>
+        </div>
+      </form>
+    </dialog>
+
     <script type="module" src="app.js"></script>
   </body>
 </html>

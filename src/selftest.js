@@ -6,6 +6,82 @@ const { app, clipboard } = require('electron');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// TERP_SELFTEST_WORK を付けると、一時フォルダに git のリポジトリを作り、作業（worktree）の
+// 追加・作成・振り分け・削除を確かめる。TERP_CONFIG_DIR に一時フォルダを指定すること
+async function runWorkTest({ win, js, check, outDir }) {
+  const { execFileSync } = require('child_process');
+  const sh = (args, cwd) => execFileSync('git', args, { cwd, encoding: 'utf8' });
+  const repo = path.join(outDir, 'sample-repo');
+  fs.rmSync(repo, { recursive: true, force: true });
+  fs.rmSync(`${repo}.worktrees`, { recursive: true, force: true });
+  fs.mkdirSync(repo, { recursive: true });
+  sh(['init', '-q', '-b', 'main'], repo);
+  sh(['config', 'user.name', 'test'], repo);
+  sh(['config', 'user.email', 'test@example.com'], repo);
+  fs.writeFileSync(path.join(repo, 'README.md'), '# sample\n');
+  sh(['add', '.'], repo);
+  sh(['commit', '-q', '-m', 'init'], repo);
+
+  const tree = () => js(`document.getElementById('tree').innerText`);
+  const firstId = await js('window.__terp.activeId');
+  fs.writeFileSync(path.join(outDir, '0-start.txt'), await js(`window.__terp.bufferText(${firstId})`));
+  const res = await js(`window.__terp.addProject(${JSON.stringify(repo)})`);
+  check('リポジトリを追加できる', res.ok, res.error || '');
+  const t1 = await tree();
+  check('本体の作業が一覧に出る', t1.includes('sample-repo') && t1.includes('main') && t1.includes('本体'), t1.replace(/\n/g, ' | '));
+
+  // 画面の入力欄に値を入れて「作成」を押す
+  await js(`(() => {
+    window.__terp.openWorkDialog(${JSON.stringify(repo)});
+    const f = document.querySelector('#work-dialog form');
+    f.elements.branch.value = 'feature/try-terp';
+    f.elements.command.value = '';
+  })()`);
+  await sleep(300);
+  fs.writeFileSync(path.join(outDir, '0-after-dialog.txt'), await js(`window.__terp.bufferText(${firstId})`));
+  await win.webContents.capturePage().then((img) => fs.writeFileSync(path.join(outDir, '1-dialog.png'), img.toPNG()));
+  await js(`document.querySelector('#work-dialog form').requestSubmit()`);
+  await sleep(2500);
+  const dest = `${repo}.worktrees/feature-try-terp`;
+  check('作成で worktree ができる', fs.existsSync(path.join(dest, 'README.md')), dest);
+  const activeWork = await js('window.__terp.workOf(window.__terp.activeId)');
+  check('作った作業でターミナルが開く', activeWork === dest, activeWork);
+  const t2 = await tree();
+  check('作業が一覧に出る', t2.includes('feature/try-terp'), t2.replace(/\n/g, ' | '));
+
+  // 外で作った worktree も拾う
+  sh(['worktree', 'add', '-q', '-b', 'outside', `${repo}-outside`], repo);
+  await js('window.__terp.refreshProjects()');
+  await sleep(500);
+  check('外で作った worktree も一覧に出る', (await tree()).includes('outside'));
+
+  // 変更が残っていると削除できない
+  fs.writeFileSync(path.join(dest, 'note.txt'), 'wip\n');
+  await js('window.__terp.refreshProjects()');
+  await sleep(500);
+  const badge = await js(`document.querySelector('.work[data-path="${dest}"] .badge')?.textContent || ''`);
+  check('変更の数が出る', badge === '1', badge);
+  await win.webContents.capturePage().then((img) => fs.writeFileSync(path.join(outDir, '2-tree.png'), img.toPNG()));
+  const work = `window.__terp.projects[0].worktrees.find((w) => w.path === ${JSON.stringify(dest)})`;
+  await js(`window.__terp.openRemoveDialog({ ...${work}, repo: ${JSON.stringify(repo)} })`);
+  await sleep(500);
+  const blocked = await js(`document.querySelector('#remove-dialog [data-action="submit"]').disabled`);
+  check('変更が残る作業は削除できない', blocked === true);
+  await win.webContents.capturePage().then((img) => fs.writeFileSync(path.join(outDir, '3-remove-blocked.png'), img.toPNG()));
+  await js(`document.getElementById('remove-dialog').close()`);
+
+  // 片付けたら削除でき、ブランチは残る
+  fs.rmSync(path.join(dest, 'note.txt'));
+  await js(`window.__terp.openRemoveDialog({ ...${work}, repo: ${JSON.stringify(repo)} })`);
+  await sleep(500);
+  await js(`document.querySelector('#remove-dialog form').requestSubmit()`);
+  await sleep(2000);
+  check('削除で worktree が消える', !fs.existsSync(dest));
+  check('削除してもブランチは残る', sh(['branch', '--list', 'feature/try-terp'], repo).includes('feature/try-terp'));
+  const sessionsLeft = await js(`[...window.__terp.sessions.values()].filter((s) => s.cwd?.startsWith(${JSON.stringify(dest)})).length`);
+  check('作業のターミナルは閉じる', sessionsLeft === 0, `残り ${sessionsLeft}`);
+}
+
 // TERP_SELFTEST_THEME を付けると、設定ファイルを書き換えてテーマと透過の反映を確かめる。
 // TERP_CONFIG_DIR に一時フォルダを指定し、利用者の設定を書き換えないこと
 async function runThemeTest({ win, js, send, check, outDir }) {
@@ -93,7 +169,7 @@ exports.run = (win) => {
       }
       return false;
     };
-    const sidebar = () => js(`document.getElementById('session-list').innerText`);
+    const sidebar = () => js(`document.getElementById('tree').innerText`);
     fs.mkdirSync(outDir, { recursive: true });
 
     await sleep(2500);
@@ -125,6 +201,13 @@ exports.run = (win) => {
       await sleep(300);
       await send(id, '\x03');
       await sleep(1500);
+      app.quit();
+      return;
+    }
+
+    if (process.env.TERP_SELFTEST_WORK) {
+      await runWorkTest({ win, js, check, outDir });
+      fs.writeFileSync(path.join(outDir, 'result.txt'), log.join('\n') + '\n');
       app.quit();
       return;
     }
@@ -182,8 +265,12 @@ exports.run = (win) => {
     await sleep(2500);
     const doneState = await stateOf(id2);
     check('応答が終わったら通知の印が付く', doneState === 'notify', doneState);
-    await sleep(2500);
-    const shellName = await nameOf(id2);
+    // 作業場所とプログラム名は 1.5 秒ごとに拾うため、抜けたのが伝わるまで待つ
+    let shellName = '';
+    for (let t = 0; t < 40 && shellName !== 'terp'; t++) {
+      await sleep(250);
+      shellName = await nameOf(id2);
+    }
     check('claude を抜けたらフォルダ名に戻る', shellName === 'terp', shellName);
 
     // ⌘W 相当で3枚目を閉じる

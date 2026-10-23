@@ -101,6 +101,7 @@ function chromeColors(t, accent) {
     accent,
     busy: t.palette[2],
     warning: t.palette[3],
+    danger: t.palette[1],
   };
 }
 
@@ -162,10 +163,12 @@ function loadConfig() {
 function watchConfig(onChange) {
   let timer = null;
   // エディタは保存のときにファイルを置き換えることがあるため、フォルダごと見る
-  fs.watch(CONFIG_DIR, () => {
+  fs.watch(CONFIG_DIR, (_event, filename) => {
+    // 同じフォルダの projects.json の書き換えでは読み直さない
+    if (filename && filename !== 'config.json') return;
     clearTimeout(timer);
     timer = setTimeout(() => onChange(loadConfig()), 150);
   });
 }
 
-module.exports = { CONFIG_PATH, ensureConfigFile, loadConfig, watchConfig, parseGhosttyTheme };
+module.exports = { CONFIG_DIR, CONFIG_PATH, ensureConfigFile, loadConfig, watchConfig, parseGhosttyTheme };

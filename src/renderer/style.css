@@ -10,6 +10,7 @@
   --color-accent: #89b4fa;
   --color-busy: #a6e3a1;
   --color-warning: #f9e2af;
+  --color-danger: #f38ba8;
   /* 透過を付けた面の色。app.js が設定の不透明度から作る */
   --surface-term: var(--color-term-bg);
   --surface-sidebar: var(--color-bg);
@@ -79,7 +80,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 var(--space-3) 0 80px;
+  padding: 0 var(--space-2) 0 80px;
   -webkit-app-region: drag;
 }
 
@@ -111,8 +112,18 @@ body {
 /* 端末の入力欄は画面の下にあるため、新規作成も下に置いて視線の移動を減らす */
 .sidebar__foot {
   flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
   padding: var(--space-2);
   border-top: 1px solid var(--color-border);
+}
+
+.btn--block-sm {
+  width: 100%;
+  height: 32px;
+  padding: 0 var(--space-3);
+  font-size: var(--text-md);
 }
 
 .btn--block {
@@ -149,12 +160,158 @@ body {
   stroke-linecap: round;
 }
 
+/* ---- 一覧: リポジトリ > 作業（worktree） > ターミナル ---- */
+.tree {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  position: relative;
+  padding: 0 var(--space-2) var(--space-2);
+}
+
+.tree__empty {
+  padding: var(--space-3) var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+.tree__empty p {
+  margin: 0 0 var(--space-2);
+}
+
+.tree__empty[hidden],
+.project[hidden] {
+  display: none;
+}
+
+.project + .project,
+#projects:not(:empty) + .project {
+  margin-top: var(--space-3);
+}
+
+.project__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  height: 28px;
+  padding: 0 var(--space-1) 0 var(--space-2);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--color-text-muted);
+}
+
+.project__name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.project__error {
+  margin: 0 var(--space-2) var(--space-1);
+  font-size: var(--text-sm);
+  color: var(--color-warning);
+  overflow-wrap: anywhere;
+}
+
+.work__row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: 32px;
+  padding: 0 var(--space-1) 0 var(--space-2);
+  border-radius: var(--radius);
+  font-size: var(--text-md);
+  cursor: pointer;
+  outline-offset: -2px;
+}
+
+.work__row:hover {
+  background: var(--color-bg-hover);
+}
+
+.work__row[aria-current='true'] {
+  color: var(--color-accent);
+}
+
+.work__row .icon {
+  flex: none;
+  color: var(--color-text-muted);
+}
+
+.work__row[aria-current='true'] .icon {
+  color: var(--color-accent);
+}
+
+.work__name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.work__tag,
+.badge {
+  flex: none;
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: var(--text-sm);
+  line-height: 18px;
+}
+
+.work__tag {
+  color: var(--color-text-muted);
+  border: 1px solid var(--color-border);
+}
+
+.badge {
+  color: var(--color-bg);
+  background: var(--color-warning);
+  font-variant-numeric: tabular-nums;
+}
+
+.icon-btn {
+  -webkit-app-region: no-drag;
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+}
+
+.icon-btn:hover {
+  background: var(--color-bg-active);
+  color: var(--color-text);
+}
+
+/* 消す・外すのボタンは、行にマウスを載せたときとキーボードで選んだときだけ出す */
+.icon-btn--hover {
+  visibility: hidden;
+}
+
+.project__head:hover .icon-btn--hover,
+.work__row:hover .icon-btn--hover,
+.icon-btn--hover:focus-visible {
+  visibility: visible;
+}
+
 .session-list {
   list-style: none;
   margin: 0;
-  padding: 0 var(--space-2) var(--space-2);
-  overflow-y: auto;
-  flex: 1;
+  padding: 0;
+}
+
+/* 作業の下のターミナルは1段下げる */
+.work .session {
+  margin-left: var(--space-3);
 }
 
 .session {
@@ -321,4 +478,112 @@ body {
    背景はテーマの色を .term の奥の面で出すので、ここは透明にして透過を通す */
 .term .xterm .xterm-viewport {
   background-color: transparent;
+}
+
+/* ---- 作業の作成・削除の画面 ---- */
+.btn--danger {
+  border-color: var(--color-danger);
+  color: var(--color-danger);
+}
+
+.btn--danger:hover {
+  background: var(--color-danger);
+  color: var(--color-bg);
+}
+
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.dialog {
+  width: min(440px, calc(100vw - 32px));
+  padding: 0;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  background: var(--color-bg);
+  color: var(--color-text);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+}
+
+.dialog::backdrop {
+  background: rgba(0, 0, 0, 0.45);
+}
+
+.dialog__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: 20px;
+}
+
+.dialog__title {
+  margin: 0;
+  font-size: 16px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.field__label {
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+.input {
+  height: 32px;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-term-bg);
+  color: var(--color-text);
+  font: inherit;
+}
+
+.input:focus {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -1px;
+}
+
+.dialog__facts {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--space-1) var(--space-3);
+  margin: 0;
+  font-size: var(--text-md);
+}
+
+.dialog__facts dt {
+  color: var(--color-text-muted);
+}
+
+.dialog__facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.dialog__note {
+  margin: 0;
+  font-size: var(--text-md);
+}
+
+.dialog__note[data-tone='warning'],
+.dialog__error {
+  margin: 0;
+  color: var(--color-warning);
+  overflow-wrap: anywhere;
+}
+
+.dialog__error[hidden] {
+  display: none;
+}
+
+.dialog__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  margin-top: var(--space-1);
 }

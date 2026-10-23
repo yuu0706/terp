@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, ipcMain, shell } = require('electron');
+const { app, BrowserWindow, Menu, dialog, ipcMain, shell } = require('electron');
 const { execFile } = require('child_process');
 const path = require('path');
 const fs = require('fs');
@@ -6,6 +6,8 @@ const os = require('os');
 const pty = require('node-pty');
 const config = require('./config');
 const { setBlur } = require('./blur');
+const projects = require('./projects');
+const gitops = require('./git');
 
 const ptys = new Map();
 let nextId = 1;
@@ -87,6 +89,37 @@ ipcMain.on('home', (event) => {
   event.returnValue = os.homedir();
 });
 ipcMain.handle('config:get', () => config.loadConfig());
+
+// 失敗は例外のまま画面へ渡すと文言が崩れるため、{ error } の形で返す
+const safe = (fn) => async (...args) => {
+  try {
+    return { ok: true, value: await fn(...args) };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+};
+
+ipcMain.handle('projects:list', safe(() => projects.list()));
+// dir を渡さないときはフォルダを選ぶ画面を出す
+ipcMain.handle(
+  'projects:add',
+  safe(async (event, dir) => {
+    if (!dir) {
+      const result = await dialog.showOpenDialog(BrowserWindow.fromWebContents(event.sender), {
+        title: 'リポジトリを追加',
+        buttonLabel: '追加',
+        properties: ['openDirectory'],
+      });
+      if (result.canceled || !result.filePaths[0]) return null;
+      dir = result.filePaths[0];
+    }
+    return projects.add(dir);
+  }),
+);
+ipcMain.handle('projects:remove', safe((_e, repo) => projects.remove(repo)));
+ipcMain.handle('work:create', safe((_e, { repo, branch, base }) => gitops.addWorktree(repo, branch, base)));
+ipcMain.handle('work:remove', safe((_e, { repo, dir }) => gitops.removeWorktree(repo, dir)));
+ipcMain.handle('work:changes', safe((_e, dir) => gitops.changeCount(dir)));
 ipcMain.handle('pty:create', (event, opts) => createPty(event.sender, opts));
 ipcMain.on('pty:write', (_e, id, data) => ptys.get(id)?.proc.write(data));
 ipcMain.on('pty:resize', (_e, id, cols, rows) => {
@@ -128,6 +161,8 @@ function buildMenu() {
       label: 'ターミナル',
       submenu: [
         { label: '新しいターミナル', accelerator: 'CmdOrCtrl+T', click: send('new') },
+        { label: '新しい作業…', accelerator: 'CmdOrCtrl+N', click: send('new-work') },
+        { label: 'リポジトリを追加…', click: send('add-project') },
         { label: 'ターミナルを閉じる', accelerator: 'CmdOrCtrl+W', click: send('close') },
         { type: 'separator' },
         { label: '画面を消去', accelerator: 'CmdOrCtrl+K', click: send('clear') },
