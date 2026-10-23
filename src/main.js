@@ -3,14 +3,18 @@ const { execFile } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
-const pty = require('node-pty');
 const config = require('./config');
 const { setBlur } = require('./blur');
 const projects = require('./projects');
 const gitops = require('./git');
+const snapshot = require('./snapshot');
+const { PtyClient } = require('./ptyclient');
 
-const ptys = new Map();
-let nextId = 1;
+// シェルは常駐のプロセス（ptyhost.js）が持つ。terp を閉じてもシェルは残り、開き直したらつなぎ直す
+const client = new PtyClient();
+let connecting = null;
+// 作業場所と前面のプログラム名の最新の値。控え（snapshot）にも使う
+const known = new Map();
 let win = null;
 
 // 起動元（npm・Electron・Claude Code）の環境変数をシェルへ持ち込まない
@@ -29,26 +33,80 @@ function shellEnv() {
   };
 }
 
-function createPty(sender, { cols, rows, cwd }) {
-  const id = nextId++;
-  const shellPath = process.env.SHELL || '/bin/zsh';
+function ensureClient() {
+  if (client.socket && !client.socket.destroyed) return Promise.resolve();
+  if (!connecting) {
+    connecting = client
+      .connect()
+      .then(({ fresh }) => {
+        // 常駐のプロセスが古い版でも、シェルを守るためそのまま使う。画面で知らせる
+        if (!fresh) win?.webContents.send('host-stale');
+      })
+      .finally(() => (connecting = null));
+  }
+  return connecting;
+}
+
+client.on('data', (id, data) => win?.webContents.send('pty:data', id, data));
+// 終わったシェルを控えから消すのは、閉じる操作（pty:kill）と定期の保存に任せる。
+// 常駐のプロセスごと止まるとき（Mac の終了など）はシェルが1つずつ終わるため、ここで書くと控えが空になる
+client.on('exit', (id, code) => {
+  known.delete(id);
+  win?.webContents.send('pty:exit', id, code);
+});
+// 常駐のプロセスが落ちたら、そのシェルはすべて終わったものとして扱う
+client.on('disconnect', () => {
+  for (const id of known.keys()) win?.webContents.send('pty:exit', id, null);
+  known.clear();
+});
+
+async function createPty({ cols, rows, cwd }) {
+  await ensureClient();
   const startCwd = cwd && fs.existsSync(cwd) ? cwd : os.homedir();
-  const proc = pty.spawn(shellPath, ['-l'], {
-    name: 'xterm-256color',
+  const created = await client.request({
+    t: 'create',
     cols,
     rows,
     cwd: startCwd,
     env: shellEnv(),
+    shell: process.env.SHELL || '/bin/zsh',
   });
-  ptys.set(id, { proc, cwd: startCwd });
-  proc.onData((data) => {
-    if (!sender.isDestroyed()) sender.send('pty:data', id, data);
-  });
-  proc.onExit(({ exitCode }) => {
-    ptys.delete(id);
-    if (!sender.isDestroyed()) sender.send('pty:exit', id, exitCode);
-  });
-  return { id, cwd: startCwd };
+  known.set(created.id, { cwd: startCwd, pid: created.pid, program: '' });
+  return { id: created.id, cwd: startCwd };
+}
+
+// 起動したときに、生きているシェルの一覧と、無ければ前回の控えを返す
+async function restoreInfo() {
+  await ensureClient();
+  const existing = await client.request({ t: 'list' });
+  for (const e of existing) known.set(e.id, { cwd: e.cwd, pid: e.pid, program: '' });
+  return { existing, snapshot: existing.length === 0 ? snapshot.load() : [] };
+}
+
+// 書いている最中に呼ばれたら、その書き込みの終わりを待つ
+let saving = null;
+function saveSnapshot() {
+  if (!saving) saving = writeSnapshot().finally(() => (saving = null));
+  return saving;
+}
+
+async function writeSnapshot() {
+  if (!client.socket || client.socket.destroyed) return;
+  try {
+    const list = await client.request({ t: 'list' });
+    const sessions = await snapshot.claudeSessions(
+      list.filter((e) => known.get(e.id)?.program === 'claude').map((e) => e.pid),
+    );
+    snapshot.save(
+      list.map((e) => ({
+        cwd: known.get(e.id)?.cwd || e.cwd,
+        customName: e.meta.customName || null,
+        claudeSession: sessions.get(e.pid) || null,
+      })),
+    );
+  } catch {
+    // 控えが書けなくても、動いているシェルには影響しない
+  }
 }
 
 // claude の実行ファイルは版番号（例 2.1.309）の名前で動いている
@@ -58,29 +116,26 @@ function programName(name) {
   return /^\d+\.\d+\.\d+$/.test(base) ? 'claude' : base;
 }
 
-// 各シェルの作業場所と、前面で動いているプログラム名を一度の lsof でまとめて拾う
-function pollInfo() {
-  if (!win || win.isDestroyed() || ptys.size === 0) return;
-  const pids = [...ptys.values()].map(({ proc }) => proc.pid).join(',');
+// 各シェルの作業場所と、前面で動いているプログラム名をまとめて拾う
+async function pollInfo() {
+  if (!win || win.isDestroyed() || known.size === 0 || !client.socket || client.socket.destroyed) return;
+  const procs = await client.request({ t: 'info' }).catch(() => []);
+  if (procs.length === 0) return;
   // Finder から起動すると PATH が細いため、絶対パスで呼ぶ
-  execFile('/usr/sbin/lsof', ['-a', '-d', 'cwd', '-Fn', '-p', pids], (_err, stdout = '') => {
+  execFile('/usr/sbin/lsof', ['-a', '-d', 'cwd', '-Fn', '-p', procs.map((p) => p.pid).join(',')], (_err, stdout = '') => {
     const cwdByPid = new Map();
     let pid = null;
     for (const line of stdout.split('\n')) {
       if (line[0] === 'p') pid = Number(line.slice(1));
       else if (line[0] === 'n' && pid) cwdByPid.set(pid, line.slice(1));
     }
-    const info = [];
-    for (const [id, entry] of ptys) {
-      entry.cwd = cwdByPid.get(entry.proc.pid) || entry.cwd;
-      let program = '';
-      try {
-        program = programName(entry.proc.process);
-      } catch {
-        // 終了直後は名前が取れない
-      }
-      info.push({ id, cwd: entry.cwd, program });
-    }
+    const info = procs.map((p) => {
+      const entry = known.get(p.id) || { cwd: '', pid: p.pid };
+      entry.cwd = cwdByPid.get(p.pid) || entry.cwd;
+      entry.program = programName(p.program);
+      known.set(p.id, entry);
+      return { id: p.id, cwd: entry.cwd, program: entry.program };
+    });
     if (!win.isDestroyed()) win.webContents.send('pty:info', info);
   });
 }
@@ -120,16 +175,29 @@ ipcMain.handle('projects:remove', safe((_e, repo) => projects.remove(repo)));
 ipcMain.handle('work:create', safe((_e, { repo, branch, base }) => gitops.addWorktree(repo, branch, base)));
 ipcMain.handle('work:remove', safe((_e, { repo, dir }) => gitops.removeWorktree(repo, dir)));
 ipcMain.handle('work:changes', safe((_e, dir) => gitops.changeCount(dir)));
-ipcMain.handle('pty:create', (event, opts) => createPty(event.sender, opts));
-ipcMain.on('pty:write', (_e, id, data) => ptys.get(id)?.proc.write(data));
-ipcMain.on('pty:resize', (_e, id, cols, rows) => {
-  try {
-    ptys.get(id)?.proc.resize(cols, rows);
-  } catch {
-    // 終了直後の resize は無視する
-  }
+ipcMain.handle('pty:create', (_e, opts) => createPty(opts));
+ipcMain.handle('pty:restore-info', () => restoreInfo());
+ipcMain.handle('pty:attach', async (_e, id) => {
+  await ensureClient();
+  return client.request({ t: 'attach', id });
 });
-ipcMain.on('pty:kill', (_e, id) => ptys.get(id)?.proc.kill());
+ipcMain.on('pty:write', (_e, id, data) => client.send({ t: 'write', id, data }));
+ipcMain.on('pty:resize', (_e, id, cols, rows) => client.send({ t: 'resize', id, cols, rows }));
+ipcMain.on('pty:kill', (_e, id) => {
+  client.send({ t: 'kill', id });
+  // 閉じたターミナルを控えから消す。シェルが終わるのを少し待つ
+  setTimeout(saveSnapshot, 500);
+});
+// 名前などは常駐のプロセスに預け、開き直したときに戻す
+ipcMain.on('pty:meta', (_e, id, meta) => {
+  client.send({ t: 'meta', id, meta });
+  if ('customName' in meta) saveSnapshot();
+});
+// 自己診断で、Mac の再起動に当たる状態（常駐のプロセスごと消える）を作る
+ipcMain.handle('pty:shutdown-host', async () => {
+  await saveSnapshot();
+  return client.request({ t: 'shutdown' });
+});
 ipcMain.on('open-external', (_e, url) => {
   if (/^https?:\/\//.test(url)) shell.openExternal(url);
 });
@@ -227,9 +295,9 @@ app.whenReady().then(() => {
     win.webContents.send('config', loaded);
   });
   setInterval(pollInfo, 1500);
+  setInterval(saveSnapshot, 10000);
 });
 
-app.on('window-all-closed', () => {
-  for (const { proc } of ptys.values()) proc.kill();
-  app.quit();
-});
+// シェルは常駐のプロセスに残すため、ここでは止めない
+app.on('window-all-closed', () => app.quit());
+app.on('before-quit', () => saveSnapshot());

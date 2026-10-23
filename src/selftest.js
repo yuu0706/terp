@@ -6,6 +6,54 @@ const { app, clipboard } = require('electron');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// TERP_SELFTEST_PERSIST=1→2→3 の順に、同じ TERP_CONFIG_DIR で3回起動して、セッションの保持を確かめる。
+// 1: 印を付けて終わる / 2: 開き直してもシェルが生きている。常駐のプロセスを止める（Mac の再起動に当たる）/
+// 3: 控えから同じ場所・名前で開き直す
+async function runPersistTest({ js, check, outDir, phase }) {
+  const buffer = (id) => js(`window.__terp.bufferText(${id})`);
+  const send = (id, data) => js(`window.terp.write(${id}, ${JSON.stringify(data)})`);
+  const ids = () => js('[...window.__terp.sessions.keys()]');
+  const waitFor = async (id, pattern) => {
+    for (let t = 0; t < 40; t++) {
+      if (pattern.test(await buffer(id))) return true;
+      await sleep(250);
+    }
+    return false;
+  };
+  if (phase === '1') {
+    const [id] = await ids();
+    await send(id, 'export TERP_MARK=persist-ok; cd /tmp; echo phase1-output\r');
+    check('1回目: 印を付ける', await waitFor(id, /\nphase1-output/));
+    await js(`window.__terp.rename(${id}, '保持テスト')`);
+    // 作業場所の控えが /tmp になるまで待つ（1.5 秒ごとに拾う）
+    await sleep(3500);
+    return;
+  }
+  if (phase === '2') {
+    const list = await ids();
+    check('2回目: 開き直してもターミナルが残る', list.length === 1, `枚数 ${list.length}`);
+    const id = list[0];
+    const name = await js(`window.__terp.sessions.get(${id}).li.querySelector('.session__name').textContent`);
+    check('2回目: 名前が残る', name === '保持テスト', name);
+    check('2回目: 前の出力が画面に戻る', /phase1-output/.test(await buffer(id)));
+    await send(id, 'echo "mark=$TERP_MARK"\r');
+    check('2回目: 同じシェルが動き続けている', await waitFor(id, /mark=persist-ok/));
+    await sleep(2000);
+    await js('window.terp.shutdownHost()');
+    await sleep(500);
+    return;
+  }
+  const list = await ids();
+  check('3回目: 控えから開き直す', list.length === 1, `枚数 ${list.length}`);
+  const id = list[0];
+  await sleep(2000);
+  const cwd = await js(`window.__terp.sessions.get(${id}).cwd`);
+  check('3回目: 同じ作業場所で開く', /\/tmp$/.test(cwd), cwd);
+  const name = await js(`window.__terp.sessions.get(${id}).li.querySelector('.session__name').textContent`);
+  check('3回目: 名前が戻る', name === '保持テスト', name);
+  check('3回目: シェルは新しい（前の変数は無い）', !(await buffer(id)).includes('mark=persist-ok'));
+}
+
 // TERP_SELFTEST_WORK を付けると、一時フォルダに git のリポジトリを作り、作業（worktree）の
 // 追加・作成・振り分け・削除を確かめる。TERP_CONFIG_DIR に一時フォルダを指定すること
 async function runWorkTest({ win, js, check, outDir }) {
@@ -171,6 +219,11 @@ exports.run = (win) => {
     };
     const sidebar = () => js(`document.getElementById('tree').innerText`);
     fs.mkdirSync(outDir, { recursive: true });
+    // 自己診断の常駐のプロセスは設定のフォルダごとに別に立つため、終わるときに止める
+    const finish = async () => {
+      await js('window.terp.shutdownHost()').catch(() => {});
+      app.quit();
+    };
 
     await sleep(2500);
     const tui = process.env.TERP_SELFTEST_CMD;
@@ -201,21 +254,30 @@ exports.run = (win) => {
       await sleep(300);
       await send(id, '\x03');
       await sleep(1500);
-      app.quit();
+      await finish();
+      return;
+    }
+
+    if (process.env.TERP_SELFTEST_PERSIST) {
+      await runPersistTest({ js, check, outDir, phase: process.env.TERP_SELFTEST_PERSIST });
+      fs.writeFileSync(path.join(outDir, 'result.txt'), log.join('\n') + '\n');
+      // 1 と 2 は常駐のプロセスを残したまま終わる（開き直しを確かめるため）
+      if (process.env.TERP_SELFTEST_PERSIST === '3') await finish();
+      else app.quit();
       return;
     }
 
     if (process.env.TERP_SELFTEST_WORK) {
       await runWorkTest({ win, js, check, outDir });
       fs.writeFileSync(path.join(outDir, 'result.txt'), log.join('\n') + '\n');
-      app.quit();
+      await finish();
       return;
     }
 
     if (process.env.TERP_SELFTEST_THEME) {
       await runThemeTest({ win, js, send, check, outDir });
       fs.writeFileSync(path.join(outDir, 'result.txt'), log.join('\n') + '\n');
-      app.quit();
+      await finish();
       return;
     }
 
@@ -299,6 +361,6 @@ exports.run = (win) => {
     await sleep(500);
     fs.writeFileSync(path.join(outDir, 'screen.png'), (await win.webContents.capturePage()).toPNG());
     fs.writeFileSync(path.join(outDir, 'result.txt'), log.join('\n') + '\n');
-    app.quit();
+    await finish();
   });
 };

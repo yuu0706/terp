@@ -409,7 +409,10 @@ function startRename(s) {
   const finish = (save) => {
     if (done) return;
     done = true;
-    if (save) s.customName = input.value.trim() || null;
+    if (save) {
+      s.customName = input.value.trim() || null;
+      terp.setMeta(s.id, { customName: s.customName });
+    }
     const span = document.createElement('span');
     span.className = 'session__name';
     input.replaceWith(span);
@@ -450,6 +453,8 @@ function activate(id) {
   }
   activeId = id;
   recent = [id, ...recent.filter((r) => r !== id)];
+  s.lastActive = Date.now();
+  terp.setMeta(id, { lastActive: s.lastActive });
   s.el.hidden = false;
   s.unread = false;
   s.notify = false;
@@ -476,7 +481,7 @@ function handleKey(s, event) {
   return !event.metaKey;
 }
 
-async function openTerminal({ cwd } = {}) {
+function buildTerminal() {
   const el = document.createElement('div');
   el.className = 'term';
   el.hidden = true;
@@ -498,17 +503,20 @@ async function openTerminal({ cwd } = {}) {
   term.unicode.activeVersion = '11';
   term.loadAddon(new WebLinksAddon((_event, url) => terp.openExternal(url)));
   term.open(el);
-
-  // 寸法を測れるよう、一度表示してから疑似端末を作る
+  // 寸法を測れるよう、一度表示してから測る
   el.hidden = false;
   fit.fit();
-  const { id, cwd: startCwd } = await terp.createPty({ cols: term.cols, rows: term.rows, cwd });
+  el.hidden = true;
+  return { el, term, fit };
+}
+
+function registerSession(id, { el, term, fit }, extra = {}) {
   const s = {
     id,
     term,
     fit,
     el,
-    cwd: startCwd,
+    cwd: '',
     program: '',
     title: '',
     customName: null,
@@ -519,6 +527,9 @@ async function openTerminal({ cwd } = {}) {
     unread: false,
     notify: false,
     webgl: null,
+    // つなぎ直しの途中に届いた出力。残りの出力を書いてから流す
+    pending: null,
+    ...extra,
   };
   sessions.set(id, s);
   s.li = createItem(s);
@@ -533,6 +544,7 @@ async function openTerminal({ cwd } = {}) {
     // 作業中から入力待ちに変わったら、応答が終わったことを知らせる
     if (s.agentWorking && !working) markNotify(s);
     s.agentWorking = working;
+    terp.setMeta(id, { title, agentTitle: s.agentTitle });
     renderItem(s);
   });
   term.onBell(() => markNotify(s));
@@ -542,9 +554,64 @@ async function openTerminal({ cwd } = {}) {
   new ResizeObserver(() => {
     if (!el.hidden) fit.fit();
   }).observe(el);
+  return s;
+}
 
+async function openTerminal({ cwd } = {}) {
+  const view = buildTerminal();
+  const { id, cwd: startCwd } = await terp.createPty({ cols: view.term.cols, rows: view.term.rows, cwd });
+  const s = registerSession(id, view, { cwd: startCwd });
   activate(id);
   return s;
+}
+
+// 常駐のプロセスに残っているシェルへつなぎ直す。残っていた出力を流して画面を作り直す
+async function attachTerminal(e) {
+  const view = buildTerminal();
+  const s = registerSession(e.id, view, {
+    cwd: e.cwd,
+    customName: e.meta.customName || null,
+    title: e.meta.title || '',
+    agentTitle: e.meta.agentTitle || '',
+    lastActive: e.meta.lastActive || 0,
+    pending: [],
+  });
+  const res = await terp.attach(e.id);
+  if (res.replay) s.term.write(res.replay);
+  for (const data of s.pending) s.term.write(data);
+  s.pending = null;
+  // 大きさを一度変えて戻し、claude などの全画面のプログラムに描き直させる
+  const { cols, rows } = s.term;
+  terp.resize(e.id, Math.max(cols - 1, 2), rows);
+  setTimeout(() => terp.resize(e.id, cols, rows), 80);
+  return s;
+}
+
+// 起動したとき: 生きているシェルがあればつなぎ直す。無ければ前回の控えから開き直し、
+// claude の会話は --resume で再開する。どちらも無ければ1枚開く
+async function restoreSessions() {
+  const { existing, snapshot } = await terp.restoreInfo();
+  if (existing.length > 0) {
+    const restored = [];
+    for (const e of existing.sort((a, b) => a.id - b.id)) restored.push(await attachTerminal(e));
+    const last = restored.reduce((a, b) => ((b.lastActive || 0) > (a.lastActive || 0) ? b : a));
+    activate(last.id);
+    return;
+  }
+  if (snapshot.length > 0) {
+    for (const snap of snapshot) {
+      const s = await openTerminal({ cwd: snap.cwd });
+      if (snap.customName) {
+        s.customName = snap.customName;
+        terp.setMeta(s.id, { customName: snap.customName });
+      }
+      // シェルは起動前の入力をためておくため、すぐ送ってよい
+      if (snap.claudeSession) terp.write(s.id, `claude --resume ${snap.claudeSession}\r`);
+    }
+    renderAll();
+    return;
+  }
+  await openTerminal();
 }
 
 function markNotify(s) {
@@ -594,6 +661,10 @@ function newTerminal() {
 terp.onData((id, data) => {
   const s = sessions.get(id);
   if (!s) return;
+  if (s.pending) {
+    s.pending.push(data);
+    return;
+  }
   s.term.write(data);
   s.lastOutput = Date.now();
   if (id !== activeId) s.unread = true;
@@ -601,6 +672,10 @@ terp.onData((id, data) => {
 
 terp.onExit((id) => removeSession(id));
 terp.onConfig(applyConfig);
+terp.onHostStale(() => {
+  const notice = document.getElementById('host-notice');
+  notice.hidden = false;
+});
 
 terp.onInfo((info) => {
   for (const { id, cwd, program } of info) {
@@ -680,6 +755,12 @@ window.__terp = {
   },
   addProject,
   refreshProjects,
+  rename(id, name) {
+    const s = sessions.get(id);
+    s.customName = name;
+    terp.setMeta(id, { customName: name });
+    renderItem(s);
+  },
   openWorkDialog,
   openRemoveDialog,
   workOf: (id) => workOf(sessions.get(id))?.path || null,
@@ -694,4 +775,4 @@ window.__terp = {
 applyConfig(config);
 await refreshProjects();
 noProjects.hidden = projects.length > 0;
-openTerminal();
+await restoreSessions();
