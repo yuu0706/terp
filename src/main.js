@@ -8,6 +8,7 @@ const { setBlur } = require('./blur');
 const projects = require('./projects');
 const gitops = require('./git');
 const gitpanel = require('./gitpanel');
+const agents = require('./agents');
 const snapshot = require('./snapshot');
 const { PtyClient } = require('./ptyclient');
 
@@ -177,6 +178,7 @@ ipcMain.handle('projects:remove', safe((_e, repo) => projects.remove(repo)));
 ipcMain.handle('work:create', safe((_e, { repo, branch, base }) => gitops.addWorktree(repo, branch, base)));
 ipcMain.handle('work:remove', safe((_e, { repo, dir }) => gitops.removeWorktree(repo, dir)));
 ipcMain.handle('work:changes', safe((_e, dir) => gitops.changeCount(dir)));
+ipcMain.handle('agents:list', safe(() => agents.detect(config.loadConfig().agents)));
 ipcMain.handle('git:status', safe((_e, dir) => gitpanel.status(dir)));
 ipcMain.handle('git:diff', safe((_e, { top, file, kind }) => gitpanel.diff(top, file, kind)));
 ipcMain.handle('git:stage', safe((_e, { top, files }) => gitpanel.stage(top, files)));

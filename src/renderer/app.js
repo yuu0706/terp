@@ -264,8 +264,47 @@ async function addProject(dir) {
   return res;
 }
 
+// ---- AI エージェントの起動 ----
+
+const agentsEl = document.getElementById('agents');
 const AGENT_ICON = `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="8" width="16" height="12" rx="2" /><path d="M12 4v4M9 13v2M15 13v2M2 14h2M20 14h2" /></svg>`;
+let agentList = [];
+
 // シェルに打つ1行。絶対パスに空白があれば引用符で囲む
+function agentCommandLine(a) {
+  const command = /[\s'"]/.test(a.command) ? `'${a.command.replace(/'/g, `'\\''`)}'` : a.command;
+  return [command, a.args].filter(Boolean).join(' ');
+}
+
+async function refreshAgents() {
+  const res = await terp.listAgents();
+  if (!res.ok || JSON.stringify(res.value) === JSON.stringify(agentList)) return;
+  agentList = res.value;
+  agentsEl.textContent = '';
+  for (const a of agentList) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'btn btn--agent';
+    btn.dataset.command = a.command;
+    btn.innerHTML = `${AGENT_ICON}<span></span>`;
+    btn.querySelector('span').textContent = a.command.split('/').pop();
+    btn.title = `${a.label} を新しいターミナルで起動`;
+    btn.setAttribute('aria-label', `${a.label} を起動`);
+    btn.addEventListener('click', () => launchAgent(a));
+    agentsEl.append(btn);
+  }
+  agentsEl.hidden = agentList.length === 0;
+}
+
+// 表示中のターミナルと同じ作業場所で新しいターミナルを開き、エージェントを起動する
+async function launchAgent(a) {
+  const cwd = sessions.get(activeId)?.cwd;
+  const s = await openTerminal({ cwd });
+  // シェルは起動前の入力をためておくため、すぐ送ってよい
+  terp.write(s.id, agentCommandLine(a) + '\r');
+  return s;
+}
+
 // ---- 作業の作成と削除の画面 ----
 
 const workDialog = document.getElementById('work-dialog');
@@ -292,6 +331,10 @@ function openWorkDialog(repo) {
   select.onchange = syncBase;
   syncBase();
   form.elements.branch.value = '';
+  // 「作ったら起動する」は、見つかったエージェントと「起動しない」から選ぶ
+  form.elements.command.innerHTML = '';
+  for (const a of agentList) form.elements.command.append(new Option(a.command.split('/').pop(), agentCommandLine(a)));
+  form.elements.command.append(new Option('起動しない', ''));
   setDialogError(workDialog, '');
   workDialog.showModal();
   form.elements.branch.focus();
@@ -743,6 +786,8 @@ document.getElementById('empty-add-project').addEventListener('click', () => add
 // 外で作った worktree や変更の数を拾うため、定期的に git から読み直す
 setInterval(refreshProjects, 5000);
 window.addEventListener('focus', refreshProjects);
+// エージェントを入れたり消したりしたら、ウィンドウに戻ったときに拾い直す
+window.addEventListener('focus', refreshAgents);
 
 // 出力中の印を時間で消すため、状態だけ定期的に描き直す
 setInterval(renderAll, 500);
@@ -763,6 +808,10 @@ window.__terp = {
   },
   addProject,
   refreshProjects,
+  refreshAgents,
+  get agents() {
+    return agentList;
+  },
   rename(id, name) {
     const s = sessions.get(id);
     s.customName = name;
@@ -787,4 +836,5 @@ initGitPanel({
 });
 await refreshProjects();
 noProjects.hidden = projects.length > 0;
+await refreshAgents();
 await restoreSessions();

@@ -53,6 +53,7 @@
           <span>新しい作業</span>
           <kbd class="btn__key">⌘N</kbd>
         </button>
+        <div id="agents" class="agents" role="group" aria-label="AI エージェントを起動" hidden></div>
         <button id="new-terminal" class="btn btn--primary btn--block" type="button">
           <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
           <span>新しいターミナル</span>
@@ -164,11 +165,7 @@
         </label>
         <label class="field">
           <span class="field__label">作ったら起動する</span>
-          <select name="command" class="input">
-            <option value="claude">claude</option>
-            <option value="codex">codex</option>
-            <option value="">起動しない</option>
-          </select>
+          <select name="command" class="input"></select>
         </label>
         <p class="dialog__error" role="alert" hidden></p>
         <div class="dialog__actions">

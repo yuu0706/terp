@@ -6,6 +6,52 @@ const { app, clipboard } = require('electron');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// TERP_SELFTEST_AGENTS を付けると、AI エージェントの検出と起動のボタンを確かめる。
+// 偽のエージェント（引数を表示するだけのスクリプト）を設定ファイルの agents に足して押す
+async function runAgentsTest({ js, check, outDir }) {
+  const { CONFIG_PATH } = require('./config');
+  const fake = path.join(outDir, 'fake agent');
+  fs.mkdirSync(outDir, { recursive: true });
+  fs.writeFileSync(fake, '#!/bin/sh\necho "fake-agent-started $*"\nsleep 3\n', { mode: 0o755 });
+  const commands = () => js(`[...document.querySelectorAll('#agents .btn--agent')].map((b) => b.dataset.command)`);
+  const found = await commands();
+  check('入っている claude と codex のボタンが出る', found.includes('claude') && found.includes('codex'), found.join(', '));
+
+  const config = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+  config.agents = [
+    { command: fake, label: 'Fake Agent', args: '--hello' },
+    { command: 'no-such-agent-cli', label: '入っていない' },
+  ];
+  fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2));
+  await js('window.__terp.refreshAgents()');
+  const after = await commands();
+  check('設定ファイルに書いたエージェントが足される', after.includes(fake), after.join(', '));
+  check('入っていないものは出ない', !after.includes('no-such-agent-cli'));
+
+  const before = await js('window.__terp.activeId');
+  const cwd = await js(`window.__terp.sessions.get(${before}).cwd`);
+  await js(`[...document.querySelectorAll('#agents .btn--agent')].find((b) => b.dataset.command === ${JSON.stringify(fake)}).click()`);
+  await sleep(2500);
+  const id = await js('window.__terp.activeId');
+  check('押すと新しいターミナルが開く', id !== before, `${before} → ${id}`);
+  const text = await js(`window.__terp.bufferText(${id})`);
+  check('空白を含むパスでも引数付きで起動する', /fake-agent-started --hello/.test(text), text.split('\n').slice(-3).join(' | '));
+  const newCwd = await js(`window.__terp.sessions.get(${id}).cwd`);
+  check('表示中と同じ作業場所で開く', newCwd === cwd, newCwd);
+
+  // リポジトリが無いとフォルダを選ぶ画面が出るため、先に1つ足す
+  const { execFileSync } = require('child_process');
+  const repo = path.join(outDir, 'agents-repo');
+  fs.mkdirSync(repo, { recursive: true });
+  execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repo });
+  await js(`window.__terp.addProject(${JSON.stringify(repo)})`);
+  await js('window.__terp.openWorkDialog()');
+  await sleep(300);
+  const options = await js(`[...document.querySelectorAll('#work-dialog [name=command] option')].map((o) => o.textContent)`);
+  await js(`document.getElementById('work-dialog').close()`);
+  check('新しい作業の画面の選択肢も揃う', options.includes('claude') && options.includes('codex') && options.at(-1) === '起動しない', options.join(', '));
+}
+
 // TERP_SELFTEST_GIT を付けると、一時フォルダにプッシュ先の役の空のリポジトリと作業用の複製を作り、
 // 「変更」の面のステージ・差分・コミット・プッシュ・プルを、画面のボタンを押して確かめる
 async function runGitTest({ win, js, check, outDir }) {
@@ -368,6 +414,14 @@ exports.run = (win) => {
     if (process.env.TERP_SELFTEST_GIT) {
       await runGitTest({ win, js, check, outDir });
       fs.writeFileSync(path.join(outDir, 'result.txt'), log.join('\n') + '\n');
+      await finish();
+      return;
+    }
+
+    if (process.env.TERP_SELFTEST_AGENTS) {
+      await runAgentsTest({ js, check, outDir });
+      fs.writeFileSync(path.join(outDir, 'result.txt'), log.join('\n') + '\n');
+      await win.webContents.capturePage().then((img) => fs.writeFileSync(path.join(outDir, 'agents.png'), img.toPNG()));
       await finish();
       return;
     }

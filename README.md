@@ -51,6 +51,7 @@ npm start
 | `accent` | 強調色。`null` ならテーマのカーソルの色 |
 | `backgroundOpacity` | 背景の不透明度（0.2〜1） |
 | `backgroundBlur` | 窓の後ろのぼかし。`true`（半径 20）か半径の数値 |
+| `agents` | 起動のボタンに足す AI エージェント。`[{ "command": "名前か絶対パス", "label": "表示名", "args": "引数" }]`。claude・codex などよく使われるものは書かなくても探す |
 
 ぼかしは macOS の非公開の関数（`CGSSetWindowBackgroundBlurRadius`）を呼んでいる。macOS の更新で使えなくなった場合は、ぼかしだけが無くなり、透過は残る。
 

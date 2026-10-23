@@ -21,6 +21,8 @@ const DEFAULT_CONFIG = {
   // 背景の不透明度（0〜1）とぼかし（true か半径）。Ghostty の background-opacity・background-blur に当たる
   backgroundOpacity: 1,
   backgroundBlur: false,
+  // 起動のボタンに足す AI エージェント。{ "command": "名前か絶対パス", "label": "表示名", "args": "引数" }
+  agents: [],
 };
 
 // テーマを指定しないときの色（Catppuccin Mocha 相当）
@@ -157,6 +159,7 @@ function loadConfig() {
     },
     terminal: xtermTheme(theme),
     chrome: chromeColors(theme, accent),
+    agents: Array.isArray(config.agents) ? config.agents : [],
   };
 }
 

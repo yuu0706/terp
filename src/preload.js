@@ -24,6 +24,7 @@ contextBridge.exposeInMainWorld('terp', {
   createWork: (opts) => ipcRenderer.invoke('work:create', opts),
   removeWork: (opts) => ipcRenderer.invoke('work:remove', opts),
   workChanges: (dir) => ipcRenderer.invoke('work:changes', dir),
+  listAgents: () => ipcRenderer.invoke('agents:list'),
   gitStatus: (dir) => ipcRenderer.invoke('git:status', dir),
   gitDiff: (opts) => ipcRenderer.invoke('git:diff', opts),
   gitStage: (opts) => ipcRenderer.invoke('git:stage', opts),

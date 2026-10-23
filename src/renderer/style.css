@@ -913,3 +913,26 @@ body {
   color: var(--color-text-muted);
 }
 
+/* ---- AI エージェントの起動のボタン（新しいターミナルの上） ---- */
+.agents {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+  gap: var(--space-2);
+}
+
+.agents[hidden] {
+  display: none;
+}
+
+.btn--agent {
+  height: 32px;
+  justify-content: center;
+  min-width: 0;
+  font-size: var(--text-md);
+}
+
+.btn--agent span {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
