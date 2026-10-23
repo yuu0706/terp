@@ -263,12 +263,13 @@ function renderProjects() {
     section.className = 'project';
     section.dataset.path = p.path;
     section.innerHTML = `
-      <div class="project__head" title="${escapeHtml(shortPath(p.path))}">
+      <div class="project__head" title="${escapeHtml(shortPath(p.path))}&#10;ドラッグか ⌥↑ / ⌥↓ で並べ替え" draggable="true" tabindex="0">
         <span class="project__name">${escapeHtml(p.name)}</span>
         <button class="icon-btn" type="button" data-action="new-work" aria-label="${escapeHtml(p.name)} に新しい作業を作る" title="新しい作業">${PLUS_ICON}</button>
         <button class="icon-btn icon-btn--hover" type="button" data-action="forget" aria-label="${escapeHtml(p.name)} を一覧から外す" title="一覧から外す（ファイルは消さない）">${CLOSE_ICON}</button>
       </div>`;
     section.querySelector('[data-action="new-work"]').addEventListener('click', () => openWorkDialog(p.path));
+    setupProjectDrag(section, p.path);
     section.querySelector('[data-action="forget"]').addEventListener('click', async () => {
       await terp.removeProject(p.path);
       refreshProjects();
@@ -326,7 +327,78 @@ function placeSessions() {
   looseSection.hidden = looseList.children.length === 0;
 }
 
+// ---- リポジトリの並べ替え（ドラッグ＆ドロップと ⌥↑ / ⌥↓） ----
+
+let draggingProject = null;
+// 並びの記録を書いている間。読み直すと古い順に戻って見えるため待つ
+let reordering = false;
+
+async function moveProject(from, toIndex) {
+  const order = projects.map((p) => p.path).filter((p) => p !== from);
+  order.splice(Math.max(0, Math.min(toIndex, order.length)), 0, from);
+  // 画面を先に並べ替え、記録は後から合わせる（戻ってくるのを待つとちらつくため）
+  projects = order.map((path) => projects.find((p) => p.path === path));
+  renderProjects();
+  reordering = true;
+  try {
+    await terp.reorderProjects(order);
+  } finally {
+    reordering = false;
+  }
+}
+
+function clearDropMarks() {
+  for (const el of projectsEl.querySelectorAll('[data-drop]')) delete el.dataset.drop;
+}
+
+function setupProjectDrag(section, path) {
+  const head = section.querySelector('.project__head');
+  head.addEventListener('dragstart', (e) => {
+    draggingProject = path;
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/x-terp-project', path);
+    section.dataset.dragging = 'true';
+  });
+  head.addEventListener('dragend', () => {
+    draggingProject = null;
+    delete section.dataset.dragging;
+    clearDropMarks();
+  });
+  // 落とす先の上半分なら前へ、下半分なら後ろへ入れる
+  section.addEventListener('dragover', (e) => {
+    if (!draggingProject || draggingProject === path) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    const r = section.getBoundingClientRect();
+    clearDropMarks();
+    section.dataset.drop = e.clientY < r.top + r.height / 2 ? 'before' : 'after';
+  });
+  section.addEventListener('dragleave', (e) => {
+    if (!section.contains(e.relatedTarget)) delete section.dataset.drop;
+  });
+  section.addEventListener('drop', (e) => {
+    if (!draggingProject || draggingProject === path) return;
+    e.preventDefault();
+    const from = draggingProject;
+    const after = section.dataset.drop === 'after';
+    draggingProject = null;
+    clearDropMarks();
+    const rest = projects.map((p) => p.path).filter((p) => p !== from);
+    moveProject(from, rest.indexOf(path) + (after ? 1 : 0));
+  });
+  head.addEventListener('keydown', (e) => {
+    if (!e.altKey || (e.key !== 'ArrowUp' && e.key !== 'ArrowDown')) return;
+    e.preventDefault();
+    const index = projects.findIndex((p) => p.path === path);
+    moveProject(path, index + (e.key === 'ArrowUp' ? -1 : 1)).then(() =>
+      projectsEl.querySelector(`.project[data-path="${CSS.escape(path)}"] .project__head`)?.focus(),
+    );
+  });
+}
+
 async function refreshProjects() {
+  // つかんでいる間に描き直すと、つかんだ行が消えるため待つ
+  if (draggingProject || reordering) return;
   const res = await terp.listProjects();
   if (!res.ok) return;
   const next = res.value;

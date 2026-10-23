@@ -29,6 +29,13 @@ async function add(dir) {
   return repo;
 }
 
+// 一覧の並びを変える。知らないパスは無視し、渡されなかったものは後ろに残す
+function reorder(order) {
+  const paths = readPaths();
+  const next = order.filter((p) => paths.includes(p));
+  writePaths([...next, ...paths.filter((p) => !next.includes(p))]);
+}
+
 function remove(repo) {
   writePaths(readPaths().filter((p) => p !== repo));
 }
@@ -52,4 +59,4 @@ async function list() {
   );
 }
 
-module.exports = { add, remove, list };
+module.exports = { add, remove, reorder, list };

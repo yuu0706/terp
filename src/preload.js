@@ -21,6 +21,7 @@ contextBridge.exposeInMainWorld('terp', {
   listProjects: () => ipcRenderer.invoke('projects:list'),
   addProject: (dir) => ipcRenderer.invoke('projects:add', dir),
   removeProject: (repo) => ipcRenderer.invoke('projects:remove', repo),
+  reorderProjects: (order) => ipcRenderer.invoke('projects:reorder', order),
   createWork: (opts) => ipcRenderer.invoke('work:create', opts),
   removeWork: (opts) => ipcRenderer.invoke('work:remove', opts),
   workChanges: (dir) => ipcRenderer.invoke('work:changes', dir),

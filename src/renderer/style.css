@@ -1447,3 +1447,41 @@ body {
   margin: var(--space-1) 0;
   background: var(--color-border);
 }
+
+/* ---- リポジトリの並べ替え ---- */
+.project__head[draggable='true'] {
+  cursor: grab;
+  border-radius: var(--radius);
+}
+
+.project__head:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -2px;
+}
+
+.project[data-dragging='true'] {
+  opacity: 0.5;
+}
+
+/* 落とす場所に線を出す */
+.project[data-drop] {
+  position: relative;
+}
+
+.project[data-drop]::before {
+  content: '';
+  position: absolute;
+  left: var(--space-1);
+  right: var(--space-1);
+  height: 2px;
+  border-radius: 1px;
+  background: var(--color-accent);
+}
+
+.project[data-drop='before']::before {
+  top: -6px;
+}
+
+.project[data-drop='after']::before {
+  bottom: -6px;
+}

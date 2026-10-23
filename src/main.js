@@ -181,6 +181,7 @@ ipcMain.handle(
   }),
 );
 ipcMain.handle('projects:remove', safe((_e, repo) => projects.remove(repo)));
+ipcMain.handle('projects:reorder', safe((_e, order) => projects.reorder(order)));
 ipcMain.handle('work:create', safe((_e, { repo, branch, base }) => gitops.addWorktree(repo, branch, base)));
 ipcMain.handle('work:remove', safe((_e, { repo, dir }) => gitops.removeWorktree(repo, dir)));
 ipcMain.handle('work:changes', safe((_e, dir) => gitops.changeCount(dir)));

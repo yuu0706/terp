@@ -394,6 +394,40 @@ async function runWorkTest({ win, js, check, outDir }) {
   check('削除してもブランチは残る', sh(['branch', '--list', 'feature/try-terp'], repo).includes('feature/try-terp'));
   const sessionsLeft = await js(`[...window.__terp.sessions.values()].filter((s) => s.cwd?.startsWith(${JSON.stringify(dest)})).length`);
   check('作業のターミナルは閉じる', sessionsLeft === 0, `残り ${sessionsLeft}`);
+
+  // リポジトリの並べ替え: 2つ目を足し、ドラッグ＆ドロップで先頭へ、⌥↓ で戻す
+  const repo2 = path.join(outDir, 'second-repo');
+  fs.mkdirSync(repo2, { recursive: true });
+  sh(['init', '-q', '-b', 'main'], repo2);
+  await js(`window.__terp.addProject(${JSON.stringify(repo2)})`);
+  await sleep(500);
+  const order = () => js(`[...document.querySelectorAll('#projects .project')].map((p) => p.dataset.path.split('/').pop())`);
+  const saved = () => JSON.parse(fs.readFileSync(path.join(require('./config').CONFIG_DIR, 'projects.json'), 'utf8')).projects.map((p) => p.path.split('/').pop());
+  check('足したリポジトリは後ろに並ぶ', (await order()).join() === 'sample-repo,second-repo', (await order()).join());
+  await js(`(() => {
+    const dt = new DataTransfer();
+    const from = document.querySelector('.project[data-path=${JSON.stringify(repo2)}] .project__head');
+    const to = document.querySelector('.project[data-path=${JSON.stringify(repo)}]');
+    const r = to.getBoundingClientRect();
+    const at = { bubbles: true, cancelable: true, dataTransfer: dt, clientX: r.left + 10, clientY: r.top + 2 };
+    from.dispatchEvent(new DragEvent('dragstart', at));
+    to.dispatchEvent(new DragEvent('dragover', at));
+    to.dispatchEvent(new DragEvent('drop', at));
+    from.dispatchEvent(new DragEvent('dragend', at));
+  })()`);
+  await sleep(800);
+  check('ドラッグ＆ドロップで並びが変わる', (await order()).join() === 'second-repo,sample-repo', (await order()).join());
+  check('並びが projects.json に残る', saved().join() === 'second-repo,sample-repo', saved().join());
+  await js(`(() => {
+    const head = document.querySelector('.project[data-path=${JSON.stringify(repo2)}] .project__head');
+    head.focus();
+    head.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', altKey: true, bubbles: true }));
+  })()`);
+  await sleep(800);
+  check('⌥↓ でも並びを変えられる', (await order()).join() === 'sample-repo,second-repo' && saved().join() === 'sample-repo,second-repo', (await order()).join());
+  await js('window.__terp.refreshProjects()');
+  await sleep(500);
+  check('読み直しても並びが保たれる', (await order()).join() === 'sample-repo,second-repo');
 }
 
 // TERP_SELFTEST_THEME を付けると、設定ファイルを書き換えてテーマと透過の反映を確かめる。
