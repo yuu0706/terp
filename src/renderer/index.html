@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'"
+    />
+    <title>terp</title>
+    <link rel="stylesheet" href="../../node_modules/@xterm/xterm/css/xterm.css" />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <nav id="sidebar" aria-label="ターミナルの一覧">
+      <div class="sidebar__head">
+        <span class="sidebar__title">ターミナル</span>
+      </div>
+      <ul id="session-list" class="session-list"></ul>
+      <p id="config-error" class="config-error" role="alert" hidden></p>
+      <div class="sidebar__foot">
+        <button id="new-terminal" class="btn btn--primary btn--block" type="button">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+          <span>新しいターミナル</span>
+          <kbd class="btn__key">⌘T</kbd>
+        </button>
+      </div>
+    </nav>
+    <main id="terminals">
+      <div id="empty" class="empty" hidden>
+        <p>開いているターミナルはありません</p>
+        <button id="empty-new" class="btn btn--primary" type="button">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+          <span>新しいターミナル</span>
+        </button>
+      </div>
+    </main>
+    <script type="module" src="app.js"></script>
+  </body>
+</html>

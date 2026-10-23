@@ -1,0 +1,324 @@
+/* 色は端末のテーマ（いまは Catppuccin Mocha 相当）に合わせる。④で Ghostty のテーマから差し替える */
+:root {
+  --color-term-bg: #1e1e2e;
+  --color-bg: #181825;
+  --color-bg-hover: #26263a;
+  --color-bg-active: #313244;
+  --color-border: #313244;
+  --color-text: #cdd6f4;
+  --color-text-muted: #a6adc8;
+  --color-accent: #89b4fa;
+  --color-busy: #a6e3a1;
+  --color-warning: #f9e2af;
+  /* 透過を付けた面の色。app.js が設定の不透明度から作る */
+  --surface-term: var(--color-term-bg);
+  --surface-sidebar: var(--color-bg);
+
+  --sidebar-width: 248px;
+  --titlebar-height: 40px;
+  --row-h: 48px;
+  --control-h: 28px;
+  --control-h-lg: 40px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --text-sm: 12px;
+  --text-md: 14px;
+  --radius: 6px;
+  --icon-sm: 16px;
+  --term-padding-x: 10px;
+  --term-padding-y: 8px;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: transparent;
+  color: var(--color-text);
+  font: var(--text-md) / 1.4 -apple-system, BlinkMacSystemFont, 'Hiragino Sans', sans-serif;
+}
+
+/* 透過のときに面が重なって濃くならないよう、背景は一覧と端末の面にだけ塗る */
+body {
+  display: flex;
+}
+
+/* ---- 左の一覧 ---- */
+#sidebar {
+  width: var(--sidebar-width);
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface-sidebar);
+  border-right: 1px solid var(--color-border);
+  user-select: none;
+}
+
+/* 設定の誤りは、直すまで一覧の下に出し続ける */
+.config-error {
+  flex: none;
+  margin: 0 var(--space-2) var(--space-2);
+  padding: var(--space-2);
+  border: 1px solid var(--color-warning);
+  border-radius: var(--radius);
+  font-size: var(--text-sm);
+  color: var(--color-warning);
+  overflow-wrap: anywhere;
+}
+
+.config-error[hidden] {
+  display: none;
+}
+
+/* 上端は信号機ボタンの行。つかんでウィンドウを動かせるようにする */
+.sidebar__head {
+  height: var(--titlebar-height);
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 var(--space-3) 0 80px;
+  -webkit-app-region: drag;
+}
+
+.sidebar__title {
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+.btn {
+  -webkit-app-region: no-drag;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  height: var(--control-h);
+  padding: 0 var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--color-text);
+  font: inherit;
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+
+.btn:hover {
+  background: var(--color-bg-hover);
+}
+
+/* 端末の入力欄は画面の下にあるため、新規作成も下に置いて視線の移動を減らす */
+.sidebar__foot {
+  flex: none;
+  padding: var(--space-2);
+  border-top: 1px solid var(--color-border);
+}
+
+.btn--block {
+  width: 100%;
+  height: var(--control-h-lg);
+  padding: 0 var(--space-3);
+  font-size: var(--text-md);
+}
+
+.btn__key {
+  margin-left: auto;
+  font: inherit;
+  font-size: var(--text-sm);
+  opacity: 0.7;
+}
+
+.btn--primary {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: var(--color-bg);
+}
+
+.btn--primary:hover {
+  background: var(--color-accent);
+  filter: brightness(1.08);
+}
+
+.icon {
+  width: var(--icon-sm);
+  height: var(--icon-sm);
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+
+.session-list {
+  list-style: none;
+  margin: 0;
+  padding: 0 var(--space-2) var(--space-2);
+  overflow-y: auto;
+  flex: 1;
+}
+
+.session {
+  position: relative;
+  display: grid;
+  grid-template-columns: 10px 1fr auto;
+  grid-template-rows: auto auto;
+  column-gap: var(--space-2);
+  align-items: center;
+  min-height: var(--row-h);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.session:hover {
+  background: var(--color-bg-hover);
+}
+
+.session[aria-current='true'] {
+  background: var(--color-bg-active);
+}
+
+/* 状態の印。出力中・未読・通知を色と形で分ける */
+.session__dot {
+  grid-row: 1;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 1.5px solid var(--color-text-muted);
+  box-sizing: border-box;
+  opacity: 0.6;
+}
+
+.session[data-state='busy'] .session__dot {
+  background: var(--color-busy);
+  border-color: var(--color-busy);
+  opacity: 1;
+}
+
+.session[data-state='unread'] .session__dot {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  opacity: 1;
+}
+
+.session[data-state='notify'] .session__dot {
+  background: var(--color-warning);
+  border-color: var(--color-warning);
+  opacity: 1;
+}
+
+.session__name,
+.session__sub {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.session__name {
+  grid-column: 2;
+  font-size: var(--text-md);
+}
+
+.session__sub {
+  grid-column: 2;
+  grid-row: 2;
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+.session__key {
+  grid-column: 3;
+  grid-row: 1;
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+.session__close {
+  grid-column: 3;
+  grid-row: 2;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  visibility: hidden;
+}
+
+.session:hover .session__close,
+.session__close:focus-visible {
+  visibility: visible;
+}
+
+.session__close:hover {
+  background: var(--color-bg-active);
+  color: var(--color-text);
+}
+
+.session__rename {
+  grid-column: 2;
+  font: inherit;
+  font-size: var(--text-md);
+  color: var(--color-text);
+  background: var(--color-term-bg);
+  border: 1px solid var(--color-accent);
+  border-radius: 4px;
+  padding: 0 var(--space-1);
+  min-width: 0;
+}
+
+/* ---- 右の端末 ---- */
+#terminals {
+  background: var(--surface-term);
+  flex: 1;
+  min-width: 0;
+  position: relative;
+  padding-top: var(--titlebar-height);
+}
+
+/* 端末の上の帯もウィンドウをつかめるようにする */
+#terminals::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: var(--titlebar-height);
+  -webkit-app-region: drag;
+}
+
+.term {
+  position: absolute;
+  top: var(--titlebar-height);
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 0 var(--term-padding-x) var(--term-padding-y);
+}
+
+.term[hidden],
+.empty[hidden] {
+  display: none;
+}
+
+.empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  color: var(--color-text-muted);
+}
+
+/* xterm.css は .xterm-viewport を #000 で塗る（macOS でスクロールバーを不透明に見せるため）。
+   背景はテーマの色を .term の奥の面で出すので、ここは透明にして透過を通す */
+.term .xterm .xterm-viewport {
+  background-color: transparent;
+}

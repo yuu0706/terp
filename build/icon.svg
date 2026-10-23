@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2a2227"/>
+      <stop offset="1" stop-color="#121011"/>
+    </linearGradient>
+  </defs>
+  <!-- macOS のアイコンの格子に合わせ、1024 の中に 824 の角丸の板を置く -->
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#bg)"/>
+  <rect x="101.5" y="101.5" width="821" height="821" rx="183.5" fill="none" stroke="#ff9ebb" stroke-opacity="0.35" stroke-width="3"/>
+  <!-- 左の一覧 -->
+  <rect x="190" y="300" width="150" height="34" rx="17" fill="#ff9ebb"/>
+  <rect x="190" y="380" width="150" height="34" rx="17" fill="#d8c4ca" fill-opacity="0.45"/>
+  <rect x="190" y="460" width="150" height="34" rx="17" fill="#d8c4ca" fill-opacity="0.45"/>
+  <line x1="390" y1="250" x2="390" y2="774" stroke="#d8c4ca" stroke-opacity="0.18" stroke-width="6"/>
+  <!-- プロンプト -->
+  <path d="M470 400 L590 500 L470 600" fill="none" stroke="#ff9ebb" stroke-width="56" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="630" y="590" width="170" height="52" rx="26" fill="#fbe9ee"/>
+</svg>
