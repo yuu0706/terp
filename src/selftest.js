@@ -329,6 +329,9 @@ async function runGitTest({ win, js, check, outDir }) {
 // 1: 印を付けて終わる / 2: 開き直してもシェルが生きている。常駐のプロセスを止める（Mac の再起動に当たる）/
 // 3: 控えから同じ場所・名前で開き直す
 async function runPersistTest({ js, check, outDir, phase }) {
+  const statePath = path.join(require('./config').CONFIG_DIR, 'selftest-tabs.json');
+  const order = () => js('window.__terp.tabOrder');
+  const fileKeys = () => js('window.__terp.tabOrder.filter((key) => key.startsWith("f:"))');
   const buffer = (id) => js(`window.__terp.bufferText(${id})`);
   const send = (id, data) => js(`window.terp.write(${id}, ${JSON.stringify(data)})`);
   const ids = () => js('[...window.__terp.sessions.keys()]');
@@ -344,10 +347,20 @@ async function runPersistTest({ js, check, outDir, phase }) {
     await send(id, 'export TERP_MARK=persist-ok; cd /tmp; echo phase1-output\r');
     check('1回目: 印を付ける', await waitFor(id, /\nphase1-output/));
     await js(`window.__terp.rename(${id}, '保持テスト')`);
+    const dir = fs.mkdtempSync(path.join(path.resolve(outDir), 'persist-files-'));
+    const files = [path.join(dir, 'first.js'), path.join(dir, 'second.md')];
+    fs.writeFileSync(files[0], 'const first = 1;\n');
+    fs.writeFileSync(files[1], '# second\n');
+    for (const file of files) await js(`window.__terp.openFile(${JSON.stringify(file)})`);
+    await js(`window.__terp.activateKey(${JSON.stringify(`f:${files[0]}`)})`);
+    check('1回目: 2つのファイルをタブで開く', (await fileKeys()).length === 2);
+    check('1回目: 1つ目のファイルを表示する', (await js('window.__terp.activeKey')) === `f:${files[0]}`);
+    fs.writeFileSync(statePath, JSON.stringify({ files, order: await order() }));
     // 作業場所の控えが /tmp になるまで待つ（1.5 秒ごとに拾う）
     await sleep(3500);
     return;
   }
+  const saved = JSON.parse(fs.readFileSync(statePath, 'utf8'));
   if (phase === '2') {
     const list = await ids();
     check('2回目: 開き直してもターミナルが残る', list.length === 1, `枚数 ${list.length}`);
@@ -355,8 +368,13 @@ async function runPersistTest({ js, check, outDir, phase }) {
     const name = await js(`window.__terp.sessions.get(${id}).li.querySelector('.session__name').textContent`);
     check('2回目: 名前が残る', name === '保持テスト', name);
     check('2回目: 前の出力が画面に戻る', /phase1-output/.test(await buffer(id)));
+    const files = await fileKeys();
+    check('2回目: 2つのファイルのタブが戻る', files.length === 2 && saved.files.every((file) => files.includes(`f:${file}`)));
+    check('2回目: タブの並びが1回目と同じ', JSON.stringify(await order()) === JSON.stringify(saved.order));
+    check('2回目: 1つ目のファイルを表示している', (await js('window.__terp.activeKey')) === `f:${saved.files[0]}`);
     await send(id, 'echo "mark=$TERP_MARK"\r');
     check('2回目: 同じシェルが動き続けている', await waitFor(id, /mark=persist-ok/));
+    fs.rmSync(saved.files[1]);
     await sleep(2000);
     await js('window.terp.shutdownHost()');
     await sleep(500);
@@ -365,6 +383,9 @@ async function runPersistTest({ js, check, outDir, phase }) {
   const list = await ids();
   check('3回目: 控えから開き直す', list.length === 1, `枚数 ${list.length}`);
   const id = list[0];
+  const files = await fileKeys();
+  check('3回目: 消したファイルのタブは開かない', !files.includes(`f:${saved.files[1]}`));
+  check('3回目: 残ったファイルだけがタブで戻る', files.length === 1 && files[0] === `f:${saved.files[0]}`);
   await sleep(2000);
   const cwd = await js(`window.__terp.sessions.get(${id}).cwd`);
   check('3回目: 同じ作業場所で開く', /\/tmp$/.test(cwd), cwd);

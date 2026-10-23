@@ -11,6 +11,7 @@ const gitpanel = require('./gitpanel');
 const agents = require('./agents');
 const files = require('./files');
 const snapshot = require('./snapshot');
+const tabs = require('./tabs');
 const { PtyClient } = require('./ptyclient');
 
 // シェルは常駐のプロセス（ptyhost.js）が持つ。terp を閉じてもシェルは残り、開き直したらつなぎ直す
@@ -167,6 +168,8 @@ ipcMain.handle('config:raw', safe(() => config.rawConfig()));
 ipcMain.handle('config:update', safe((_e, patch) => config.updateConfig(patch)));
 ipcMain.handle('config:themes', safe(() => config.listThemes()));
 ipcMain.handle('config:open-file', safe(() => shell.openPath(config.CONFIG_PATH)));
+ipcMain.handle('tabs:load', safe(() => tabs.load()));
+ipcMain.handle('tabs:save', safe((_e, state) => tabs.save(state)));
 ipcMain.handle('projects:list', safe(() => projects.list()));
 // dir を渡さないときはフォルダを選ぶ画面を出す
 ipcMain.handle(

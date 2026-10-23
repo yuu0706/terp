@@ -8,6 +8,8 @@ contextBridge.exposeInMainWorld('terp', {
   updateConfig: (patch) => ipcRenderer.invoke('config:update', patch),
   listThemes: () => ipcRenderer.invoke('config:themes'),
   openConfigFile: () => ipcRenderer.invoke('config:open-file'),
+  loadTabs: () => ipcRenderer.invoke('tabs:load'),
+  saveTabs: (state) => ipcRenderer.invoke('tabs:save', state),
   onConfig: (fn) => ipcRenderer.on('config', (_e, config) => fn(config)),
   createPty: (opts) => ipcRenderer.invoke('pty:create', opts),
   restoreInfo: () => ipcRenderer.invoke('pty:restore-info'),

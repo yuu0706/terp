@@ -44,6 +44,9 @@ let projects = [];
 // Orca と同じく、上のタブには表示中のタブと同じ作業（worktree）のものだけを出す
 let tabOrder = [];
 let activeKey = null;
+// 途中の状態で控えを上書きすると、まだ開き直していないファイルが消える
+let restoringTabs = true;
+let saveTabsTimer = null;
 // 最後に表示したターミナル。ファイルのタブを表示している間も、新しいターミナルなどの基準に使う
 let activeId = null;
 // 最近表示したタブのキーの順。⌃Tab で直前へ戻るのに使う
@@ -828,6 +831,7 @@ function activateKey(key) {
   refreshFiles(false);
   markActiveFile();
   renderAll();
+  saveTabs();
 }
 
 function activate(id) {
@@ -835,6 +839,29 @@ function activate(id) {
 }
 
 // ---- タブで開くファイル ----
+
+function saveTabs() {
+  if (restoringTabs) return;
+  clearTimeout(saveTabsTimer);
+  saveTabsTimer = setTimeout(() => {
+    terp.saveTabs({ files: [...fileViews.keys()], order: [...tabOrder], active: activeKey });
+  }, 250);
+}
+
+async function restoreTabs() {
+  const res = await terp.loadTabs().catch(() => ({ ok: false }));
+  if (res.ok) {
+    const fallback = activeKey;
+    for (const path of res.value.files) await openFile(path);
+    const remaining = new Set(tabOrder);
+    tabOrder = [...res.value.order.filter((key) => remaining.delete(key)), ...remaining];
+    const active = tabOrder.includes(res.value.active) ? res.value.active : fallback;
+    if (active) activateKey(active);
+    renderAll();
+  }
+  restoringTabs = false;
+  saveTabs();
+}
 
 async function openFile(path) {
   const key = fileKey(path);
@@ -879,6 +906,7 @@ function dropTab(key) {
     if (next) activateKey(next);
   }
   renderAll();
+  saveTabs();
 }
 
 // ---- 右の面（ファイル・変更） ----
@@ -1087,6 +1115,7 @@ function removeSession(id) {
     if (next) activateKey(next);
   }
   renderAll();
+  saveTabs();
 }
 
 function switchRecent() {
@@ -1266,4 +1295,9 @@ initFilesPanel({
 await refreshProjects();
 noProjects.hidden = projects.length > 0;
 await refreshAgents();
-await restoreSessions();
+// つなぎ直しに失敗しても、ファイルのタブは開き直し、控えの書き込みを止めたままにしない
+try {
+  await restoreSessions();
+} finally {
+  await restoreTabs();
+}
