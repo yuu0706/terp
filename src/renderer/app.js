@@ -396,7 +396,114 @@ function renderAgentButtons() {
     agentsEl.append(btn);
   }
   agentsEl.hidden = agentList.length === 0;
+  renderMainAgentButton();
 }
+
+// ---- タブの並びの隣: 新しいタブのプルダウンと、メインのエージェントのボタン ----
+
+const tabNewBtn = document.getElementById('tab-new');
+const tabMenu = document.getElementById('tab-menu');
+const mainAgentBtn = document.getElementById('tab-main-agent');
+
+// 設定の mainAgent に当たるもの。書いていないか見つからなければ、見つかった最初のもの
+function mainAgent() {
+  const name = config.mainAgent;
+  return agentList.find((a) => a.command === name || a.command.split('/').pop() === name) || agentList[0] || null;
+}
+
+function renderMainAgentButton() {
+  const a = mainAgent();
+  mainAgentBtn.hidden = !a;
+  if (!a) return;
+  mainAgentBtn.dataset.command = a.command;
+  mainAgentBtn.dataset.bypass = String(wantsBypass(a));
+  mainAgentBtn.title = agentTitle(a);
+  mainAgentBtn.setAttribute('aria-label', `${a.label} を起動`);
+}
+
+mainAgentBtn.addEventListener('click', (e) => {
+  const a = mainAgent();
+  if (a) launchAgent(a, wantsBypass(a, e.altKey));
+});
+
+function closeTabMenu() {
+  tabMenu.hidden = true;
+  tabNewBtn.setAttribute('aria-expanded', 'false');
+}
+
+function openTabMenu() {
+  tabMenu.textContent = '';
+  const items = [
+    { label: 'ターミナル', hint: '⌘T', run: () => newTerminal() },
+    ...agentList.map((a) => ({
+      label: a.command.split('/').pop(),
+      agent: a,
+      run: (altKey) => launchAgent(a, wantsBypass(a, altKey)),
+    })),
+  ];
+  items.forEach((item, i) => {
+    if (i === 1) {
+      const sep = document.createElement('div');
+      sep.className = 'menu__sep';
+      sep.setAttribute('role', 'separator');
+      tabMenu.append(sep);
+    }
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'menu__item';
+    btn.setAttribute('role', 'menuitem');
+    btn.innerHTML = `${item.agent ? AGENT_ICON : '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 17l6-6-6-6M12 19h8" /></svg>'}<span class="menu__label"></span>`;
+    btn.querySelector('.menu__label').textContent = item.label;
+    if (item.agent) {
+      btn.dataset.command = item.agent.command;
+      btn.title = agentTitle(item.agent);
+      if (wantsBypass(item.agent)) {
+        const tag = document.createElement('span');
+        tag.className = 'session__bypass';
+        tag.textContent = '確認なし';
+        btn.append(tag);
+      }
+    }
+    if (item.hint) {
+      const hint = document.createElement('kbd');
+      hint.className = 'menu__hint';
+      hint.textContent = item.hint;
+      btn.append(hint);
+    }
+    btn.addEventListener('click', (e) => {
+      closeTabMenu();
+      item.run(e.altKey);
+    });
+    tabMenu.append(btn);
+  });
+  // ＋ のボタンの真下に出す
+  const r = tabNewBtn.getBoundingClientRect();
+  const host = container.getBoundingClientRect();
+  tabMenu.style.left = `${Math.max(8, r.left - host.left)}px`;
+  tabMenu.hidden = false;
+  tabNewBtn.setAttribute('aria-expanded', 'true');
+  tabMenu.querySelector('.menu__item')?.focus();
+}
+
+tabNewBtn.addEventListener('click', () => (tabMenu.hidden ? openTabMenu() : closeTabMenu()));
+// 外を押す・Esc で閉じる。上下の矢印で選ぶ
+document.addEventListener('mousedown', (e) => {
+  if (!tabMenu.hidden && !tabMenu.contains(e.target) && !tabNewBtn.contains(e.target)) closeTabMenu();
+});
+tabMenu.addEventListener('keydown', (e) => {
+  const items = [...tabMenu.querySelectorAll('.menu__item')];
+  const i = items.indexOf(document.activeElement);
+  if (e.key === 'Escape') {
+    closeTabMenu();
+    tabNewBtn.focus();
+  } else if (e.key === 'ArrowDown') {
+    items[(i + 1) % items.length].focus();
+    e.preventDefault();
+  } else if (e.key === 'ArrowUp') {
+    items[(i - 1 + items.length) % items.length].focus();
+    e.preventDefault();
+  }
+});
 
 // 表示中のターミナルと同じ作業場所で新しいターミナルを開き、エージェントを起動する
 async function launchAgent(a, bypass) {

@@ -83,7 +83,7 @@ async function runFilesTest({ win, js, check, outDir }) {
 
 // TERP_SELFTEST_AGENTS を付けると、AI エージェントの検出と起動のボタンを確かめる。
 // 偽のエージェント（引数を表示するだけのスクリプト）を設定ファイルの agents に足して押す
-async function runAgentsTest({ js, check, outDir }) {
+async function runAgentsTest({ win, js, check, outDir }) {
   const { CONFIG_PATH } = require('./config');
   const fake = path.join(outDir, 'fake agent');
   fs.mkdirSync(outDir, { recursive: true });
@@ -141,6 +141,37 @@ async function runAgentsTest({ js, check, outDir }) {
   const options = await js(`[...document.querySelectorAll('#work-dialog [name=command] option')].map((o) => o.textContent)`);
   await js(`document.getElementById('work-dialog').close()`);
   check('新しい作業の画面の選択肢も揃う', options.includes('claude（確認なし）') && options.includes('codex（確認なし）') && options.at(-1) === '起動しない', options.join(', '));
+
+  // タブの並びの隣の ＋: ターミナルと、見つかったエージェント全部が出る
+  await js(`document.getElementById('tab-new').click()`);
+  await sleep(300);
+  const menu = await js(`[...document.querySelectorAll('#tab-menu .menu__item .menu__label')].map((l) => l.textContent)`);
+  check('＋ のプルダウンにターミナルとエージェント全部が出る', menu[0] === 'ターミナル' && ['claude', 'codex', 'fake agent'].every((n) => menu.includes(n)), menu.join(', '));
+  const tagged = await js(`document.querySelector('#tab-menu [data-command="claude"] .session__bypass')?.textContent || ''`);
+  check('プルダウンに確認なしの印が出る', tagged === '確認なし');
+  const countBefore = await js('window.__terp.sessions.size');
+  await js(`[...document.querySelectorAll('#tab-menu .menu__item')].find((b) => b.dataset.command === ${JSON.stringify(fake)}).click()`);
+  await sleep(2500);
+  const menuId = await js('window.__terp.activeId');
+  check('プルダウンで選ぶと起動する', (await js('window.__terp.sessions.size')) === countBefore + 1 && /fake-agent-started --hello --skip-checks/.test(await js(`window.__terp.bufferText(${menuId})`)));
+  check('選んだらプルダウンが閉じる', await js(`document.getElementById('tab-menu').hidden`));
+
+  // メインのエージェントのボタン: 既定は見つかった最初のもの。設定の mainAgent で変えられる
+  check('メインのボタンは既定で最初のエージェント', (await js(`document.getElementById('tab-main-agent').dataset.command`)) === 'claude');
+  const cfg = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+  cfg.mainAgent = fake;
+  fs.writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2));
+  await sleep(1500);
+  check('設定の mainAgent でメインを変えられる', (await js(`document.getElementById('tab-main-agent').dataset.command`)) === fake);
+  await js(`document.getElementById('tab-main-agent').click()`);
+  await sleep(2500);
+  const mainId = await js('window.__terp.activeId');
+  check('メインのボタンでプルダウンなしに起動する', mainId !== menuId && /fake-agent-started --hello --skip-checks/.test(await js(`window.__terp.bufferText(${mainId})`)));
+  await win.webContents.capturePage().then((img) => fs.writeFileSync(path.join(outDir, 'agents-tabbar.png'), img.toPNG()));
+  await js(`document.getElementById('tab-new').click()`);
+  await sleep(300);
+  await win.webContents.capturePage().then((img) => fs.writeFileSync(path.join(outDir, 'agents-menu.png'), img.toPNG()));
+  await js(`document.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))`);
 }
 
 // TERP_SELFTEST_GIT を付けると、一時フォルダにプッシュ先の役の空のリポジトリと作業用の複製を作り、
@@ -532,7 +563,7 @@ exports.run = (win) => {
     }
 
     if (process.env.TERP_SELFTEST_AGENTS) {
-      await runAgentsTest({ js, check, outDir });
+      await runAgentsTest({ win, js, check, outDir });
       fs.writeFileSync(path.join(outDir, 'result.txt'), log.join('\n') + '\n');
       await win.webContents.capturePage().then((img) => fs.writeFileSync(path.join(outDir, 'agents.png'), img.toPNG()));
       await finish();

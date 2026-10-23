@@ -486,7 +486,7 @@ body {
 
 /* ---- 上のタブ（表示中の作業のターミナルとファイル） ---- */
 .tabs {
-  flex: 1;
+  flex: 0 1 auto;
   min-width: 0;
   height: 100%;
   display: flex;
@@ -1357,4 +1357,93 @@ body {
 
 .hljs-strong {
   font-weight: 600;
+}
+
+/* ---- タブの並びの隣のボタンと、新しいタブのプルダウン ---- */
+.tabs__actions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.icon-btn--tab {
+  width: 28px;
+  height: 28px;
+}
+
+.icon-btn--tab[hidden] {
+  display: none;
+}
+
+/* 確認なしで起動するメインのエージェントのボタンは、危険の色で見分ける */
+#tab-main-agent[data-bypass='true'] {
+  color: var(--color-danger);
+}
+
+/* 空いたところでウィンドウをつかめるようにする */
+.topbar__spacer {
+  flex: 1;
+  align-self: stretch;
+}
+
+.menu {
+  position: absolute;
+  top: calc(var(--titlebar-height) - 2px);
+  z-index: 10;
+  min-width: 200px;
+  padding: var(--space-1);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-bg);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+  -webkit-app-region: no-drag;
+}
+
+.menu[hidden] {
+  display: none;
+}
+
+.menu__item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  height: 32px;
+  padding: 0 var(--space-2);
+  border: 0;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--color-text);
+  font: inherit;
+  font-size: var(--text-md);
+  text-align: left;
+  cursor: pointer;
+}
+
+.menu__item:hover,
+.menu__item:focus-visible {
+  background: var(--color-bg-hover);
+  outline: none;
+}
+
+.menu__item .icon {
+  flex: none;
+  color: var(--color-text-muted);
+}
+
+.menu__label {
+  flex: 1;
+}
+
+.menu__hint {
+  font: inherit;
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+.menu__sep {
+  height: 1px;
+  margin: var(--space-1) 0;
+  background: var(--color-border);
 }

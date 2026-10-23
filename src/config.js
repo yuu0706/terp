@@ -26,6 +26,8 @@ const DEFAULT_CONFIG = {
   agents: [],
   // true なら、エージェントを確認なし（bypassArgs 付き）で起動する。⌥ を押しながらで逆になる
   skipApprovals: false,
+  // タブの並びの隣のボタンで、プルダウンなしで起動するエージェントの command。null なら見つかった最初のもの
+  mainAgent: null,
 };
 
 // テーマを指定しないときの色（Catppuccin Mocha 相当）
@@ -164,6 +166,7 @@ function loadConfig() {
     chrome: chromeColors(theme, accent),
     agents: Array.isArray(config.agents) ? config.agents : [],
     skipApprovals: config.skipApprovals === true,
+    mainAgent: typeof config.mainAgent === 'string' ? config.mainAgent : null,
   };
 }
 

@@ -64,6 +64,16 @@
     <main id="terminals">
       <div class="topbar">
         <div id="tabs" class="tabs" role="tablist" aria-label="開いているターミナルとファイル"></div>
+        <div class="tabs__actions">
+          <button id="tab-new" class="icon-btn icon-btn--tab" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="新しいタブ" title="新しいタブ">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+          </button>
+          <button id="tab-main-agent" class="icon-btn icon-btn--tab" type="button" hidden>
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="8" width="16" height="12" rx="2" /><path d="M12 4v4M9 13v2M15 13v2M2 14h2M20 14h2" /></svg>
+          </button>
+        </div>
+        <div class="topbar__spacer"></div>
+        <div id="tab-menu" class="menu" role="menu" aria-label="新しいタブ" hidden></div>
         <div class="topbar__actions">
           <button id="files-toggle" class="btn topbar__btn" type="button" aria-pressed="false" title="ファイル（⌘⇧E）">
             <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
