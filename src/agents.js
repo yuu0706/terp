@@ -4,20 +4,23 @@ const fs = require('fs');
 const path = require('path');
 const { loginEnv } = require('./git');
 
-// よく使われるもの。設定ファイルの agents に書いたものは、この後ろに足す
+// よく使われるもの。設定ファイルの agents に書いたものは、この後ろに足す。
+// bypassArgs は、ファイルの読み書きやコマンドの実行の確認を飛ばして起動する引数。
+// Orca の agentDefaultArgs と同じものにしている（2026-10-23 に利用者の Orca の設定で確認）。
+// OpenCode と Goose は Orca にも登録が無いため持たない
 const KNOWN_AGENTS = [
-  { command: 'claude', label: 'Claude Code' },
-  { command: 'codex', label: 'Codex' },
-  { command: 'gemini', label: 'Gemini CLI' },
+  { command: 'claude', label: 'Claude Code', bypassArgs: '--dangerously-skip-permissions' },
+  { command: 'codex', label: 'Codex', bypassArgs: '--dangerously-bypass-approvals-and-sandbox' },
+  { command: 'gemini', label: 'Gemini CLI', bypassArgs: '--yolo' },
   { command: 'opencode', label: 'OpenCode' },
-  { command: 'cursor-agent', label: 'Cursor Agent' },
-  { command: 'copilot', label: 'Copilot CLI' },
-  { command: 'aider', label: 'Aider' },
-  { command: 'amp', label: 'Amp' },
-  { command: 'qwen', label: 'Qwen Code' },
+  { command: 'cursor-agent', label: 'Cursor Agent', bypassArgs: '--yolo' },
+  { command: 'copilot', label: 'Copilot CLI', bypassArgs: '--yolo' },
+  { command: 'aider', label: 'Aider', bypassArgs: '--yes-always' },
+  { command: 'amp', label: 'Amp', bypassArgs: '--dangerously-allow-all' },
+  { command: 'qwen', label: 'Qwen Code', bypassArgs: '--approval-mode yolo' },
   { command: 'goose', label: 'Goose' },
-  { command: 'crush', label: 'Crush' },
-  { command: 'droid', label: 'Droid' },
+  { command: 'crush', label: 'Crush', bypassArgs: '--yolo' },
+  { command: 'droid', label: 'Droid', bypassArgs: '--auto high' },
 ];
 
 function isExecutable(file) {
@@ -47,6 +50,7 @@ async function detect(extra = []) {
       command,
       label: agent.label || path.basename(command),
       args: typeof agent.args === 'string' ? agent.args : '',
+      bypassArgs: typeof agent.bypassArgs === 'string' ? agent.bypassArgs : '',
       path: where,
     });
   }

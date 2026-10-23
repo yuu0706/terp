@@ -58,6 +58,8 @@ function applyConfig(c) {
   root.setProperty('--font-mono', c.font.family);
   configError.textContent = c.error || '';
   configError.hidden = !c.error;
+  // skipApprovals を切り替えたら、エージェントのボタンの説明と印も変える
+  if (agentList.length) renderAgentButtons();
   for (const s of sessions.values()) {
     s.term.options.theme = terminalTheme(c);
     s.term.options.fontFamily = c.font.family;
@@ -127,6 +129,7 @@ function renderItem(s, index = orderedIds().indexOf(s.id)) {
   const program = isAgent(s) && name !== s.program ? s.program : '';
   li.querySelector('.session__sub').textContent = [program, placeLabel(s)].filter(Boolean).join(' · ');
   li.querySelector('.session__key').textContent = index < 9 ? `⌘${index + 1}` : '';
+  li.querySelector('.session__bypass').hidden = !s.bypass;
 }
 
 function renderAll() {
@@ -270,16 +273,32 @@ const agentsEl = document.getElementById('agents');
 const AGENT_ICON = `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="8" width="16" height="12" rx="2" /><path d="M12 4v4M9 13v2M15 13v2M2 14h2M20 14h2" /></svg>`;
 let agentList = [];
 
-// シェルに打つ1行。絶対パスに空白があれば引用符で囲む
-function agentCommandLine(a) {
+// シェルに打つ1行。絶対パスに空白があれば引用符で囲む。bypass なら確認を飛ばす引数を足す
+function agentCommandLine(a, bypass = false) {
   const command = /[\s'"]/.test(a.command) ? `'${a.command.replace(/'/g, `'\\''`)}'` : a.command;
-  return [command, a.args].filter(Boolean).join(' ');
+  return [command, a.args, bypass ? a.bypassArgs : ''].filter(Boolean).join(' ');
+}
+
+// 確認を飛ばすか。普段は設定の skipApprovals に従い、⌥ を押しながらなら逆にする。飛ばす引数が無いものは飛ばさない
+function wantsBypass(a, altKey = false) {
+  return Boolean(a.bypassArgs) && config.skipApprovals !== altKey;
+}
+
+function agentTitle(a) {
+  if (!a.bypassArgs) return `${a.label} を新しいターミナルで起動`;
+  return config.skipApprovals
+    ? `${a.label} を確認なしで起動（${a.bypassArgs}）。⌥ を押しながらで確認あり`
+    : `${a.label} を起動。⌥ を押しながらで確認なし（${a.bypassArgs}）`;
 }
 
 async function refreshAgents() {
   const res = await terp.listAgents();
   if (!res.ok || JSON.stringify(res.value) === JSON.stringify(agentList)) return;
   agentList = res.value;
+  renderAgentButtons();
+}
+
+function renderAgentButtons() {
   agentsEl.textContent = '';
   for (const a of agentList) {
     const btn = document.createElement('button');
@@ -288,21 +307,30 @@ async function refreshAgents() {
     btn.dataset.command = a.command;
     btn.innerHTML = `${AGENT_ICON}<span></span>`;
     btn.querySelector('span').textContent = a.command.split('/').pop();
-    btn.title = `${a.label} を新しいターミナルで起動`;
+    btn.title = agentTitle(a);
+    btn.dataset.bypass = String(wantsBypass(a));
     btn.setAttribute('aria-label', `${a.label} を起動`);
-    btn.addEventListener('click', () => launchAgent(a));
+    btn.addEventListener('click', (e) => launchAgent(a, wantsBypass(a, e.altKey)));
     agentsEl.append(btn);
   }
   agentsEl.hidden = agentList.length === 0;
 }
 
 // 表示中のターミナルと同じ作業場所で新しいターミナルを開き、エージェントを起動する
-async function launchAgent(a) {
+async function launchAgent(a, bypass) {
   const cwd = sessions.get(activeId)?.cwd;
   const s = await openTerminal({ cwd });
+  markBypass(s, bypass);
   // シェルは起動前の入力をためておくため、すぐ送ってよい
-  terp.write(s.id, agentCommandLine(a) + '\r');
+  terp.write(s.id, agentCommandLine(a, bypass) + '\r');
   return s;
+}
+
+// 確認なしで起動したターミナルに印を付ける。開き直しても残るよう常駐のプロセスに預ける
+function markBypass(s, bypass) {
+  s.bypass = Boolean(bypass);
+  terp.setMeta(s.id, { bypass: s.bypass });
+  renderItem(s);
 }
 
 // ---- 作業の作成と削除の画面 ----
@@ -333,7 +361,12 @@ function openWorkDialog(repo) {
   form.elements.branch.value = '';
   // 「作ったら起動する」は、見つかったエージェントと「起動しない」から選ぶ
   form.elements.command.innerHTML = '';
-  for (const a of agentList) form.elements.command.append(new Option(a.command.split('/').pop(), agentCommandLine(a)));
+  for (const a of agentList) {
+    const bypass = wantsBypass(a);
+    const option = new Option(`${a.command.split('/').pop()}${bypass ? '（確認なし）' : ''}`, agentCommandLine(a, bypass));
+    option.dataset.bypass = String(bypass);
+    form.elements.command.append(option);
+  }
   form.elements.command.append(new Option('起動しない', ''));
   setDialogError(workDialog, '');
   workDialog.showModal();
@@ -362,6 +395,7 @@ async function submitWork() {
   const s = await openTerminal({ cwd: res.value });
   // シェルは起動前の入力をためておくため、すぐ送ってよい
   const command = form.elements.command.value;
+  markBypass(s, form.elements.command.selectedOptions[0]?.dataset.bypass === 'true');
   if (command) terp.write(s.id, command + '\r');
 }
 
@@ -425,7 +459,10 @@ function createItem(s) {
     <span class="session__dot" role="img"></span>
     <span class="session__name"></span>
     <span class="session__key"></span>
-    <span class="session__sub"></span>
+    <span class="session__line2">
+      <span class="session__bypass" title="ファイルの読み書きやコマンドの実行の確認を飛ばして起動しています" hidden>確認なし</span>
+      <span class="session__sub"></span>
+    </span>
     <button class="session__close" type="button" aria-label="閉じる" title="閉じる（⌘W）">
       <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
     </button>`;
@@ -622,6 +659,7 @@ async function attachTerminal(e) {
     title: e.meta.title || '',
     agentTitle: e.meta.agentTitle || '',
     lastActive: e.meta.lastActive || 0,
+    bypass: Boolean(e.meta.bypass),
     pending: [],
   });
   const res = await terp.attach(e.id);

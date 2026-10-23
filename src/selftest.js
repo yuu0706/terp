@@ -19,9 +19,10 @@ async function runAgentsTest({ js, check, outDir }) {
 
   const config = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
   config.agents = [
-    { command: fake, label: 'Fake Agent', args: '--hello' },
+    { command: fake, label: 'Fake Agent', args: '--hello', bypassArgs: '--skip-checks' },
     { command: 'no-such-agent-cli', label: '入っていない' },
   ];
+  config.skipApprovals = true;
   fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2));
   await js('window.__terp.refreshAgents()');
   const after = await commands();
@@ -35,7 +36,21 @@ async function runAgentsTest({ js, check, outDir }) {
   const id = await js('window.__terp.activeId');
   check('押すと新しいターミナルが開く', id !== before, `${before} → ${id}`);
   const text = await js(`window.__terp.bufferText(${id})`);
-  check('空白を含むパスでも引数付きで起動する', /fake-agent-started --hello/.test(text), text.split('\n').slice(-3).join(' | '));
+  check('空白を含むパスでも引数付きで起動する', /fake-agent-started --hello/.test(text), text.split('\n').slice(-1)[0]);
+  check('普段は確認を飛ばす引数を付けて起動する', /fake-agent-started --hello --skip-checks/.test(text));
+  const tag = await js(`!window.__terp.sessions.get(${id}).li.querySelector('.session__bypass').hidden`);
+  check('確認なしのターミナルに印が付く', tag === true);
+  const claudeTitle = await js(`document.querySelector('#agents [data-command="claude"]').title`);
+  check('claude は Orca と同じ引数で確認を飛ばす', claudeTitle.includes('--dangerously-skip-permissions'), claudeTitle);
+
+  // ⌥ を押しながら押すと、確認ありで起動する
+  await js(`[...document.querySelectorAll('#agents .btn--agent')].find((b) => b.dataset.command === ${JSON.stringify(fake)}).dispatchEvent(new MouseEvent('click', { altKey: true, bubbles: true }))`);
+  await sleep(2500);
+  const altId = await js('window.__terp.activeId');
+  const altText = await js(`window.__terp.bufferText(${altId})`);
+  check('⌥ を押しながらだと確認ありで起動する', /fake-agent-started --hello$/m.test(altText) && !/--skip-checks\n?$/.test(altText.trim()), altText.split('\n').slice(-1)[0]);
+  const altTag = await js(`window.__terp.sessions.get(${altId}).li.querySelector('.session__bypass').hidden`);
+  check('確認ありのターミナルには印が付かない', altTag === true);
   const newCwd = await js(`window.__terp.sessions.get(${id}).cwd`);
   check('表示中と同じ作業場所で開く', newCwd === cwd, newCwd);
 
@@ -49,7 +64,7 @@ async function runAgentsTest({ js, check, outDir }) {
   await sleep(300);
   const options = await js(`[...document.querySelectorAll('#work-dialog [name=command] option')].map((o) => o.textContent)`);
   await js(`document.getElementById('work-dialog').close()`);
-  check('新しい作業の画面の選択肢も揃う', options.includes('claude') && options.includes('codex') && options.at(-1) === '起動しない', options.join(', '));
+  check('新しい作業の画面の選択肢も揃う', options.includes('claude（確認なし）') && options.includes('codex（確認なし）') && options.at(-1) === '起動しない', options.join(', '));
 }
 
 // TERP_SELFTEST_GIT を付けると、一時フォルダにプッシュ先の役の空のリポジトリと作業用の複製を作り、

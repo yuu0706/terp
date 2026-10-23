@@ -380,9 +380,32 @@ body {
   font-size: var(--text-md);
 }
 
-.session__sub {
+.session__line2 {
   grid-column: 2;
   grid-row: 2;
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+/* 確認を飛ばして起動したターミナルの印。無防備なものを一目で見分けられるようにする */
+.session__bypass {
+  flex: none;
+  padding: 0 5px;
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--color-bg);
+  background: var(--color-danger);
+}
+
+.session__bypass[hidden] {
+  display: none;
+}
+
+.session__sub {
+  flex: 1;
   font-size: var(--text-sm);
   color: var(--color-text-muted);
 }
@@ -935,4 +958,9 @@ body {
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
+}
+
+/* 確認なしで起動するボタンは、縁を危険の色にして普段と見分ける */
+.btn--agent[data-bypass='true'] {
+  border-color: color-mix(in srgb, var(--color-danger) 60%, var(--color-border));
 }
