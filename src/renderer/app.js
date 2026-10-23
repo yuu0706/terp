@@ -3,6 +3,7 @@ import { FitAddon } from '../../node_modules/@xterm/addon-fit/lib/addon-fit.mjs'
 import { WebglAddon } from '../../node_modules/@xterm/addon-webgl/lib/addon-webgl.mjs';
 import { Unicode11Addon } from '../../node_modules/@xterm/addon-unicode11/lib/addon-unicode11.mjs';
 import { WebLinksAddon } from '../../node_modules/@xterm/addon-web-links/lib/addon-web-links.mjs';
+import { initGitPanel, refresh as refreshGit, togglePanel as toggleGitPanel } from './gitpanel.js';
 
 const terp = window.terp;
 const container = document.getElementById('terminals');
@@ -54,6 +55,7 @@ function applyConfig(c) {
   for (const [key, value] of Object.entries(c.chrome)) root.setProperty(`--color-${key}`, value);
   root.setProperty('--surface-term', withAlpha(c.chrome['term-bg'], c.window.opacity));
   root.setProperty('--surface-sidebar', withAlpha(c.chrome.bg, c.window.opacity));
+  root.setProperty('--font-mono', c.font.family);
   configError.textContent = c.error || '';
   configError.hidden = !c.error;
   for (const s of sessions.values()) {
@@ -262,6 +264,8 @@ async function addProject(dir) {
   return res;
 }
 
+const AGENT_ICON = `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="8" width="16" height="12" rx="2" /><path d="M12 4v4M9 13v2M15 13v2M2 14h2M20 14h2" /></svg>`;
+// シェルに打つ1行。絶対パスに空白があれば引用符で囲む
 // ---- 作業の作成と削除の画面 ----
 
 const workDialog = document.getElementById('work-dialog');
@@ -455,6 +459,7 @@ function activate(id) {
   recent = [id, ...recent.filter((r) => r !== id)];
   s.lastActive = Date.now();
   terp.setMeta(id, { lastActive: s.lastActive });
+  refreshGit(true);
   s.el.hidden = false;
   s.unread = false;
   s.notify = false;
@@ -714,6 +719,9 @@ terp.onMenu((action, arg) => {
     case 'new-work':
       openWorkDialog();
       break;
+    case 'toggle-git':
+      toggleGitPanel();
+      break;
     case 'add-project':
       addProject();
       break;
@@ -773,6 +781,10 @@ window.__terp = {
 };
 
 applyConfig(config);
+initGitPanel({
+  activeCwd: () => sessions.get(activeId)?.cwd || null,
+  focusTerminal: () => sessions.get(activeId)?.term.focus(),
+});
 await refreshProjects();
 noProjects.hidden = projects.length > 0;
 await restoreSessions();

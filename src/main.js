@@ -7,6 +7,7 @@ const config = require('./config');
 const { setBlur } = require('./blur');
 const projects = require('./projects');
 const gitops = require('./git');
+const gitpanel = require('./gitpanel');
 const snapshot = require('./snapshot');
 const { PtyClient } = require('./ptyclient');
 
@@ -33,6 +34,7 @@ function shellEnv() {
   };
 }
 
+// 窓を閉じた後も、常駐のプロセスからは出力が届き続ける。閉じた窓へ送ると本体でエラーになり、
 function ensureClient() {
   if (client.socket && !client.socket.destroyed) return Promise.resolve();
   if (!connecting) {
@@ -175,6 +177,14 @@ ipcMain.handle('projects:remove', safe((_e, repo) => projects.remove(repo)));
 ipcMain.handle('work:create', safe((_e, { repo, branch, base }) => gitops.addWorktree(repo, branch, base)));
 ipcMain.handle('work:remove', safe((_e, { repo, dir }) => gitops.removeWorktree(repo, dir)));
 ipcMain.handle('work:changes', safe((_e, dir) => gitops.changeCount(dir)));
+ipcMain.handle('git:status', safe((_e, dir) => gitpanel.status(dir)));
+ipcMain.handle('git:diff', safe((_e, { top, file, kind }) => gitpanel.diff(top, file, kind)));
+ipcMain.handle('git:stage', safe((_e, { top, files }) => gitpanel.stage(top, files)));
+ipcMain.handle('git:unstage', safe((_e, { top, files }) => gitpanel.unstage(top, files)));
+ipcMain.handle('git:commit', safe((_e, { top, message }) => gitpanel.commit(top, message)));
+ipcMain.handle('git:push', safe((_e, top) => gitpanel.push(top)));
+ipcMain.handle('git:pull', safe((_e, top) => gitpanel.pull(top)));
+ipcMain.handle('git:fetch', safe((_e, top) => gitpanel.fetch(top)));
 ipcMain.handle('pty:create', (_e, opts) => createPty(opts));
 ipcMain.handle('pty:restore-info', () => restoreInfo());
 ipcMain.handle('pty:attach', async (_e, id) => {
@@ -257,7 +267,12 @@ function buildMenu() {
     },
     {
       label: '表示',
-      submenu: [{ role: 'toggleDevTools', label: '開発者ツール' }, { role: 'togglefullscreen', label: 'フルスクリーン' }],
+      submenu: [
+        { label: '変更の一覧', accelerator: 'CmdOrCtrl+Shift+G', click: send('toggle-git') },
+        { type: 'separator' },
+        { role: 'toggleDevTools', label: '開発者ツール' },
+        { role: 'togglefullscreen', label: 'フルスクリーン' },
+      ],
     },
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
@@ -301,3 +316,4 @@ app.whenReady().then(() => {
 // シェルは常駐のプロセスに残すため、ここでは止めない
 app.on('window-all-closed', () => app.quit());
 app.on('before-quit', () => saveSnapshot());
+// 終わるときは常駐のプロセスとの接続を切り、出力が届かないようにする。シェルは常駐のプロセスに残る

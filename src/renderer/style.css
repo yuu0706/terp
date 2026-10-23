@@ -16,6 +16,9 @@
   --surface-sidebar: var(--color-bg);
 
   --sidebar-width: 248px;
+  --panel-width: 320px;
+  --font-mono: Menlo, monospace;
+  --diff-font-size: 13px;
   --titlebar-height: 40px;
   --row-h: 48px;
   --control-h: 28px;
@@ -438,15 +441,22 @@ body {
   padding-top: var(--titlebar-height);
 }
 
-/* 端末の上の帯もウィンドウをつかめるようにする */
-#terminals::before {
-  content: '';
+/* 端末の上の帯。ウィンドウをつかめるようにし、右端に「変更」の面を開くボタンを置く */
+.topbar {
   position: absolute;
   top: 0;
   left: 0;
   right: 0;
   height: var(--titlebar-height);
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 0 var(--space-2);
   -webkit-app-region: drag;
+}
+
+.topbar__btn[aria-pressed='true'] {
+  background: var(--color-bg-active);
 }
 
 .term {
@@ -587,3 +597,319 @@ body {
   gap: var(--space-2);
   margin-top: var(--space-1);
 }
+
+/* ---- 右の「変更」の面 ---- */
+.panel {
+  width: var(--panel-width);
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface-sidebar);
+  border-left: 1px solid var(--color-border);
+  min-height: 0;
+}
+
+.panel[hidden] {
+  display: none;
+}
+
+.panel__head {
+  height: var(--titlebar-height);
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 0 var(--space-2) 0 var(--space-3);
+  -webkit-app-region: drag;
+}
+
+.panel__head .icon-btn {
+  -webkit-app-region: no-drag;
+}
+
+.panel__title {
+  flex: 1;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--color-text-muted);
+}
+
+.panel__empty {
+  margin: 0;
+  padding: var(--space-3);
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+.panel__empty[hidden],
+.panel__content[hidden],
+.git__group[hidden],
+.git__note[hidden],
+.git__result[hidden],
+.diff[hidden],
+.badge[hidden] {
+  display: none;
+}
+
+.panel__content {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.git__branch {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 0 var(--space-3);
+  font-size: var(--text-md);
+}
+
+.git__branch-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.git__ab {
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.git__sync {
+  display: flex;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3) 0;
+}
+
+.git__sync .btn {
+  flex: 1;
+  justify-content: center;
+}
+
+.git__note {
+  margin: var(--space-1) var(--space-3) 0;
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+  overflow-wrap: anywhere;
+}
+
+.git__lists {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  position: relative;
+  margin-top: var(--space-2);
+  padding: 0 var(--space-2);
+  border-top: 1px solid var(--color-border);
+}
+
+.git__group-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: 32px;
+  padding: 0 var(--space-1);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--color-text-muted);
+}
+
+.git__count {
+  flex: 1;
+  font-weight: 400;
+}
+
+.btn--xs {
+  height: 22px;
+  padding: 0 var(--space-2);
+  font-size: var(--text-sm);
+}
+
+.git__files {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.git__file {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: 28px;
+  padding: 0 var(--space-1);
+  border-radius: var(--radius);
+  font-size: var(--text-md);
+  cursor: pointer;
+}
+
+.git__file:hover {
+  background: var(--color-bg-hover);
+}
+
+.git__file[aria-current='true'] {
+  background: var(--color-bg-active);
+}
+
+/* 状態の文字。M 変更・A 追加・D 削除・R 名前の変更・? 追跡外・U 競合 */
+.git__code {
+  flex: none;
+  width: 14px;
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: var(--text-sm);
+  text-align: center;
+  color: var(--color-warning);
+}
+
+.git__code[data-code='A'],
+.git__code[data-code='?'] {
+  color: var(--color-busy);
+}
+
+.git__code[data-code='D'],
+.git__code[data-code='U'] {
+  color: var(--color-danger);
+}
+
+.git__path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  direction: rtl;
+  text-align: left;
+}
+
+.git__file .icon-btn {
+  visibility: hidden;
+}
+
+.git__file:hover .icon-btn,
+.git__file .icon-btn:focus-visible {
+  visibility: visible;
+}
+
+.git__commit {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3) var(--space-3);
+  border-top: 1px solid var(--color-border);
+}
+
+.git__commit .git__note {
+  margin: 0;
+}
+
+.git__message {
+  height: auto;
+  min-height: 64px;
+  padding: var(--space-2);
+  resize: vertical;
+  font-size: var(--text-md);
+  line-height: 1.4;
+}
+
+.git__result {
+  flex: none;
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  max-height: 120px;
+  overflow-y: auto;
+  border-top: 1px solid var(--color-border);
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: var(--text-sm);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.git__result[data-tone='error'] {
+  color: var(--color-warning);
+}
+
+/* ---- 差分 ---- */
+.diff {
+  position: absolute;
+  top: var(--titlebar-height);
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-term-bg);
+}
+
+.diff__head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: 36px;
+  padding: 0 var(--space-2) 0 var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.diff__title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: var(--text-md);
+}
+
+.diff__body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  position: relative;
+  font-family: var(--font-mono);
+  font-size: var(--diff-font-size);
+  line-height: 1.5;
+}
+
+.diff__table {
+  border-collapse: collapse;
+  min-width: 100%;
+}
+
+.diff__table td {
+  padding: 0 var(--space-2);
+  white-space: pre;
+  vertical-align: top;
+}
+
+.diff__num {
+  width: 1%;
+  text-align: right;
+  color: var(--color-text-muted);
+  opacity: 0.7;
+  user-select: none;
+}
+
+.diff__row--add {
+  background: color-mix(in srgb, var(--color-busy) 16%, transparent);
+}
+
+.diff__row--del {
+  background: color-mix(in srgb, var(--color-danger) 16%, transparent);
+}
+
+.diff__row--hunk td {
+  color: var(--color-accent);
+  background: var(--color-bg);
+}
+
+.diff__notice {
+  margin: 0;
+  padding: var(--space-3);
+  color: var(--color-text-muted);
+}
+

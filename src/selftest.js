@@ -6,6 +6,104 @@ const { app, clipboard } = require('electron');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// TERP_SELFTEST_GIT を付けると、一時フォルダにプッシュ先の役の空のリポジトリと作業用の複製を作り、
+// 「変更」の面のステージ・差分・コミット・プッシュ・プルを、画面のボタンを押して確かめる
+async function runGitTest({ win, js, check, outDir }) {
+  const { execFileSync } = require('child_process');
+  const sh = (args, cwd) => execFileSync('git', args, { cwd, encoding: 'utf8' });
+  const base = path.join(outDir, 'git-test');
+  const remote = path.join(base, 'remote.git');
+  const work = path.join(base, 'work');
+  const other = path.join(base, 'other');
+  fs.mkdirSync(base, { recursive: true });
+  sh(['init', '-q', '--bare', '-b', 'main', remote], base);
+  for (const dir of [work, other]) {
+    sh(['clone', '-q', remote, dir], base);
+    sh(['config', 'user.name', 'test'], dir);
+    sh(['config', 'user.email', 'test@example.com'], dir);
+  }
+  fs.writeFileSync(path.join(work, 'a.txt'), 'one\ntwo\n');
+  sh(['add', '.'], work);
+  sh(['commit', '-q', '-m', 'init'], work);
+  sh(['push', '-q', '-u', 'origin', 'main'], work);
+
+  const shot = (name) => win.webContents.capturePage().then((img) => fs.writeFileSync(path.join(outDir, `${name}.png`), img.toPNG()));
+  const click = (selector) => js(`document.querySelector(${JSON.stringify(selector)}).click()`);
+  const text = (selector) => js(`document.querySelector(${JSON.stringify(selector)})?.textContent || ''`);
+  const count = (group) => js(`document.querySelectorAll('[data-group="${group}"] .git__file').length`);
+  const settle = async () => {
+    await js(`document.getElementById('git-refresh').click()`);
+    await sleep(800);
+  };
+
+  await js(`window.__terp.open(${JSON.stringify(work)})`);
+  await sleep(2500);
+  await click('#git-toggle');
+  await sleep(800);
+  check('面にブランチが出る', (await text('#git-branch')) === 'main', await text('#git-branch'));
+  check('面にコミットの名義が出る', (await text('#git-identity')).includes('test <test@example.com>'), await text('#git-identity'));
+
+  fs.writeFileSync(path.join(work, 'a.txt'), 'one\nTWO\nthree\n');
+  fs.writeFileSync(path.join(work, 'b.txt'), 'new file\n');
+  await settle();
+  check('変更と追跡外のファイルが未ステージに出る', (await count('unstaged')) === 2, `件数 ${await count('unstaged')}`);
+  check('上の帯のボタンに変更の数が出る', (await text('#git-toggle-count')) === '2', await text('#git-toggle-count'));
+
+  await click('[data-group="unstaged"] .git__file');
+  await sleep(800);
+  const adds = await js(`document.querySelectorAll('#diff-body .diff__row--add').length`);
+  const dels = await js(`document.querySelectorAll('#diff-body .diff__row--del').length`);
+  check('差分に追加と削除の行が出る', adds === 2 && dels === 1, `追加 ${adds} / 削除 ${dels}`);
+  await shot('1-diff');
+  await js(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))`);
+  check('Esc で差分を閉じる', await js(`document.getElementById('diff-view').hidden`));
+
+  await click('[data-action="stage-all"]');
+  await sleep(800);
+  check('すべてステージできる', (await count('staged')) === 2 && (await count('unstaged')) === 0);
+  const disabled = await js(`document.querySelector('#git-commit [type="submit"]').disabled`);
+  check('メッセージが無いとコミットできない', disabled && (await text('#git-commit-reason')).includes('メッセージ'), await text('#git-commit-reason'));
+  await click('[data-group="staged"] .git__file .icon-btn');
+  await sleep(800);
+  check('1件をステージから外せる', (await count('staged')) === 1 && (await count('unstaged')) === 1);
+  await click('[data-action="stage-all"]');
+  await sleep(800);
+
+  await js(`(() => { const t = document.querySelector('#git-commit textarea'); t.value = 'テストのコミット'; t.dispatchEvent(new Event('input')); })()`);
+  await click('#git-commit [type="submit"]');
+  await sleep(1500);
+  check('コミットできる', sh(['log', '-1', '--format=%s'], work).trim() === 'テストのコミット');
+  check('コミットしたら一覧が空になる', (await count('staged')) === 0 && (await count('unstaged')) === 0);
+  check('変更が無いと「変更はありません」と出る', !(await js(`document.getElementById('git-clean').hidden`)));
+  await settle();
+  check('上流より1件進んでいると出る', (await text('#git-ab')).startsWith('↑1'), await text('#git-ab'));
+  check('プッシュのボタンに送る件数が出る', (await text('#git-push')) === 'プッシュ ↑1', await text('#git-push'));
+  await shot('2-committed');
+
+  await click('#git-push');
+  await sleep(3000);
+  check('プッシュできる', sh(['log', '-1', '--format=%s', 'main'], remote).trim() === 'テストのコミット', await text('#git-result'));
+
+  // 別の複製から1件送り、プルで取り込む
+  sh(['pull', '-q'], other);
+  fs.writeFileSync(path.join(other, 'c.txt'), 'from other\n');
+  sh(['add', '.'], other);
+  sh(['commit', '-q', '-m', 'other'], other);
+  sh(['push', '-q'], other);
+  await click('#git-pull');
+  await sleep(3000);
+  check('プルで取り込める', fs.existsSync(path.join(work, 'c.txt')), await text('#git-result'));
+
+  // 新しいブランチは追跡先が無いため、プッシュで origin に作る
+  sh(['switch', '-q', '-c', 'topic'], work);
+  await settle();
+  check('追跡先が無いと出る', (await text('#git-upstream')).includes('追跡先がありません'));
+  await click('#git-push');
+  await sleep(3000);
+  check('追跡先の無いブランチもプッシュできる', sh(['branch', '--list', 'topic'], remote).includes('topic'), await text('#git-result'));
+  await shot('3-pushed');
+}
+
 // TERP_SELFTEST_PERSIST=1→2→3 の順に、同じ TERP_CONFIG_DIR で3回起動して、セッションの保持を確かめる。
 // 1: 印を付けて終わる / 2: 開き直してもシェルが生きている。常駐のプロセスを止める（Mac の再起動に当たる）/
 // 3: 控えから同じ場所・名前で開き直す
@@ -264,6 +362,13 @@ exports.run = (win) => {
       // 1 と 2 は常駐のプロセスを残したまま終わる（開き直しを確かめるため）
       if (process.env.TERP_SELFTEST_PERSIST === '3') await finish();
       else app.quit();
+      return;
+    }
+
+    if (process.env.TERP_SELFTEST_GIT) {
+      await runGitTest({ win, js, check, outDir });
+      fs.writeFileSync(path.join(outDir, 'result.txt'), log.join('\n') + '\n');
+      await finish();
       return;
     }
 

@@ -24,5 +24,13 @@ contextBridge.exposeInMainWorld('terp', {
   createWork: (opts) => ipcRenderer.invoke('work:create', opts),
   removeWork: (opts) => ipcRenderer.invoke('work:remove', opts),
   workChanges: (dir) => ipcRenderer.invoke('work:changes', dir),
+  gitStatus: (dir) => ipcRenderer.invoke('git:status', dir),
+  gitDiff: (opts) => ipcRenderer.invoke('git:diff', opts),
+  gitStage: (opts) => ipcRenderer.invoke('git:stage', opts),
+  gitUnstage: (opts) => ipcRenderer.invoke('git:unstage', opts),
+  gitCommit: (opts) => ipcRenderer.invoke('git:commit', opts),
+  gitPush: (top) => ipcRenderer.invoke('git:push', top),
+  gitPull: (top) => ipcRenderer.invoke('git:pull', top),
+  gitFetch: (top) => ipcRenderer.invoke('git:fetch', top),
   openExternal: (url) => ipcRenderer.send('open-external', url),
 });

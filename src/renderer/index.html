@@ -61,6 +61,26 @@
       </div>
     </nav>
     <main id="terminals">
+      <div class="topbar">
+        <button id="git-toggle" class="btn topbar__btn" type="button" aria-pressed="false" title="変更の一覧（⌘⇧G）">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="6" cy="6" r="2" /><circle cx="6" cy="18" r="2" /><circle cx="18" cy="8" r="2" />
+            <path d="M6 8v8M18 10c0 4-6 3-6 8" />
+          </svg>
+          <span>変更</span>
+          <span id="git-toggle-count" class="badge" hidden></span>
+        </button>
+      </div>
+      <section id="diff-view" class="diff" hidden aria-labelledby="diff-title">
+        <div class="diff__head">
+          <span id="diff-title" class="diff__title"></span>
+          <span id="diff-kind" class="work__tag"></span>
+          <button id="diff-close" class="icon-btn" type="button" aria-label="差分を閉じる" title="閉じる（Esc）">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
+          </button>
+        </div>
+        <div id="diff-body" class="diff__body"></div>
+      </section>
       <div id="empty" class="empty" hidden>
         <p>開いているターミナルはありません</p>
         <button id="empty-new" class="btn btn--primary" type="button">
@@ -69,6 +89,63 @@
         </button>
       </div>
     </main>
+
+    <aside id="git-panel" class="panel" aria-label="変更" hidden>
+      <div class="panel__head">
+        <span class="panel__title">変更</span>
+        <button id="git-refresh" class="icon-btn" type="button" aria-label="読み直す" title="読み直す">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.3-5.6M20 4v5h-5" /></svg>
+        </button>
+        <button id="git-close" class="icon-btn" type="button" aria-label="変更の一覧を閉じる" title="閉じる（⌘⇧G）">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
+        </button>
+      </div>
+      <p id="git-empty" class="panel__empty" hidden></p>
+      <div id="git-content" class="panel__content" hidden>
+        <div class="git__branch">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="6" cy="6" r="2" /><circle cx="6" cy="18" r="2" /><circle cx="18" cy="8" r="2" />
+            <path d="M6 8v8M18 10c0 4-6 3-6 8" />
+          </svg>
+          <span id="git-branch" class="git__branch-name"></span>
+          <span id="git-ab" class="git__ab"></span>
+        </div>
+        <div class="git__sync">
+          <button id="git-fetch" class="btn" type="button">フェッチ</button>
+          <button id="git-pull" class="btn" type="button">プル</button>
+          <button id="git-push" class="btn" type="button">プッシュ</button>
+        </div>
+        <p id="git-upstream" class="git__note"></p>
+        <div class="git__lists">
+          <p id="git-clean" class="panel__empty" hidden>変更はありません</p>
+          <section class="git__group" data-group="conflicted" hidden>
+            <div class="git__group-head"><span>競合</span><span class="git__count"></span></div>
+            <ul class="git__files"></ul>
+          </section>
+          <section class="git__group" data-group="staged">
+            <div class="git__group-head">
+              <span>ステージ済み</span><span class="git__count"></span>
+              <button class="btn btn--xs" type="button" data-action="unstage-all">すべて外す</button>
+            </div>
+            <ul class="git__files"></ul>
+          </section>
+          <section class="git__group" data-group="unstaged">
+            <div class="git__group-head">
+              <span>未ステージ</span><span class="git__count"></span>
+              <button class="btn btn--xs" type="button" data-action="stage-all">すべてステージ</button>
+            </div>
+            <ul class="git__files"></ul>
+          </section>
+        </div>
+        <form id="git-commit" class="git__commit">
+          <p id="git-identity" class="git__note"></p>
+          <textarea name="message" class="input git__message" rows="3" placeholder="コミットメッセージ" spellcheck="false"></textarea>
+          <p id="git-commit-reason" class="git__note" hidden></p>
+          <button type="submit" class="btn btn--primary btn--block-sm">コミット<kbd class="btn__key">⌘↩</kbd></button>
+        </form>
+        <p id="git-result" class="git__result" role="status" hidden></p>
+      </div>
+    </aside>
 
     <dialog id="work-dialog" class="dialog" aria-labelledby="work-dialog-title">
       <form method="dialog" class="dialog__body">
