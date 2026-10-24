@@ -1,6 +1,7 @@
 // 右の面の「ファイル」。表示中のタブの作業場所を含む worktree の一番上から、フォルダを木の形で出す。
 // フォルダの中身は開いたときに読み、開いているフォルダだけを読み直す
 import { makeTabDraggable } from './panes.js';
+import { PATH_DRAG_TYPE } from './droppaths.js';
 
 const terp = window.terp;
 
@@ -98,6 +99,12 @@ function render() {
       li.innerHTML = `${item.dir ? CHEVRON : '<span class="files__spacer"></span>'}${item.dir ? FOLDER : FILE}<span class="files__name"></span>`;
       li.querySelector('.files__name').textContent = item.name;
       if (!item.dir) makeTabDraggable(li, `f:${item.path}`);
+      li.draggable = true;
+      li.addEventListener('dragstart', (event) => {
+        event.stopPropagation();
+        event.dataTransfer.effectAllowed = 'copyMove';
+        event.dataTransfer.setData(PATH_DRAG_TYPE, item.path);
+      });
       li.addEventListener('click', () => (item.dir ? toggleDir(item.path) : onOpenFile(item.path)));
       treeEl.append(li);
       if (open) add(item.path, depth + 1);

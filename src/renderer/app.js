@@ -9,8 +9,13 @@ import { renderFileView, applyEditorConfig } from './fileview.js';
 import { createPathLinkProvider } from './pathlinks.js';
 import { initSettings, openSettings } from './settings.js';
 import { createPane, paneList, splitPane, closePane, replacePane, restoreLayout, createPaneView, makeTabDraggable, MAX_PANES } from './panes.js';
+import { terminalPaths, pathDropTarget, pathsFromTransfer } from './droppaths.js';
 
 const terp = window.terp;
+// 枠の外でも Finder のファイルで窓が遷移しないよう、既定の動作を止める。
+for (const type of ['dragover', 'drop']) document.addEventListener(type, (event) => {
+  if (Array.from(event.dataTransfer?.types || []).includes('Files')) event.preventDefault();
+}, true);
 const container = document.getElementById('terminals');
 const projectsEl = document.getElementById('projects');
 const looseSection = document.getElementById('loose');
@@ -59,6 +64,8 @@ const panes = createPaneView(paneHost, {
   onActivate: activatePane,
   onClose: closeWorkspacePane,
   onDrop: dropTabInPane,
+  canDropPaths: (id) => Boolean(dropTargetOf(id)),
+  onDropPaths: (dataTransfer, id, event) => dropPaths(id, pathsFromTransfer(dataTransfer, terp.pathForFile), event),
   onResize: (next) => { layout = next; syncPanes(); saveTabs(); },
 });
 // 途中の状態で控えを上書きすると、まだ開き直していないファイルが消える
@@ -1113,6 +1120,38 @@ function closeWorkspacePane(id) {
   activatePane(activePaneId);
 }
 
+function dropTargetOf(paneId) {
+  const pane = paneList(layout).find((p) => p.id === paneId);
+  return pathDropTarget(pane?.key, viewOf(pane?.key));
+}
+
+function dropPaths(paneId, paths, { clientX, clientY } = {}) {
+  const kind = dropTargetOf(paneId);
+  const valid = Array.isArray(paths) ? paths.filter((path) => typeof path === 'string' && path.length > 0) : [];
+  if (!kind || !valid.length) return false;
+  const pane = paneList(layout).find((p) => p.id === paneId);
+  const view = viewOf(pane.key);
+  if (kind === 'terminal') {
+    activatePane(paneId);
+    // paste を経由し、括弧付き貼り付けを1回の入力として届ける。
+    view.term.paste(terminalPaths(valid));
+  } else {
+    const editor = view.view.editor;
+    const target = Number.isFinite(clientX) && Number.isFinite(clientY) ? editor.getTargetAtClientPoint(clientX, clientY) : null;
+    const position = target?.position || editor.getPosition();
+    if (!position) return false;
+    activatePane(paneId);
+    editor.setPosition(position);
+    editor.pushUndoStop();
+    editor.executeEdits('drop-paths', [{
+      range: { startLineNumber: position.lineNumber, startColumn: position.column, endLineNumber: position.lineNumber, endColumn: position.column },
+      text: valid.join('\n'), forceMoveMarkers: true,
+    }]);
+    editor.pushUndoStop();
+  }
+  return true;
+}
+
 async function dropTabInPane(key, paneId, side = 'center') {
   if (!['left', 'right', 'top', 'bottom', 'center'].includes(side) || typeof key !== 'string') return;
   if (!paneList(layout).some((p) => p.id === paneId)) return;
@@ -1686,6 +1725,7 @@ window.__terp = {
   sessions,
   layout: () => structuredClone(layout),
   dropTab: dropTabInPane,
+  dropPaths,
   get activePaneId() { return activePaneId; },
   get activeId() {
     return activeId;

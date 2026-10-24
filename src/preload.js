@@ -1,6 +1,7 @@
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 contextBridge.exposeInMainWorld('terp', {
+  pathForFile: (file) => webUtils.getPathForFile(file),
   // サンドボックスの preload では os を読めないため、本体から受け取る
   home: ipcRenderer.sendSync('home'),
   editorWorker: ipcRenderer.sendSync('editor:worker'),

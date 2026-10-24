@@ -362,6 +362,139 @@ async function runSplitTest({ win, js, check, outDir }) {
   check('右の枠のメニューで隣へ移る', (await js('window.__terp.activePaneId')) === right.id);
 }
 
+// TERP_SELFTEST_DROPPATHS は、パスの入力・閲覧枠の除外・既存の分割との切り替えを確かめる。
+async function runDropPathsTest({ js, check, outDir }) {
+  const { execFileSync } = require('child_process');
+  const repo = fs.mkdtempSync(path.join(path.resolve(outDir), 'drop-paths-'));
+  const file = path.join(repo, 'note.txt');
+  const other = path.join(repo, 'other file.txt');
+  const folder = path.join(repo, 'folder name');
+  const image = path.join(repo, 'icon.png');
+  fs.writeFileSync(file, 'before\n');
+  fs.writeFileSync(other, 'other\n');
+  fs.mkdirSync(folder);
+  fs.copyFileSync(path.join(__dirname, '..', 'build', 'icon.png'), image);
+  execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repo });
+  const leaves = () => js(`(() => {
+    const visit = (n) => n.type === 'pane' ? [n] : n.children.flatMap(visit);
+    return visit(window.__terp.layout());
+  })()`);
+  const waitFor = async (test) => {
+    for (let i = 0; i < 70; i++) {
+      if (await test()) return true;
+      await sleep(100);
+    }
+    return false;
+  };
+  await js(`Promise.all(window.__terp.tabOrder.map((key) => window.__terp.closeKey(key)))`);
+  await waitFor(() => js('window.__terp.sessions.size === 0'));
+  await js(`window.__terp.addProject(${JSON.stringify(repo)})`);
+  const first = await js(`window.__terp.open(${JSON.stringify(repo)})`);
+  const target = (await leaves())[0].id;
+  const second = await js(`window.__terp.open(${JSON.stringify(repo)})`);
+  await js(`window.__terp.dropTab('t:${first}', ${JSON.stringify(target)}, 'left')`);
+  const terminalPane = (await leaves()).find((p) => p.key === `t:${first}`).id;
+  const pane = JSON.stringify(terminalPane);
+  await js(`window.__terp.activateKey('t:${second}')`);
+  await sleep(2000);
+
+  const paths = ['/tmp/my file.txt', '/tmp/日本語'];
+  const expected = '/tmp/my\\ file.txt /tmp/日本語 ';
+  const terminalInput = () => js(`(() => {
+    const buf = window.__terp.sessions.get(${first}).term.buffer.active;
+    let row = buf.baseY + buf.cursorY;
+    let text = buf.getLine(row).translateToString(false);
+    while (row > 0 && buf.getLine(row).isWrapped) text = buf.getLine(--row).translateToString(false) + text;
+    return text;
+  })()`);
+  const paste = await js(`(async () => {
+    const term = window.__terp.sessions.get(${first}).term;
+    await new Promise((resolve) => term.write('\x1b[?2004h', resolve));
+    const input = [];
+    const listener = term.onData((text) => input.push(text));
+    const accepted = window.__terp.dropPaths(${pane}, ${JSON.stringify(paths)});
+    listener.dispose();
+    return { accepted, input };
+  })()`);
+  check('括弧付き貼り付けで複数のパスを1回で送る', paste.accepted && paste.input.length === 1 && paste.input[0] === '\x1b[200~' + expected + '\x1b[201~');
+  check('空白を逃がしたパスと日本語のパスが入力行に並ぶ', await waitFor(async () => (await terminalInput()).includes(expected)));
+  check('Enter を送らず、落とした端末の枠に焦点を移す', !paste.input.join('').includes('\r') && !paste.input.join('').includes('\n') && await js(`window.__terp.activePaneId === ${pane} && document.activeElement === window.__terp.sessions.get(${first}).el.querySelector('.xterm-helper-textarea')`));
+
+  await js(`window.__terp.activateKey('t:${second}')`);
+  await js(`window.__terp.openFile(${JSON.stringify(file)}).then(() => true)`);
+  const editorPane = (await leaves()).find((p) => p.key === `f:${file}`).id;
+  const editor = `window.__terp.editorOf(${JSON.stringify(file)})`;
+  await js(`${editor}.setPosition({ lineNumber: 1, column: 3 })`);
+  await js(`window.__terp.dropPaths(${JSON.stringify(editorPane)}, ${JSON.stringify(paths)})`);
+  check('文字のエディタにはカーソル位置に素のパスを改行で入れる', (await js(`${editor}.getValue()`)) === 'be' + paths.join('\n') + 'fore\n');
+
+  await js(`window.__terp.openFile(${JSON.stringify(image)}).then(() => true)`);
+  const imagePane = (await leaves()).find((p) => p.key === `f:${image}`).id;
+  const beforeImage = await js(`document.querySelector('[data-pane-id="${imagePane}"] .fileview__image').src`);
+  const beforeLayout = await js('JSON.stringify(window.__terp.layout())');
+  const ignored = await js(`window.__terp.dropPaths(${JSON.stringify(imagePane)}, ${JSON.stringify(paths)})`);
+  check('画像の閲覧枠ではパスを入れず、表示と配置を保つ', !ignored && (await js(`document.querySelector('[data-pane-id="${imagePane}"] .fileview__image').src`)) === beforeImage && (await js('JSON.stringify(window.__terp.layout())')) === beforeLayout);
+
+  const href = await js('location.href');
+  const guarded = await js(`(() => {
+    const dataTransfer = new DataTransfer();
+    dataTransfer.items.add(new File(['sample'], 'sample.txt'));
+    const options = { bubbles: true, cancelable: true, dataTransfer };
+    const over = new DragEvent('dragover', options);
+    const drop = new DragEvent('drop', options);
+    document.dispatchEvent(over);
+    document.dispatchEvent(drop);
+    return over.defaultPrevented && drop.defaultPrevented;
+  })()`);
+  await sleep(100);
+  check('枠の外の files 付きドロップでも窓が遷移しない', guarded && (await js('location.href')) === href);
+  check('Finder のドラッグでは入力枠だけを囲み、分割の予告を出さない', await js(`(() => {
+    const dataTransfer = new DataTransfer();
+    dataTransfer.items.add(new File(['sample'], 'sample.txt'));
+    const terminal = document.querySelector('[data-pane-id="${terminalPane}"]');
+    const image = document.querySelector('[data-pane-id="${imagePane}"]');
+    const options = { bubbles: true, cancelable: true, dataTransfer };
+    terminal.querySelector('.xterm-helper-textarea').dispatchEvent(new DragEvent('dragover', options));
+    const highlighted = terminal.dataset.dropPaths === 'true' && !document.querySelector('.pane[data-drop]');
+    image.dispatchEvent(new DragEvent('dragover', options));
+    const ignored = !document.querySelector('.pane[data-drop-paths], .pane[data-drop]');
+    document.dispatchEvent(new DragEvent('drop', options));
+    return highlighted && ignored;
+  })()`));
+
+  await js(`window.__terp.activateKey('t:${first}'); window.__terp.setPanel('files')`);
+  await waitFor(() => js(`Boolean([...document.querySelectorAll('#files-tree .files__name')].find((el) => el.textContent === 'other file.txt'))`));
+  const dragRow = (name, alt, paneId = terminalPane) => js(`(() => {
+    const row = [...document.querySelectorAll('#files-tree .files__item')].find((el) => el.querySelector('.files__name').textContent === ${JSON.stringify(name)});
+    const pane = document.querySelector('[data-pane-id="${paneId}"]');
+    const rect = pane.getBoundingClientRect();
+    const dataTransfer = new DataTransfer();
+    row.dispatchEvent(new DragEvent('dragstart', { bubbles: true, dataTransfer }));
+    const point = { bubbles: true, cancelable: true, dataTransfer, altKey: ${alt}, clientX: rect.right - 2, clientY: rect.top + rect.height / 2 };
+    pane.dispatchEvent(new DragEvent('dragover', point));
+    const result = { path: dataTransfer.getData('text/x-terp-path'), highlighted: pane.dataset.dropPaths === 'true', split: Boolean(pane.dataset.drop) };
+    pane.dispatchEvent(new DragEvent('drop', point));
+    row.dispatchEvent(new DragEvent('dragend', { bubbles: true, dataTransfer }));
+    return result;
+  })()`);
+  const beforeCount = (await leaves()).length;
+  const altFile = await dragRow('other file.txt', true);
+  const escapedOther = other.replace(/ /g, '\\ ') + ' ';
+  check('右のファイルを ⌥ 付きで落とすとパスが入り、枠は増えない', altFile.path === other && altFile.highlighted && !altFile.split && (await leaves()).length === beforeCount && await waitFor(async () => (await terminalInput()).includes(escapedOther)));
+  const altFolder = await dragRow('folder name', true);
+  check('右のフォルダも ⌥ 付きでパスを入力できる', altFolder.path === folder && (await leaves()).length === beforeCount && await waitFor(async () => (await terminalInput()).includes(folder.replace(/ /g, '\\ ') + ' ')));
+
+  await js(`window.__terp.activateKey(${JSON.stringify(`f:${file}`)})`);
+  const nextEditorPane = (await leaves()).find((p) => p.key === `f:${file}`).id;
+  await js(`${editor}.setPosition({ lineNumber: 1, column: 1 })`);
+  const beforeEditor = await js(`${editor}.getValue()`);
+  await dragRow('other file.txt', true, nextEditorPane);
+  check('右のファイルを ⌥ 付きでエディタに落とすと素のパスが入る', (await js(`${editor}.getValue()`)).includes(other) && (await js(`${editor}.getValue()`)).length === beforeEditor.length + other.length && (await leaves()).length === beforeCount);
+  const normal = await dragRow('other file.txt', false);
+  check('⌥ 無しのファイルのドロップは従来どおり枠を分ける', normal.split && !normal.highlighted && await waitFor(async () => (await leaves()).length === beforeCount + 1));
+  check('ドロップ後は入力枠の強調と分割の予告を消す', await js(`!document.querySelector('.pane[data-drop-paths], .pane[data-drop]')`));
+}
+
 // TERP_SELFTEST_PATHLINKS を付けると、実在確認・折り返し・ファイルの行と桁への移動を確かめる
 async function runPathLinksTest({ js, check, outDir }) {
   const dir = fs.mkdtempSync(path.join(path.resolve(outDir), 'pathlinks-'));
@@ -1155,6 +1288,13 @@ exports.run = (win) => {
 
     if (process.env.TERP_SELFTEST_PATHLINKS === '1') {
       await runPathLinksTest({ js, check, outDir });
+      fs.writeFileSync(path.join(outDir, 'result.txt'), log.join('\n') + '\n');
+      await finish();
+      return;
+    }
+
+    if (process.env.TERP_SELFTEST_DROPPATHS === '1') {
+      await runDropPathsTest({ js, check, outDir });
       fs.writeFileSync(path.join(outDir, 'result.txt'), log.join('\n') + '\n');
       await finish();
       return;

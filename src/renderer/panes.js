@@ -1,4 +1,6 @@
 // 枠の木は DOM と切り離し、控えの復元と画面の操作で同じ処理を使う。
+import { isPathDrop } from './droppaths.js';
+
 export const MAX_PANES = 6;
 export const MIN_PANE_SIZE = 120;
 export const TAB_DRAG_TYPE = 'text/x-terp-tab';
@@ -121,11 +123,14 @@ function minimumSize(tree, dir, gutter) {
   return tree.dir === dir ? values.reduce((a, b) => a + b, 0) + gutter * (values.length - 1) : Math.max(...values);
 }
 
-export function createPaneView(host, { onActivate, onClose, onDrop, onResize }) {
+export function createPaneView(host, { onActivate, onClose, onDrop, onResize, canDropPaths, onDropPaths }) {
   let tree;
   let signature;
   const elements = new Map();
-  const clearDrop = () => host.querySelectorAll('[data-drop]').forEach((el) => delete el.dataset.drop);
+  const clearDrop = () => host.querySelectorAll('[data-drop], [data-drop-paths]').forEach((el) => {
+    delete el.dataset.drop;
+    delete el.dataset.dropPaths;
+  });
   const shape = (node) => node.type === 'pane' ? node.id : [node.dir, ...node.children.map(shape)];
   const gutterSize = () => parseFloat(getComputedStyle(host).getPropertyValue('--space-1')) + 1;
   const setSizes = (node, el) => {
@@ -204,13 +209,26 @@ export function createPaneView(host, { onActivate, onClose, onDrop, onResize }) 
     });
     return el;
   }
+  // Monaco がファイルを独自に開く前に、パスの入力として受け取る。
+  for (const type of ['dragover', 'drop']) host.addEventListener(type, (event) => {
+    if (!isPathDrop(event.dataTransfer, event.altKey)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    clearDrop();
+    const pane = event.target.closest('.pane');
+    const accepts = pane && host.contains(pane) && canDropPaths?.(pane.dataset.paneId);
+    if (type === 'dragover') {
+      event.dataTransfer.dropEffect = accepts ? 'copy' : 'none';
+      if (accepts) pane.dataset.dropPaths = 'true';
+    } else if (accepts) onDropPaths(event.dataTransfer, pane.dataset.paneId, event);
+  }, true);
   host.addEventListener('dragover', (event) => {
+    clearDrop();
     if (!event.dataTransfer?.types.includes(TAB_DRAG_TYPE)) return;
     const pane = event.target.closest('.pane');
     if (!pane || !host.contains(pane)) return;
     event.preventDefault();
     event.dataTransfer.dropEffect = 'move';
-    clearDrop();
     pane.dataset.drop = paneList(tree).length >= MAX_PANES ? 'center' : dropSide(pane.getBoundingClientRect(), event.clientX, event.clientY);
   });
   host.addEventListener('drop', (event) => {
@@ -224,6 +242,7 @@ export function createPaneView(host, { onActivate, onClose, onDrop, onResize }) 
   });
   host.addEventListener('dragleave', (event) => { if (!host.contains(event.relatedTarget)) clearDrop(); });
   document.addEventListener('dragend', clearDrop);
+  document.addEventListener('drop', clearDrop);
   return {
     render(next, activeId) {
       tree = next;
