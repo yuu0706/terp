@@ -192,8 +192,15 @@ async function runSettingsTest({ win, js, check, outDir }) {
 async function runNotifyTest({ win, js, check, outDir }) {
   const { CONFIG_PATH } = require('./config');
   const notify = require('./notify');
+  const agentreply = require('./agentreply');
   if (!process.env.TERP_CONFIG_DIR) throw new Error('通知の自己診断には一時フォルダの TERP_CONFIG_DIR が必要');
   const original = fs.readFileSync(CONFIG_PATH, 'utf8');
+  const previousFake = process.env.TERP_REPLY_FAKE_DIR;
+  const fakeDir = path.join(outDir, 'reply-fakes');
+  const claudeDir = path.join(fakeDir, 'projects', 'test-project');
+  fs.mkdirSync(claudeDir, { recursive: true });
+  process.env.TERP_REPLY_FAKE_DIR = fakeDir;
+  let delayedWrite;
   const wait = async (fn) => {
     for (let i = 0; i < 100; i++) {
       if (await fn()) return true;
@@ -220,7 +227,7 @@ async function runNotifyTest({ win, js, check, outDir }) {
   const bell = (id) => emit(id, '\\007');
   const cooldown = () => sleep(3100);
   try {
-    await settings({ notifications: true, notifyAgentDone: true, notifyBell: true, notifyWhenVisible: false, notifySound: true });
+    await settings({ notifications: true, notifyAgentDone: true, notifyBell: true, notifyWhenVisible: false, notifySound: true, notifyMessage: false });
     await js('window.__terp.setFocusForTest(false)');
     const root = path.resolve(__dirname, '..');
     const added = await js(`window.__terp.addProject(${JSON.stringify(root)})`);
@@ -229,7 +236,7 @@ async function runNotifyTest({ win, js, check, outDir }) {
     await js(`window.__terp.rename(${id}, '通知の端末')`);
     const start = records.length;
     await done(id);
-    check('題名の変化でセッションの表示名と作業名を通知する', records.length === start + 1 && records.at(-1).title === '通知の端末' && records.at(-1).body.startsWith('応答が終わった · ') && records.at(-1).body.includes(' / '));
+    check('題名の変化でセッションの表示名と作業名を通知する', records.length === start + 1 && records.at(-1).title === '通知の端末 · ' + records.at(-1).body.slice('応答が終わった · '.length) && records.at(-1).body.startsWith('応答が終わった · ') && records.at(-1).body.includes(' / '));
     check('焦点が無ければ表示中でも一覧の通知の印を付ける', await js(`window.__terp.sessions.get(${id}).notify`));
     await emit(id, '\\033]9;すぐ後の通知\\007');
     check('題名のすぐ後の OSC 9 を3秒以内ならまとめる', records.length === start + 1);
@@ -291,8 +298,8 @@ async function runNotifyTest({ win, js, check, outDir }) {
     await js("window.__terp.openSettings('notifications')");
     await js("document.getElementById('setting-notifications').click()");
     await wait(() => js('window.__terp.config.notifications === false'));
-    const dependents = ['notifyAgentDone', 'notifyBell', 'notifyWhenVisible', 'notifySound'];
-    check('通知を切ると4項目が触れなくなる', await js(`${JSON.stringify(dependents)}.every((key) => document.getElementById('setting-' + key).disabled)`));
+    const dependents = ['notifyAgentDone', 'notifyBell', 'notifyWhenVisible', 'notifySound', 'notifyMessage'];
+    check('通知を切ると5項目が触れなくなる', await js(`${JSON.stringify(dependents)}.every((key) => document.getElementById('setting-' + key).disabled)`));
     await js(`window.__terp.activate(${id}); window.__terp.activate(${other})`);
     before = records.length;
     await done(id);
@@ -306,7 +313,7 @@ async function runNotifyTest({ win, js, check, outDir }) {
     check('通知を切っていても試用は音なしで出る', records.at(-1).title === 'terp' && records.at(-1).body === '通知の試し' && records.at(-1).silent === true);
     await js("document.getElementById('setting-notifications').click()");
     await wait(() => js('window.__terp.config.notifications === true'));
-    check('通知を戻すと4項目が触れる', await js(`${JSON.stringify(dependents)}.every((key) => !document.getElementById('setting-' + key).disabled)`));
+    check('通知を戻すと5項目が触れる', await js(`${JSON.stringify(dependents)}.every((key) => !document.getElementById('setting-' + key).disabled)`));
     await js("document.getElementById('settings-close').click()");
 
     // 枠から外し、作業の外の端末を表示してから通知を押す
@@ -324,6 +331,57 @@ async function runNotifyTest({ win, js, check, outDir }) {
     check('通知を押すと別の作業から元のターミナルへ移る', await js(`window.__terp.visibleKeys().includes('t:${id}') && !window.__terp.visibleKeys().includes('t:${loose}')`));
     check('通知を押して表示すると一覧の印が消える', !(await js(`window.__terp.sessions.get(${id}).notify`)));
     check('自己診断の通知を押しても窓は焦点を奪わない', !win.isFocused());
+
+    const claudeFile = path.join(claudeDir, 'notify-session.jsonl');
+    const codexFile = path.join(fakeDir, 'rollout-notify.jsonl');
+    const user = (text) => ({ type: 'user', message: { content: text } });
+    const assistant = (content) => ({ type: 'assistant', message: { content } });
+    const writeRows = (file, rows) => fs.writeFileSync(file, rows.map((row) => JSON.stringify(row)).join('\n') + '\n');
+    writeRows(claudeFile, [
+      user('前の質問'), assistant([{ type: 'text', text: '前の返答' }]),
+      user('通知の確認'),
+      assistant([{ type: 'thinking', thinking: '表示しない' }, { type: 'text', text: '## **修正した**' }, { type: 'tool_use', name: 'Read' }]),
+      user([{ type: 'tool_result', content: '表示しない' }]),
+      { ...assistant([{ type: 'text', text: '表示しない別の返答' }]), isSidechain: true },
+      assistant([{ type: 'text', text: '- [確認](https://example.com)も完了' }]),
+    ]);
+    agentreply.__test.setLookup(() => ({ kind: 'claude', sessionId: 'notify-session' }));
+    await settings({ notifyMessage: true });
+    const replyDone = async () => {
+      await cooldown();
+      const count = records.length;
+      const startedAt = Date.now();
+      await done(id);
+      await wait(() => records.length === count + 1);
+      return Date.now() - startedAt;
+    };
+    await replyDone();
+    check('Claude の締めの返答（最後の道具の結果より後の text）だけを使う', records.at(-1).body === '確認も完了');
+    check('返答を使う通知の題に表示名と作業名を入れる', records.at(-1).title.startsWith('通知の端末 · ') && records.at(-1).title.includes(' / '));
+
+    const complete = (text) => ({ type: 'event_msg', payload: { type: 'task_complete', last_agent_message: text } });
+    writeRows(codexFile, [complete('古い返答'), complete('最後の __返答__')]);
+    agentreply.__test.setLookup(() => ({ kind: 'codex', file: codexFile }));
+    await replyDone();
+    check('Codex の最後の task_complete の返答を使う', records.at(-1).body === '最後の 返答');
+
+    await cooldown();
+    const delayedCount = records.length;
+    await done(id);
+    delayedWrite = setTimeout(() => writeRows(codexFile, [complete('1秒後の新しい返答')]), 1000);
+    await wait(() => records.length === delayedCount + 1);
+    check('通知の出来事の1秒後の記録を待って新しい返答を使う', records.at(-1).body === '1秒後の新しい返答');
+    const timeoutElapsed = await replyDone();
+    check('2秒で新しい返答が無ければ従来の本文を使う', records.at(-1).body.startsWith('応答が終わった · ') && timeoutElapsed >= 1900 && timeoutElapsed < 3000);
+
+    writeRows(codexFile, [complete('あ'.repeat(301))]);
+    await replyDone();
+    check('300字を超える返答は300字と省略記号にする', records.at(-1).body === 'あ'.repeat(300) + '…');
+    await settings({ notifyMessage: false });
+    await replyDone();
+    check('返答の文を出す設定を切ると従来の本文を使う', records.at(-1).body.startsWith('応答が終わった · '));
+    agentreply.__test.setLookup(null);
+
     await cooldown();
     await bell(id);
     const last = records.length - 1;
@@ -338,6 +396,10 @@ async function runNotifyTest({ win, js, check, outDir }) {
     await sleep(100);
     check('通知先が無くてもタブを変えない', await js(`window.__terp.activeKey === 't:${loose}'`));
   } finally {
+    clearTimeout(delayedWrite);
+    agentreply.__test.setLookup(null);
+    if (previousFake === undefined) delete process.env.TERP_REPLY_FAKE_DIR;
+    else process.env.TERP_REPLY_FAKE_DIR = previousFake;
     await js('window.__terp.setFocusForTest(null)');
     await js("document.getElementById('settings-close').click()");
     fs.writeFileSync(CONFIG_PATH, original);

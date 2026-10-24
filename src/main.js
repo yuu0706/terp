@@ -18,6 +18,7 @@ const files = require('./files');
 const snapshot = require('./snapshot');
 const tabs = require('./tabs');
 const notify = require('./notify');
+const agentreply = require('./agentreply');
 const { PtyClient } = require('./ptyclient');
 
 // シェルは常駐のプロセス（ptyhost.js）が持つ。terp を閉じてもシェルは残り、開き直したらつなぎ直す
@@ -69,6 +70,7 @@ client.on('data', (id, data) => toWindow('pty:data', id, data));
 // 常駐のプロセスごと止まるとき（Mac の終了など）はシェルが1つずつ終わるため、ここで書くと控えが空になる
 client.on('exit', (id, code) => {
   notify.close(id);
+  agentreply.forget(id);
   known.delete(id);
   toWindow('pty:exit', id, code);
 });
@@ -76,6 +78,7 @@ client.on('exit', (id, code) => {
 client.on('disconnect', () => {
   for (const id of known.keys()) {
     notify.close(id);
+    agentreply.forget(id);
     toWindow('pty:exit', id, null);
   }
   known.clear();
@@ -118,6 +121,7 @@ async function writeSnapshot() {
     const sessions = await snapshot.claudeSessions(
       list.filter((e) => known.get(e.id)?.program === 'claude').map((e) => e.pid),
     );
+    agentreply.rememberSessions(sessions);
     snapshot.save(
       list.map((e) => ({
         cwd: known.get(e.id)?.cwd || e.cwd,
@@ -192,9 +196,21 @@ ipcMain.handle('config:theme-colors', safe((_e, name) => config.getThemeColors(n
 ipcMain.handle('theme:generate', safe((_e, answers) => themegen.generate(answers)));
 ipcMain.handle('theme:save', safe((_e, theme) => themegen.saveTheme(theme)));
 ipcMain.handle('config:open-file', safe(() => shell.openPath(config.CONFIG_PATH)));
-ipcMain.handle('notify:show', safe((_e, message) => {
-  if (!known.has(message?.id)) return false;
-  return notify.show(message);
+ipcMain.handle('notify:show', safe(async (_e, message) => {
+  const entry = known.get(message?.id);
+  if (!entry) return false;
+  const settings = config.loadConfig();
+  if (!settings.notifications || !(message.kind === 'done' ? settings.notifyAgentDone : message.kind === 'bell' && settings.notifyBell)) return false;
+  const request = Symbol();
+  entry.notificationRequest = request;
+  const reply = message.kind === 'done' && settings.notifyMessage ? await agentreply.find(entry, message.id) : null;
+  if (known.get(message.id) !== entry || entry.notificationRequest !== request) return false;
+  const current = config.loadConfig();
+  if (!current.notifications || !(message.kind === 'done' ? current.notifyAgentDone : current.notifyBell)) return false;
+  const useReply = reply && current.notifyMessage;
+  const shown = notify.show({ ...message, body: useReply ? reply.body : message.body });
+  if (shown && useReply) agentreply.remember(message.id, reply);
+  return shown;
 }));
 ipcMain.handle('notify:test', safe(() => notify.show({ title: 'terp', body: '通知の試し' })));
 ipcMain.handle('tabs:load', safe(() => tabs.load()));
@@ -261,6 +277,9 @@ ipcMain.on('pty:write', (_e, id, data) => client.send({ t: 'write', id, data }))
 ipcMain.on('pty:resize', (_e, id, cols, rows) => client.send({ t: 'resize', id, cols, rows }));
 ipcMain.on('pty:kill', (_e, id) => {
   notify.close(id);
+  agentreply.forget(id);
+  const entry = known.get(id);
+  if (entry) entry.notificationRequest = null;
   client.send({ t: 'kill', id });
   // 閉じたターミナルを控えから消す。シェルが終わるのを少し待つ
   setTimeout(saveSnapshot, 500);

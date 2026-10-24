@@ -1633,7 +1633,7 @@ function notificationPayload({ kind, message = '', title, context, config, focus
   const text = notificationText(message) || (kind === 'done' ? '応答が終わった' : 'ベルが鳴った');
   const place = notificationText(context);
   return {
-    title: notificationText(title),
+    title: notificationText(title) + (place ? ` · ${place}` : ''),
     body: Array.from(text + (place ? ` · ${place}` : '')).slice(0, 200).join(''),
   };
 }
@@ -1651,7 +1651,7 @@ function markNotify(s, kind, message = '') {
   });
   if (payload && !s.replaying) {
     s.lastNotifyAt = now;
-    terp.showNotification({ id: s.id, ...payload }).then((res) => {
+    terp.showNotification({ id: s.id, kind, ...payload }).then((res) => {
       if (!res.ok) console.error(res.error);
     });
   }

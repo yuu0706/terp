@@ -84,11 +84,12 @@ export const SECTIONS = [
     label: '通知',
     fields: [
       // 設定ファイルに書いていない値は、DEFAULT_CONFIG と同じ既定（default）で出す
-      { key: 'notifications', label: '通知する', type: 'toggle', default: true, help: '切ると下の4項目は変更できない' },
+      { key: 'notifications', label: '通知する', type: 'toggle', default: true, help: '切ると下の5項目は変更できない' },
       { key: 'notifyAgentDone', label: '応答が終わったとき', type: 'toggle', default: true, disabled: (v) => v.notifications === false },
       { key: 'notifyBell', label: 'ベルが鳴ったとき', type: 'toggle', default: true, disabled: (v) => v.notifications === false },
       { key: 'notifyWhenVisible', label: '表示中のターミナルも知らせる', type: 'toggle', disabled: (v) => v.notifications === false },
       { key: 'notifySound', label: '音を鳴らす', type: 'toggle', default: true, disabled: (v) => v.notifications === false },
+      { key: 'notifyMessage', label: '返答の文を出す', type: 'toggle', default: true, help: 'ロック画面や画面の共有で、返答の中身が見えることがある', disabled: (v) => v.notifications === false },
       {
         type: 'action', label: '試しに通知する',
         help: 'macOS の「システム設定 → 通知」で terp の通知を許可していないと出ない',

@@ -33,6 +33,7 @@ const DEFAULT_CONFIG = {
   notifyBell: true,
   notifyWhenVisible: false,
   notifySound: true,
+  notifyMessage: true,
 };
 
 // テーマを指定しないときの色（Catppuccin Mocha 相当）
@@ -193,6 +194,7 @@ function loadConfig() {
     notifyBell: config.notifyBell === true,
     notifyWhenVisible: config.notifyWhenVisible === true,
     notifySound: config.notifySound === true,
+    notifyMessage: config.notifyMessage === true,
   };
 }
 

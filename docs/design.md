@@ -106,20 +106,31 @@ terp は、ターミナルを複数開いて素早く切り替えるための ma
 | `notifyBell` | `true` | ベルを知らせる |
 | `notifyWhenVisible` | `false` | 焦点がある窓のいずれかの枠に表示中でも知らせる |
 | `notifySound` | `true` | macOS の既定の通知音を使う |
+| `notifyMessage` | `true` | 応答の終わりの本文にエージェントの返答を使う |
 
 `app.js` は最新の設定と枠の木から通知の可否を判断する。窓に焦点が無ければ表示中でも知らせる。同じ端末では、前の通知から3秒未満の出来事をまとめる。一覧の通知の印は既存の条件を保ち、OS 通知の有無には連動させない。
 
-題には `displayName(s)` を使う。本文は OSC 9 の文字か OSC 777 の `notify;題;本文` の本文を使う。OSC 9 の `4;` で始まる進捗と、通知以外の OSC 777 は扱わない。空なら「応答が終わった」か「ベルが鳴った」を使う。
+題には「セッションの表示名 · 作業の名前」を使う。作業の名前はリポジトリ名とブランチ、作業の外ではフォルダのパスとする。OSC 9 の `4;` で始まる進捗と、通知以外の OSC 777 は扱わない。
 
-本文の後ろに ` · ` とリポジトリ名・ブランチを付ける。作業の外ではフォルダのパスを使う。制御文字を除き、本文全体を Unicode の符号位置で200字までにする。OSC の読み取りと本文・通知条件の判定は、DOM や時計を参照しない純粋な関数に分ける。
+`notifyMessage` が有効な `done` は、本体の `src/agentreply.js` で返答を探す。Claude はシェルの pid を `snapshot.claudeSessions` で会話の ID に結び付け、`~/.claude/projects` と `~/.claude2/projects` から記録を探す。結び付けは15秒間使い回し、控えの保存で得た ID も利用する。最後の利用者発言（`tool_result` だけの行を除く）より後の assistant の `text` を順につなぎ、`isSidechain` の行を除く。
 
-`notify:show` は `{ id, title, body }` を受け、`src/notify.js` の Electron `Notification` で出す。返答は既存の `safe` による `{ ok, value, error }` の形にする。通知非対応なら何もしない。音の有無は本体でも現在の設定を読み、`silent` に反映する。
+Codex はシェルの子孫で名前が `codex` のプロセスを `/bin/ps` で探す。`/usr/sbin/lsof` で開いている `rollout-*.jsonl` を求め、最後の `task_complete.last_agent_message` を使う。探索の ps と lsof は2秒で打ち切る。既存の `claudeSessions` は内部で10秒待つため、専用の子プロセスで呼び、CLI と ps を含むプロセス群を2秒以内で打ち切る。
+
+出来事から最大2秒間、250ms 間隔で読み直す。前回その端末で通知に使った返答との違いは、本文を保持せず SHA-256 で判定する。探索を含む全体に2秒の期限を設ける。記録は末尾256KBだけを読み、利用者発言や完了の行が無ければ末尾1MBまで広げる。読めないファイルと壊れた行は飛ばす。
+
+返答の本文は純粋関数 `formatReply` で整える。コードの囲みは「（コード）」に置き換え、見出し・強調・リンク・箇条書きの飾りを外す。表は区切り行を除き、セルを空白でつなぐ。改行と連続空白をまとめ、制御文字を除く。Unicode の符号位置で300字を超えたら300字と `…` にし、作業の名前を後ろに付けない。返答はログに出さない。
+
+返答が無い場合、他のエージェント、設定が無効な場合、ベル通知では従来の本文を使う。OSC 9 の文字か OSC 777 の `notify;題;本文` の本文を使い、空なら「応答が終わった」か「ベルが鳴った」とする。後ろに作業の名前を付け、制御文字を除いて全体を200字までにする。設定画面には「返答の文を出す」と、ロック画面や画面の共有で返答の中身が見えることがある旨を表示する。
+
+`notify:show` は `{ id, kind, title, body }` を受け、`done` の場合だけ返答を探してから `src/notify.js` の Electron `Notification` で出す。IPC の返答は既存の `safe` による `{ ok, value, error }` の形にする。待機中に端末が終了した場合や、通知設定が切れた場合は出さない。通知非対応なら何もしない。音の有無は本体でも現在の設定を読み、`silent` に反映する。
 
 本体は端末ごとの通知の参照を保持し、同じ端末の新しい通知・押下・閉鎖・端末の終了時に解放する。押下時は `notify:activate` で ID を送り、窓が `activateKey(termKey(id))` で作業ごとのタブ表示も切り替える。窓の `Notification` API は使わず、本体で参照と窓の復帰を管理する。
 
 macOS の「システム設定 → 通知」で terp の通知を許可する必要がある。通知が未許可の場合も試用ボタンから動作を確かめられる。
 
-`TERP_SELFTEST_NOTIFY=1` は一時フォルダの `TERP_CONFIG_DIR` と組み合わせる。`TERP_SELFTEST` 中は実通知を出さず、本体の `notify.__test.shown` に内容を積む。`notify.__test.click(index)` で押下を再現し、窓は `showInactive` で表示して焦点を奪わない。端末への `printf` で題名・ベル・OSC を発生させ、設定・抑止・本文・移動・一覧の印を検査する。今回、Electron の画面を使う自己診断は未実施である。
+`TERP_SELFTEST_NOTIFY=1` は一時フォルダの `TERP_CONFIG_DIR` と組み合わせる。`TERP_SELFTEST` 中は実通知を出さず、本体の `notify.__test.shown` に内容を積む。返答の探索は `TERP_REPLY_FAKE_DIR/projects/<任意のフォルダ>/<会話ID>.jsonl` と、同じ偽フォルダ内の Codex 記録だけを使う。`agentreply.__test.setLookup(fn)` で会話 ID と Codex のファイルを差し替える。差し替えが無い場合も実記録と実プロセスの探索には戻らない。
+
+`notify.__test.click(index)` で押下を再現し、窓は `showInactive` で表示して焦点を奪わない。端末への `printf` で題名・ベル・OSC を発生させ、設定・抑止・本文・移動・一覧の印を検査する。偽の記録で Claude と Codex の抽出、1秒後の追記、2秒での代替本文、300字への省略も検査する。今回、Electron の画面を使う自己診断は未実施である。
 
 ## 新規作成（柱 3）
 
