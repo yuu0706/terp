@@ -148,7 +148,7 @@ async function runSettingsTest({ win, js, check, outDir }) {
   await sleep(800);
   check('⌘, で設定の画面が開く', (await js(`document.getElementById('settings').hidden`)) === false);
   const navs = await js(`[...document.querySelectorAll('#settings-nav .settings__nav-item')].map((b) => b.textContent)`);
-  check('左にメニューが並ぶ', navs.join() === '外観,AI エージェント,詳しい設定', navs.join());
+  check('左にメニューが並ぶ', navs.join() === '外観,AI エージェント,通知,詳しい設定', navs.join());
   const themeCount = await js(`document.querySelectorAll('.theme-picker__row').length`);
   check('テーマを一覧から選べる', themeCount > 100, `${themeCount} 件`);
   await shot('1-appearance');
@@ -186,6 +186,162 @@ async function runSettingsTest({ win, js, check, outDir }) {
   await js(`document.getElementById('settings').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
   await sleep(300);
   check('Esc で閉じる', await js(`document.getElementById('settings').hidden`));
+}
+
+// TERP_SELFTEST_NOTIFY は実通知を出さず、端末の出力・設定・通知を押した後の移動を確かめる
+async function runNotifyTest({ win, js, check, outDir }) {
+  const { CONFIG_PATH } = require('./config');
+  const notify = require('./notify');
+  if (!process.env.TERP_CONFIG_DIR) throw new Error('通知の自己診断には一時フォルダの TERP_CONFIG_DIR が必要');
+  const original = fs.readFileSync(CONFIG_PATH, 'utf8');
+  const wait = async (fn) => {
+    for (let i = 0; i < 100; i++) {
+      if (await fn()) return true;
+      await sleep(50);
+    }
+    throw new Error('通知の自己診断で応答を待ち切れなかった');
+  };
+  const settings = async (patch) => {
+    const res = await js(`window.terp.updateConfig(${JSON.stringify(patch)})`);
+    if (!res.ok) throw new Error(res.error);
+    await wait(() => js(`Object.entries(${JSON.stringify(patch)}).every(([key, value]) => window.__terp.config[key] === value)`));
+  };
+  const records = notify.__test.shown;
+  const quote = (value) => "'" + value.replace(/'/g, "'\\''") + "'";
+  let serial = 0;
+  const emit = async (id, sequence) => {
+    const marker = `marker-${++serial}`;
+    const command = `printf '%b' ${quote(sequence)}; printf '\\nnotify-%s\\n' ${quote(marker)}\r`;
+    await js(`window.terp.write(${id}, ${JSON.stringify(command)})`);
+    await wait(() => js(`window.__terp.bufferText(${id}).includes(${JSON.stringify('notify-' + marker)})`));
+    await sleep(100);
+  };
+  const done = (id) => emit(id, '\\033]0;⠂ 作業\\007\\033]0;✳ 作業\\007');
+  const bell = (id) => emit(id, '\\007');
+  const cooldown = () => sleep(3100);
+  try {
+    await settings({ notifications: true, notifyAgentDone: true, notifyBell: true, notifyWhenVisible: false, notifySound: true });
+    await js('window.__terp.setFocusForTest(false)');
+    const root = path.resolve(__dirname, '..');
+    const added = await js(`window.__terp.addProject(${JSON.stringify(root)})`);
+    if (!added.ok) throw new Error(added.error);
+    const id = await js(`window.__terp.open(${JSON.stringify(root)})`);
+    await js(`window.__terp.rename(${id}, '通知の端末')`);
+    const start = records.length;
+    await done(id);
+    check('題名の変化でセッションの表示名と作業名を通知する', records.length === start + 1 && records.at(-1).title === '通知の端末' && records.at(-1).body.startsWith('応答が終わった · ') && records.at(-1).body.includes(' / '));
+    check('焦点が無ければ表示中でも一覧の通知の印を付ける', await js(`window.__terp.sessions.get(${id}).notify`));
+    await emit(id, '\\033]9;すぐ後の通知\\007');
+    check('題名のすぐ後の OSC 9 を3秒以内ならまとめる', records.length === start + 1);
+    await cooldown();
+    await emit(id, '\\033]9;Claude is waiting for your input\\007');
+    check('3秒後の OSC 9 の本文を使う', records.length === start + 2 && records.at(-1).body.startsWith('Claude is waiting for your input · '));
+    await cooldown();
+    let before = records.length;
+    await emit(id, '\\033]777;notify;題;本文だけ\\007');
+    check('OSC 777 は題を除いて本文だけを使う', records.length === before + 1 && records.at(-1).body.startsWith('本文だけ · '));
+    await cooldown();
+    await js(`window.__terp.activate(${id})`);
+    before = records.length;
+    await emit(id, '\\033]9;4;1;50\\007');
+    check('OSC 9 の進み具合は通知にも一覧の印にもしない', records.length === before && !(await js(`window.__terp.sessions.get(${id}).notify`)));
+    await bell(id);
+    check('ベルの既定の本文を使う', records.length === before + 1 && records.at(-1).body.startsWith('ベルが鳴った · '));
+
+    await cooldown();
+    await settings({ notifyBell: false });
+    before = records.length;
+    await bell(id);
+    check('ベルだけを切れる', records.length === before);
+    await done(id);
+    check('ベルを切っても応答の終わりは通知する', records.length === before + 1);
+    await cooldown();
+    await settings({ notifyAgentDone: false, notifyBell: true });
+    before = records.length;
+    await done(id);
+    check('応答の終わりだけを切れる', records.length === before);
+    await bell(id);
+    check('応答の終わりを切ってもベルは通知する', records.length === before + 1);
+
+    await cooldown();
+    await settings({ notifyAgentDone: true });
+    await js(`window.__terp.activate(${id}); window.__terp.setFocusForTest(true)`);
+    before = records.length;
+    await done(id);
+    check('焦点があり表示中なら通知も一覧の印も付けない', records.length === before && !(await js(`window.__terp.sessions.get(${id}).notify`)));
+    const sourcePane = await js('window.__terp.activePaneId');
+    // 非アクティブの枠に見えている端末も、表示中として扱う
+    win.webContents.send('menu', 'split-right');
+    await wait(() => js('window.__terp.layout().type === "split"'));
+    const other = await js('window.__terp.activeId');
+    await done(id);
+    check('焦点があり別の枠に表示中でも OS 通知は出さない', records.length === before);
+    check('別の枠の端末には従来どおり一覧の通知の印を付ける', await js(`window.__terp.sessions.get(${id}).notify`));
+    await settings({ notifyWhenVisible: true });
+    await done(id);
+    check('表示中も知らせる設定をすぐ反映する', records.length === before + 1);
+    await cooldown();
+    await settings({ notifyWhenVisible: false });
+    await js('window.__terp.setFocusForTest(false)');
+    before = records.length;
+    await done(id);
+    check('焦点が無ければ別の枠に表示中でも通知する', records.length === before + 1);
+
+    await cooldown();
+    await js("window.__terp.openSettings('notifications')");
+    await js("document.getElementById('setting-notifications').click()");
+    await wait(() => js('window.__terp.config.notifications === false'));
+    const dependents = ['notifyAgentDone', 'notifyBell', 'notifyWhenVisible', 'notifySound'];
+    check('通知を切ると4項目が触れなくなる', await js(`${JSON.stringify(dependents)}.every((key) => document.getElementById('setting-' + key).disabled)`));
+    await js(`window.__terp.activate(${id}); window.__terp.activate(${other})`);
+    before = records.length;
+    await done(id);
+    await bell(id);
+    check('通知を切ると応答の終わりもベルも出さない', records.length === before);
+    check('通知を切っても一覧の印は付ける', await js(`window.__terp.sessions.get(${id}).notify`));
+    // 手で設定を変えた場合も、開いている設定画面へ反映する
+    await settings({ notifySound: false });
+    await js("[...document.querySelectorAll('#settings-content button')].find((b) => b.textContent === '試しに通知する').click()");
+    await wait(() => records.length === before + 1);
+    check('通知を切っていても試用は音なしで出る', records.at(-1).title === 'terp' && records.at(-1).body === '通知の試し' && records.at(-1).silent === true);
+    await js("document.getElementById('setting-notifications').click()");
+    await wait(() => js('window.__terp.config.notifications === true'));
+    check('通知を戻すと4項目が触れる', await js(`${JSON.stringify(dependents)}.every((key) => !document.getElementById('setting-' + key).disabled)`));
+    await js("document.getElementById('settings-close').click()");
+
+    // 枠から外し、作業の外の端末を表示してから通知を押す
+    const loose = await js(`window.__terp.open(${JSON.stringify(outDir)})`);
+    await js(`window.__terp.dropTab('t:${other}', ${JSON.stringify(sourcePane)}, 'center')`);
+    await js(`window.__terp.activate(${loose})`);
+    before = records.length;
+    await done(id);
+    check('通知の音の変更を通常の通知にも反映する', records.length === before + 1 && records.at(-1).silent === true);
+    notify.__test.click(start);
+    await sleep(100);
+    check('置き換えた古い通知は押せない', await js(`window.__terp.activeKey === 't:${loose}'`));
+    notify.__test.click(records.length - 1);
+    await wait(() => js(`window.__terp.activeKey === 't:${id}'`));
+    check('通知を押すと別の作業から元のターミナルへ移る', await js(`window.__terp.visibleKeys().includes('t:${id}') && !window.__terp.visibleKeys().includes('t:${loose}')`));
+    check('通知を押して表示すると一覧の印が消える', !(await js(`window.__terp.sessions.get(${id}).notify`)));
+    check('自己診断の通知を押しても窓は焦点を奪わない', !win.isFocused());
+    await cooldown();
+    await bell(id);
+    const last = records.length - 1;
+    await js(`window.__terp.closeKey('t:${id}')`);
+    await wait(() => js(`!window.__terp.sessions.has(${id})`));
+    await js(`window.__terp.activate(${loose})`);
+    notify.__test.click(last);
+    await sleep(100);
+    check('端末を閉じるとその通知も閉じる', await js(`window.__terp.activeKey === 't:${loose}'`));
+    notify.show({ id, title: '終了した端末', body: '通知の試し' });
+    notify.__test.click(records.length - 1);
+    await sleep(100);
+    check('通知先が無くてもタブを変えない', await js(`window.__terp.activeKey === 't:${loose}'`));
+  } finally {
+    await js('window.__terp.setFocusForTest(null)');
+    await js("document.getElementById('settings-close').click()");
+    fs.writeFileSync(CONFIG_PATH, original);
+  }
 }
 
 // TERP_SELFTEST_THEMEAI は、本物の claude を呼ばずにテーマの選択・作成・保存を確かめる
@@ -1571,6 +1727,13 @@ exports.run = (win) => {
     if (process.env.TERP_SELFTEST_AGENTREG) {
       await runAgentRegistryTest({ win, js, check, outDir });
       check('CSP の違反が無い', !log.some((line) => line.startsWith('console:') && line.includes('violates')));
+      fs.writeFileSync(path.join(outDir, 'result.txt'), log.join('\n') + '\n');
+      await finish();
+      return;
+    }
+
+    if (process.env.TERP_SELFTEST_NOTIFY) {
+      await runNotifyTest({ win, js, check, outDir });
       fs.writeFileSync(path.join(outDir, 'result.txt'), log.join('\n') + '\n');
       await finish();
       return;

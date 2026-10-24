@@ -28,6 +28,11 @@ const DEFAULT_CONFIG = {
   skipApprovals: false,
   // タブの並びの隣のボタンで、プルダウンなしで起動するエージェントの command。null なら見つかった最初のもの
   mainAgent: null,
+  notifications: true,
+  notifyAgentDone: true,
+  notifyBell: true,
+  notifyWhenVisible: false,
+  notifySound: true,
 };
 
 // テーマを指定しないときの色（Catppuccin Mocha 相当）
@@ -183,6 +188,11 @@ function loadConfig() {
     agents: Array.isArray(config.agents) ? config.agents : [],
     skipApprovals: config.skipApprovals === true,
     mainAgent: typeof config.mainAgent === 'string' ? config.mainAgent : null,
+    notifications: config.notifications === true,
+    notifyAgentDone: config.notifyAgentDone === true,
+    notifyBell: config.notifyBell === true,
+    notifyWhenVisible: config.notifyWhenVisible === true,
+    notifySound: config.notifySound === true,
   };
 }
 

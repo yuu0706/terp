@@ -8,6 +8,7 @@ const terp = window.terp;
 const ICONS = {
   appearance: '<path d="M12 3a9 9 0 1 0 0 18c1.1 0 1.5-.8 1.5-1.5 0-1.2-1-1.5-1-2.5 0-.8.7-1.5 1.5-1.5H16a5 5 0 0 0 5-5c0-4.1-4-7.5-9-7.5z" /><circle cx="7.5" cy="11" r="1" /><circle cx="10.5" cy="7.5" r="1" /><circle cx="15" cy="8" r="1" />',
   agents: '<rect x="4" y="8" width="16" height="12" rx="2" /><path d="M12 4v4M9 13v2M15 13v2M2 14h2M20 14h2" />',
+  notifications: '<path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4" />',
   advanced: '<path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0" /><circle cx="16" cy="6" r="2" /><circle cx="10" cy="12" r="2" /><circle cx="18" cy="18" r="2" />',
 };
 
@@ -79,6 +80,23 @@ export const SECTIONS = [
     ],
   },
   {
+    id: 'notifications',
+    label: '通知',
+    fields: [
+      // 設定ファイルに書いていない値は、DEFAULT_CONFIG と同じ既定（default）で出す
+      { key: 'notifications', label: '通知する', type: 'toggle', default: true, help: '切ると下の4項目は変更できない' },
+      { key: 'notifyAgentDone', label: '応答が終わったとき', type: 'toggle', default: true, disabled: (v) => v.notifications === false },
+      { key: 'notifyBell', label: 'ベルが鳴ったとき', type: 'toggle', default: true, disabled: (v) => v.notifications === false },
+      { key: 'notifyWhenVisible', label: '表示中のターミナルも知らせる', type: 'toggle', disabled: (v) => v.notifications === false },
+      { key: 'notifySound', label: '音を鳴らす', type: 'toggle', default: true, disabled: (v) => v.notifications === false },
+      {
+        type: 'action', label: '試しに通知する',
+        help: 'macOS の「システム設定 → 通知」で terp の通知を許可していないと出ない',
+        run: () => terp.testNotification(),
+      },
+    ],
+  },
+  {
     id: 'advanced',
     label: '詳しい設定',
     fields: [
@@ -122,6 +140,24 @@ export function initSettings(context) {
 
 export function isSettingsOpen() {
   return !overlay.hidden;
+}
+
+export function applySettingsConfig(config) {
+  for (const field of SECTIONS.flatMap((s) => s.fields)) {
+    if (field.type !== 'toggle' || typeof config[field.key] !== 'boolean') continue;
+    values[field.key] = config[field.key];
+    const input = document.getElementById(`setting-${field.key}`);
+    if (input) input.checked = config[field.key];
+  }
+  refreshDisabledFields();
+}
+
+function refreshDisabledFields() {
+  for (const field of SECTIONS.flatMap((s) => s.fields)) {
+    if (!field.disabled) continue;
+    const input = document.getElementById(`setting-${field.key}`);
+    if (input) input.disabled = field.disabled(values);
+  }
 }
 
 export async function openSettings(sectionId) {
@@ -171,6 +207,7 @@ async function save(key, value) {
   values = { ...values, [key]: value };
   if (value === null) delete values[key];
   if (key === 'accent') refreshThemePreview();
+  refreshDisabledFields();
   showStatus('保存しました');
   return true;
 }
@@ -209,6 +246,7 @@ async function renderSection() {
     if (serial !== sectionRenderSerial) return;
     content.append(row);
   }
+  refreshDisabledFields();
   if (section.id === 'agents') {
     renderRegistryRows();
     if (registryStatuses === null && !registryChecking) recheckRegistry();
@@ -315,7 +353,7 @@ const FIELD_TYPES = {
     input.type = 'checkbox';
     input.id = id;
     input.setAttribute('role', 'switch');
-    input.checked = value === true;
+    input.checked = (value ?? field.default) === true;
     const track = document.createElement('span');
     track.className = 'switch__track';
     if (field.danger) track.dataset.danger = 'true';
@@ -361,7 +399,17 @@ const FIELD_TYPES = {
     btn.type = 'button';
     btn.className = 'btn';
     btn.textContent = field.label;
-    btn.addEventListener('click', () => field.run(ctx));
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      try {
+        const res = await field.run(ctx);
+        if (res?.ok === false) showStatus(res.error, 'error');
+      } catch (err) {
+        showStatus(err.message, 'error');
+      } finally {
+        btn.disabled = false;
+      }
+    });
     return btn;
   },
 };

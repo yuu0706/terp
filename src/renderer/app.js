@@ -8,7 +8,7 @@ import { initGitPanel, refresh as refreshGit, setGitVisible } from './gitpanel.j
 import { initFilesPanel, refreshFiles, setFilesVisible, markActiveFile } from './filespanel.js';
 import { renderFileView, applyEditorConfig } from './fileview.js';
 import { createPathLinkProvider } from './pathlinks.js';
-import { initSettings, openSettings, agentIcon } from './settings.js';
+import { initSettings, openSettings, applySettingsConfig, agentIcon } from './settings.js';
 import { createPane, paneList, splitPane, closePane, replacePane, restoreLayout, createPaneView, makeTabDraggable, MAX_PANES } from './panes.js';
 import { terminalPaths, pathDropTarget, pathsFromTransfer } from './droppaths.js';
 
@@ -81,6 +81,7 @@ let recent = [];
 // どの作業にも入らないタブのまとまり
 const LOOSE = '(loose)';
 let config = await terp.getConfig();
+let focusForTest = null;
 
 function withAlpha(hex, alpha) {
   const n = parseInt(hex.slice(1), 16);
@@ -95,6 +96,7 @@ function terminalTheme(c) {
 // 設定（色・フォント・透過）を、開いている端末・エディタ・枠に反映する
 function applyConfig(c) {
   config = c;
+  applySettingsConfig(c);
   applyEditorConfig(c);
   const root = document.documentElement.style;
   for (const [key, value] of Object.entries(c.chrome)) root.setProperty(`--color-${key}`, value);
@@ -1529,15 +1531,18 @@ function registerSession(id, { el, term, fit }, extra = {}) {
     const { working, text } = parseTitle(title);
     if (text) s.agentTitle = text;
     // 作業中から入力待ちに変わったら、応答が終わったことを知らせる
-    if (s.agentWorking && !working) markNotify(s);
+    if (s.agentWorking && !working) markNotify(s, 'done');
     s.agentWorking = working;
     terp.setMeta(id, { title, agentTitle: s.agentTitle });
     renderItem(s);
   });
-  term.onBell(() => markNotify(s));
+  term.onBell(() => markNotify(s, 'bell'));
   // OSC 9 / 777 は claude などが「入力待ち」を知らせるのに使う
-  term.parser.registerOscHandler(9, () => (markNotify(s), true));
-  term.parser.registerOscHandler(777, () => (markNotify(s), true));
+  for (const osc of [9, 777]) term.parser.registerOscHandler(osc, (data) => {
+    const message = notificationOsc(osc, data);
+    if (message !== null) markNotify(s, 'done', message);
+    return true;
+  });
   new ResizeObserver(() => {
     if (!el.hidden) fit.fit();
   }).observe(el);
@@ -1567,7 +1572,11 @@ async function attachTerminal(e) {
   });
   tabOrder.push(termKey(e.id));
   const res = await terp.attach(e.id);
-  if (res.replay) s.term.write(res.replay);
+  // 流し直す出力に残ったベルや OSC 9 で、開き直すたびに通知が出ないようにする
+  if (res.replay) {
+    s.replaying = true;
+    s.term.write(res.replay, () => { s.replaying = false; });
+  }
   for (const data of s.pending) s.term.write(data);
   s.pending = null;
   // 大きさを一度変えて戻し、claude などの全画面のプログラムに描き直させる
@@ -1604,8 +1613,48 @@ async function restoreSessions() {
   await openTerminal();
 }
 
-function markNotify(s) {
-  if (activeKey === termKey(s.id) && document.hasFocus()) return;
+// DOM や時計を参照せず、端末から来た文字と通知の条件を検査する
+function notificationOsc(osc, data) {
+  if (osc === 9) return data.startsWith('4;') ? null : data;
+  if (osc !== 777 || !data.startsWith('notify;')) return null;
+  const separator = data.indexOf(';', 7);
+  return separator < 0 ? '' : data.slice(separator + 1);
+}
+
+function notificationText(text) {
+  return text.replace(/[\u0000-\u001f\u007f-\u009f]/g, '').trim();
+}
+
+function notificationPayload({ kind, message = '', title, context, config, focused, visible, lastAt, now }) {
+  if (!config.notifications || !(kind === 'done' ? config.notifyAgentDone : kind === 'bell' && config.notifyBell)) return null;
+  if (!config.notifyWhenVisible && focused && visible) return null;
+  if (lastAt !== undefined && now - lastAt < 3000) return null;
+  const text = notificationText(message) || (kind === 'done' ? '応答が終わった' : 'ベルが鳴った');
+  const place = notificationText(context);
+  return {
+    title: notificationText(title),
+    body: Array.from(text + (place ? ` · ${place}` : '')).slice(0, 200).join(''),
+  };
+}
+
+function markNotify(s, kind, message = '') {
+  const focused = focusForTest ?? document.hasFocus();
+  const w = workOf(s);
+  const now = Date.now();
+  const payload = notificationPayload({
+    kind, message, title: displayName(s),
+    context: w ? `${w.repo.split('/').pop()} / ${workLabel(w)}` : shortPath(s.cwd),
+    config, focused,
+    visible: paneList(layout).some((p) => p.key === termKey(s.id)),
+    lastAt: s.lastNotifyAt, now,
+  });
+  if (payload && !s.replaying) {
+    s.lastNotifyAt = now;
+    terp.showNotification({ id: s.id, ...payload }).then((res) => {
+      if (!res.ok) console.error(res.error);
+    });
+  }
+  if (activeKey === termKey(s.id) && focused) return;
   s.notify = true;
   renderItem(s);
 }
@@ -1668,6 +1717,9 @@ terp.onData((id, data) => {
 
 terp.onExit((id) => removeSession(id));
 terp.onConfig(applyConfig);
+terp.onNotification((id) => {
+  if (sessions.has(id)) activateKey(termKey(id));
+});
 terp.onHostStale(() => {
   const notice = document.getElementById('host-notice');
   notice.hidden = false;
@@ -1783,6 +1835,7 @@ setInterval(() => {
 
 // 自己診断（TERP_SELFTEST）から操作するための口
 window.__terp = {
+  setFocusForTest: (focused) => { focusForTest = focused; },
   sessions,
   layout: () => structuredClone(layout),
   dropTab: dropTabInPane,

@@ -17,6 +17,7 @@ const subagents = require('./subagents');
 const files = require('./files');
 const snapshot = require('./snapshot');
 const tabs = require('./tabs');
+const notify = require('./notify');
 const { PtyClient } = require('./ptyclient');
 
 // シェルは常駐のプロセス（ptyhost.js）が持つ。terp を閉じてもシェルは残り、開き直したらつなぎ直す
@@ -25,6 +26,7 @@ let connecting = null;
 // 作業場所と前面のプログラム名の最新の値。控え（snapshot）にも使う
 const known = new Map();
 let win = null;
+notify.init({ getWindow: () => win, toWindow });
 
 // 起動元（npm・Electron・Claude Code）の環境変数をシェルへ持ち込まない
 function shellEnv() {
@@ -66,12 +68,16 @@ client.on('data', (id, data) => toWindow('pty:data', id, data));
 // 終わったシェルを控えから消すのは、閉じる操作（pty:kill）と定期の保存に任せる。
 // 常駐のプロセスごと止まるとき（Mac の終了など）はシェルが1つずつ終わるため、ここで書くと控えが空になる
 client.on('exit', (id, code) => {
+  notify.close(id);
   known.delete(id);
   toWindow('pty:exit', id, code);
 });
 // 常駐のプロセスが落ちたら、そのシェルはすべて終わったものとして扱う
 client.on('disconnect', () => {
-  for (const id of known.keys()) toWindow('pty:exit', id, null);
+  for (const id of known.keys()) {
+    notify.close(id);
+    toWindow('pty:exit', id, null);
+  }
   known.clear();
 });
 
@@ -186,6 +192,11 @@ ipcMain.handle('config:theme-colors', safe((_e, name) => config.getThemeColors(n
 ipcMain.handle('theme:generate', safe((_e, answers) => themegen.generate(answers)));
 ipcMain.handle('theme:save', safe((_e, theme) => themegen.saveTheme(theme)));
 ipcMain.handle('config:open-file', safe(() => shell.openPath(config.CONFIG_PATH)));
+ipcMain.handle('notify:show', safe((_e, message) => {
+  if (!known.has(message?.id)) return false;
+  return notify.show(message);
+}));
+ipcMain.handle('notify:test', safe(() => notify.show({ title: 'terp', body: '通知の試し' })));
 ipcMain.handle('tabs:load', safe(() => tabs.load()));
 ipcMain.handle('tabs:save', safe((_e, state) => tabs.save(state)));
 ipcMain.handle('projects:list', safe(() => projects.list()));
@@ -249,6 +260,7 @@ ipcMain.handle('pty:attach', async (_e, id) => {
 ipcMain.on('pty:write', (_e, id, data) => client.send({ t: 'write', id, data }));
 ipcMain.on('pty:resize', (_e, id, cols, rows) => client.send({ t: 'resize', id, cols, rows }));
 ipcMain.on('pty:kill', (_e, id) => {
+  notify.close(id);
   client.send({ t: 'kill', id });
   // 閉じたターミナルを控えから消す。シェルが終わるのを少し待つ
   setTimeout(saveSnapshot, 500);
