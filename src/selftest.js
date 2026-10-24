@@ -6,13 +6,142 @@ const { app, clipboard } = require('electron');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// 認証の自己診断は、このフォルダの偽 CLI だけを実行する
+function prepareAgentFakes(outDir) {
+  const dir = path.join(outDir, 'agent-fakes');
+  fs.mkdirSync(dir, { recursive: true });
+  const quote = (value) => "'" + value.replace(/'/g, "'\\''") + "'";
+  for (const name of ['claude', 'codex', 'cursor-agent', 'registry-extra']) {
+    const file = path.join(dir, name);
+    fs.writeFileSync(file, `#!/bin/sh
+printf '%s\\n' '${name} '"$*" >> ${quote(path.join(dir, 'calls'))}
+case "$*" in
+  --version) printf '%s\\n' '${name} 1.2.3' '表示しない2行目' ;;
+  'auth status') printf '%s\\n' '{"loggedIn":true,"authMethod":"claude.ai","privateField":"表示しない認証情報"}' ;;
+  'login status') printf '%s\\n' 'Logged in using ChatGPT' ;;
+  *) printf 'registry-started args=%s env=%s\\n' "$*" "$TERP_REGISTRY_TEST" ;;
+esac
+`, { mode: 0o755 });
+  }
+  process.env.TERP_AGENT_STATUS_FAKE = dir;
+  return dir;
+}
+
+async function runAgentRegistryTest({ win, js, check, outDir }) {
+  const { CONFIG_PATH } = require('./config');
+  if (!process.env.TERP_CONFIG_DIR) throw new Error('登録の自己診断には一時フォルダの TERP_CONFIG_DIR が必要');
+  const original = fs.readFileSync(CONFIG_PATH, 'utf8');
+  const previousFake = process.env.TERP_AGENT_STATUS_FAKE;
+  const dir = prepareAgentFakes(outDir);
+  const fake = path.join(dir, 'registry-extra');
+  const row = (name) => `document.querySelector('.agent-registry__row[data-command="${name}"]')`;
+  const wait = async (fn) => {
+    for (let i = 0; i < 80; i++) {
+      if (await fn()) return true;
+      await sleep(100);
+    }
+    return false;
+  };
+  const click = async (selector) => { await js(`${selector}.click()`); };
+  const field = async (name, key, value) => {
+    await js(`(() => { const input = ${row(name)}.querySelector('[data-agent-field="${key}"]'); input.value = ${JSON.stringify(value)}; input.dispatchEvent(new Event('input')); input.dispatchEvent(new Event('blur')); })()`);
+    await sleep(400);
+  };
+  const commands = () => js(`[...document.querySelectorAll('#agents .btn--agent')].map((b) => b.dataset.command)`);
+  const launchText = async () => {
+    await click(`document.querySelector('#agents [data-command="registry-extra"]')`);
+    await wait(() => js(`window.__terp.bufferText(window.__terp.activeId).includes('registry-started args=--always --custom-bypass env=')`));
+    return js('window.__terp.bufferText(window.__terp.activeId)');
+  };
+  try {
+    const initial = JSON.parse(original);
+    initial.agents = [
+      { command: 'claude', path: path.join(dir, 'claude') },
+      { command: 'codex', path: path.join(dir, 'codex') },
+      { command: 'cursor-agent', path: path.join(dir, 'cursor-agent') },
+      ...require('./agents').KNOWN_AGENTS.filter((a) => !['claude', 'codex', 'cursor-agent'].includes(a.command))
+        .map((a) => ({ command: a.command, path: path.join(dir, 'missing', a.command) })),
+    ];
+    initial.mainAgent = 'claude';
+    initial.skipApprovals = true;
+    fs.writeFileSync(CONFIG_PATH, JSON.stringify(initial));
+    await sleep(400);
+    await js('window.__terp.refreshAgents()');
+    await js("window.__terp.openSettings('agents')");
+    check('登録一覧に未導入も出る', await js(`document.querySelectorAll('.agent-registry__row').length === 12 && ${row('aider')}.textContent.includes('見つからない')`));
+    check('偽 CLI の版とログイン済みが出る', await wait(() => js(`${row('claude')}.textContent.includes('claude 1.2.3') && ${row('claude')}.textContent.includes('済み（claude.ai）') && ${row('codex')}.textContent.includes('codex 1.2.3') && ${row('codex')}.textContent.includes('済み（ChatGPT）')`)));
+    await win.webContents.capturePage().then((img) => fs.writeFileSync(path.join(outDir, 'registry.png'), img.toPNG()));
+    await click(`${row('codex')}.querySelector('.agent-registry__open')`);
+    await win.webContents.capturePage().then((img) => fs.writeFileSync(path.join(outDir, 'registry-open.png'), img.toPNG()));
+    await click(`${row('codex')}.querySelector('.agent-registry__open')`);
+    check('認証の生出力を表示しない', await js(`!document.getElementById('settings-content').textContent.includes('表示しない認証情報')`));
+    const callsBefore = fs.readFileSync(path.join(dir, 'calls'), 'utf8').split('\n').filter(Boolean).length;
+    await click(`${row('claude')}.querySelector('[data-action="visible"]')`);
+    check('非表示にすると左のボタンから消える', await wait(async () => !(await commands()).includes('claude')));
+    await click("document.getElementById('tab-new')");
+    check('非表示にするとプルダウンから消える', await js(`!document.querySelector('#tab-menu [data-command="claude"]')`));
+    await click("document.getElementById('tab-new')");
+    await click(`${row('claude')}.querySelector('[data-action="visible"]')`);
+    check('表示を戻すとボタンに戻る', await wait(async () => (await commands()).includes('claude')));
+    await js(`document.querySelector('.agent-registry__add').open = true; document.querySelector('[data-agent-field="new-command"]').value = 'registry-extra'; document.querySelector('[data-agent-field="new-label"]').value = '追加のエージェント'`);
+    await click(`document.querySelector('.agent-registry__add [data-action="add"]')`);
+    check('追加した行が出る', await wait(() => js(`Boolean(${row('registry-extra')})`)));
+    await click(`${row('registry-extra')}.querySelector('.agent-registry__open')`);
+    await field('registry-extra', 'path', fake);
+    check('場所の上書きで起動ボタンが出る', await wait(async () => (await commands()).includes('registry-extra')));
+    check('上書きした実行ファイルを使う', await js(`window.__terp.agents.find((a) => a.command === 'registry-extra').path === ${JSON.stringify(fake)}`));
+    await field('registry-extra', 'args', '--always');
+    await field('registry-extra', 'bypassArgs', '--custom-bypass');
+    await click(`${row('registry-extra')}.querySelector('[data-action="env-add"]')`);
+    await field('registry-extra', 'env-name', 'TERP_REGISTRY_TEST');
+    await field('registry-extra', 'env-value', "test value's $literal");
+    const text = await launchText();
+    check('確認を飛ばす引数を起動へ渡す', text.includes('registry-started args=--always --custom-bypass env='));
+    check('環境変数の引用符と記号を保って起動へ渡す', text.includes("env=test value's $literal"));
+    await wait(() => js(`!document.getElementById('agents-recheck').disabled`));
+    await click(`${row('registry-extra')}.querySelector('[data-action="up"]')`);
+    await sleep(400);
+    check('並べ替えを設定へ保存する', JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8')).agents.at(-2).command === 'registry-extra');
+    // ボタンのある Codex と順を入れ替え、未導入の行を挟む場合も確認する
+    for (let i = 0; i < 10; i++) {
+      await click(`${row('registry-extra')}.querySelector('[data-action="up"]')`);
+      await sleep(250);
+    }
+    check('並べ替えが起動ボタンにも反映される', (await commands()).indexOf('registry-extra') < (await commands()).indexOf('codex'));
+    await click(`${row('codex')}.querySelector('.agent-registry__open')`);
+    await click(`${row('codex')}.querySelector('[data-action="main"]')`);
+    check('メインのボタンとアイコンが変わる', await wait(() => js(`document.getElementById('tab-main-agent').dataset.command === 'codex' && document.querySelector('#tab-main-agent img').getAttribute('src').endsWith('codex.svg')`)));
+    check('Claude の色付きアイコンを画像で出す', await js(`document.querySelector('#agents [data-command="claude"] img').getAttribute('src').endsWith('claude.svg')`));
+    check('単色アイコンを mask で出す', await js(`document.querySelector('#agents [data-command="cursor-agent"] .agent-icon--mask').style.maskImage.includes('cursor-agent.svg')`));
+    const calls = () => fs.readFileSync(path.join(dir, 'calls'), 'utf8').split('\n').filter(Boolean).length;
+    const beforeRefresh = calls();
+    await click("document.getElementById('agents-recheck')");
+    check('確かめ直すと CLI が再実行される', await wait(async () => calls() > beforeRefresh));
+    await wait(() => js(`!document.getElementById('agents-recheck').disabled`));
+    const afterRefresh = calls();
+    await click(`${row('registry-extra')}.querySelector('.agent-registry__open')`);
+    await sleep(200);
+    check('行の開閉では CLI を再実行しない', calls() === afterRefresh && calls() > callsBefore);
+    await click(`${row('registry-extra')}.querySelector('[data-action="remove"]')`);
+    check('削除前に確認する', await js(`document.getElementById('agent-remove-dialog').open`));
+    await click(`document.querySelector('#agent-remove-dialog [data-action="confirm-remove"]')`);
+    check('削除するとボタンから消える', await wait(async () => !(await commands()).includes('registry-extra')));
+    await js(`document.getElementById('settings-close').click()`);
+  } finally {
+    fs.writeFileSync(CONFIG_PATH, original);
+    if (previousFake === undefined) delete process.env.TERP_AGENT_STATUS_FAKE;
+    else process.env.TERP_AGENT_STATUS_FAKE = previousFake;
+  }
+}
+
 // TERP_SELFTEST_SETTINGS を付けると、設定の画面（左のメニュー・各項目の保存と反映・Esc で閉じる）を確かめる
 async function runSettingsTest({ win, js, check, outDir }) {
   const { CONFIG_PATH } = require('./config');
+  const fakeDir = prepareAgentFakes(outDir);
   const saved = () => JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
   const shot = (name) => win.webContents.capturePage().then((img) => fs.writeFileSync(path.join(outDir, `${name}.png`), img.toPNG()));
   // 設定ファイルに画面に無い値を書いておき、画面で変えても消えないことを見る
-  fs.writeFileSync(CONFIG_PATH, JSON.stringify({ ...saved(), agents: [{ command: 'keep-me' }] }, null, 2));
+  fs.writeFileSync(CONFIG_PATH, JSON.stringify({ ...saved(), agents: [{ command: 'keep-me' }, { command: 'claude', path: path.join(fakeDir, 'claude') }, { command: 'codex', path: path.join(fakeDir, 'codex') }] }, null, 2));
   await sleep(1200);
 
   win.webContents.send('menu', 'settings');
@@ -723,23 +852,26 @@ async function runEditorTest({ win, js, check, outDir }) {
 // 偽のエージェント（引数を表示するだけのスクリプト）を設定ファイルの agents に足して押す
 async function runAgentsTest({ win, js, check, outDir }) {
   const { CONFIG_PATH } = require('./config');
+  const fakeDir = prepareAgentFakes(outDir);
   const fake = path.join(outDir, 'fake agent');
   fs.mkdirSync(outDir, { recursive: true });
   fs.writeFileSync(fake, '#!/bin/sh\necho "fake-agent-started $*"\nsleep 3\n', { mode: 0o755 });
   const commands = () => js(`[...document.querySelectorAll('#agents .btn--agent')].map((b) => b.dataset.command)`);
-  const found = await commands();
-  check('入っている claude と codex のボタンが出る', found.includes('claude') && found.includes('codex'), found.join(', '));
 
   const config = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
   config.agents = [
     { command: fake, label: 'Fake Agent', args: '--hello', bypassArgs: '--skip-checks' },
     { command: 'no-such-agent-cli', label: '入っていない' },
+    { command: 'claude', path: path.join(fakeDir, 'claude') },
+    { command: 'codex', path: path.join(fakeDir, 'codex') },
   ];
   config.skipApprovals = true;
+  config.mainAgent = null;
   fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2));
   await sleep(1200);
   await js('window.__terp.refreshAgents()');
   const after = await commands();
+  check('入っている claude と codex のボタンが出る', after.includes('claude') && after.includes('codex'), after.join(', '));
   check('設定ファイルに書いたエージェントが足される', after.includes(fake), after.join(', '));
   check('入っていないものは出ない', !after.includes('no-such-agent-cli'));
 
@@ -784,7 +916,7 @@ async function runAgentsTest({ win, js, check, outDir }) {
   await js(`document.getElementById('tab-new').click()`);
   await sleep(300);
   const menu = await js(`[...document.querySelectorAll('#tab-menu .menu__item .menu__label')].map((l) => l.textContent)`);
-  check('＋ のプルダウンにターミナルとエージェント全部が出る', menu[0] === 'ターミナル' && ['claude', 'codex', 'fake agent'].every((n) => menu.includes(n)), menu.join(', '));
+  check('＋ のプルダウンにターミナルとエージェント全部が出る', menu[0] === 'ターミナル' && ['Claude Code', 'Codex', 'Fake Agent'].every((n) => menu.includes(n)), menu.join(', '));
   const tagged = await js(`document.querySelector('#tab-menu [data-command="claude"] .session__bypass')?.textContent || ''`);
   check('プルダウンに確認なしの印が出る', tagged === '確認なし');
   const countBefore = await js('window.__terp.sessions.size');
@@ -795,12 +927,15 @@ async function runAgentsTest({ win, js, check, outDir }) {
   check('選んだらプルダウンが閉じる', await js(`document.getElementById('tab-menu').hidden`));
 
   // メインのエージェントのボタン: 既定は見つかった最初のもの。設定の mainAgent で変えられる
-  check('メインのボタンは既定で最初のエージェント', (await js(`document.getElementById('tab-main-agent').dataset.command`)) === 'claude');
+  check('メインのボタンは既定で最初のエージェント', (await js(`document.getElementById('tab-main-agent').dataset.command`)) === fake);
   const cfg = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+  cfg.mainAgent = 'claude';
+  fs.writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2));
+  await sleep(1500);
+  check('設定の mainAgent でメインを変えられる', (await js(`document.getElementById('tab-main-agent').dataset.command`)) === 'claude');
   cfg.mainAgent = fake;
   fs.writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2));
   await sleep(1500);
-  check('設定の mainAgent でメインを変えられる', (await js(`document.getElementById('tab-main-agent').dataset.command`)) === fake);
   await js(`document.getElementById('tab-main-agent').click()`);
   await sleep(2500);
   const mainId = await js('window.__terp.activeId');
@@ -1427,6 +1562,14 @@ exports.run = (win) => {
 
     if (process.env.TERP_SELFTEST_THEMEAI) {
       await runThemeAiTest({ win, js, check, outDir });
+      check('CSP の違反が無い', !log.some((line) => line.startsWith('console:') && line.includes('violates')));
+      fs.writeFileSync(path.join(outDir, 'result.txt'), log.join('\n') + '\n');
+      await finish();
+      return;
+    }
+
+    if (process.env.TERP_SELFTEST_AGENTREG) {
+      await runAgentRegistryTest({ win, js, check, outDir });
       check('CSP の違反が無い', !log.some((line) => line.startsWith('console:') && line.includes('violates')));
       fs.writeFileSync(path.join(outDir, 'result.txt'), log.join('\n') + '\n');
       await finish();

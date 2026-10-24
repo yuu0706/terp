@@ -71,3 +71,6 @@ npm start
 ## ライセンス
 
 [MIT](LICENSE)
+
+エージェントのアイコンは [Lobe Icons](https://github.com/lobehub/lobe-icons)（MIT）を使用している。
+各ロゴは各社の商標であり、terp は各社と関係がない。詳細は [NOTICE.md](src/renderer/icons/agents/NOTICE.md) を参照。

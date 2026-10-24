@@ -21,8 +21,8 @@ const DEFAULT_CONFIG = {
   // 背景の不透明度（0〜1）とぼかし（true か半径）。Ghostty の background-opacity・background-blur に当たる
   backgroundOpacity: 1,
   backgroundBlur: false,
-  // 起動のボタンに足す AI エージェント。
-  // { "command": "名前か絶対パス", "label": "表示名", "args": "引数", "bypassArgs": "確認を飛ばす引数" }
+  // AI エージェントの上書きと追加。配列の順に並べる。
+  // { command, label, args, bypassArgs, path（絶対パス）, env（名前と値）, hidden }
   agents: [],
   // true なら、エージェントを確認なし（bypassArgs 付き）で起動する。⌥ を押しながらで逆になる
   skipApprovals: false,
@@ -197,6 +197,26 @@ function watchConfig(onChange) {
   });
 }
 
+function validateAgents(agents) {
+  if (!Array.isArray(agents)) throw new Error('エージェントは一覧で指定する');
+  for (const agent of agents) {
+    if (!agent || typeof agent !== 'object' || Array.isArray(agent)) throw new Error('エージェントの項目を確認する');
+    for (const key of ['command', 'label', 'args', 'bypassArgs', 'path']) {
+      if (agent[key] !== undefined && typeof agent[key] !== 'string') throw new Error(`${key} は文字で指定する`);
+      if (typeof agent[key] === 'string' && /[\0\r\n]/.test(agent[key])) throw new Error(`${key} は1行で指定する`);
+    }
+    if (agent.path && !path.isAbsolute(agent.path)) throw new Error('コマンドの場所は絶対パスで指定する');
+    if (agent.hidden !== undefined && typeof agent.hidden !== 'boolean') throw new Error('表示の設定を確認する');
+    if (agent.env !== undefined) {
+      if (!agent.env || typeof agent.env !== 'object' || Array.isArray(agent.env)) throw new Error('環境変数は名前と値で指定する');
+      for (const [key, value] of Object.entries(agent.env)) {
+        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) throw new Error('環境変数の名前は半角英数字と _ を使い、数字で始めない');
+        if (typeof value !== 'string' || /[\0\r\n]/.test(value)) throw new Error('環境変数の値は1行の文字で指定する');
+      }
+    }
+  }
+}
+
 // 設定の画面から1つ以上の値を書き換える。null は「書かない（既定に戻す）」として消す。
 // 画面に無い値や、利用者が手で書いた値は残す。JSON が壊れているときは書かずに失敗を返す
 function updateConfig(patch) {
@@ -210,7 +230,10 @@ function updateConfig(patch) {
   for (const [key, value] of Object.entries(patch)) {
     if (!(key in DEFAULT_CONFIG)) throw new Error(`知らない設定の名前です: ${key}`);
     if (value === null) delete next[key];
-    else next[key] = value;
+    else {
+      if (key === 'agents') validateAgents(value);
+      next[key] = value;
+    }
   }
   fs.mkdirSync(CONFIG_DIR, { recursive: true });
   const tmp = `${CONFIG_PATH}.tmp`;

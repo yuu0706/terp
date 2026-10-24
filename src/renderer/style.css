@@ -2271,3 +2271,142 @@ button.subagent:hover,
   font-family: var(--font-mono);
   font-size: var(--diff-font-size);
 }
+
+/* エージェントのロゴは同じ寸法に揃え、単色のものだけ文字色で塗る */
+.agent-icon {
+  display: inline-block;
+  width: var(--icon-sm);
+  height: var(--icon-sm);
+  flex: none;
+  object-fit: contain;
+}
+
+.agent-icon--mask {
+  background-color: currentColor;
+  mask-size: contain;
+  mask-position: center;
+  mask-repeat: no-repeat;
+}
+
+.settings__field[data-key='agents'] {
+  align-items: stretch;
+  max-width: none;
+}
+
+.agent-registry__heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--space-2);
+  position: sticky;
+  top: 0;
+  background: var(--color-bg);
+  padding: var(--space-2) 0;
+}
+
+.agent-registry__row {
+  border-bottom: 1px solid var(--color-border);
+}
+
+.agent-registry__head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) 0;
+}
+
+.agent-registry__open {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  min-width: 0;
+}
+
+.agent-registry__open:hover {
+  background: var(--color-bg-hover);
+}
+
+.agent-registry__identity,
+.agent-registry__state {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.agent-registry__main[hidden],
+.agent-registry__detail[hidden] {
+  display: none;
+}
+
+.agent-registry__show {
+  display: flex;
+  align-items: center;
+  white-space: nowrap;
+  font-size: var(--text-sm);
+}
+
+.agent-registry__detail,
+.agent-registry__add[open] {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-3);
+}
+
+.agent-registry__detail > .btn {
+  align-self: flex-start;
+  margin-top: var(--space-3);
+}
+
+.agent-registry__env-row {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+
+.agent-registry__env-row .field {
+  flex: 1;
+  min-width: 0;
+}
+
+.agent-registry .input {
+  box-sizing: border-box;
+  width: 100%;
+}
+
+.agent-registry__add {
+  padding-top: var(--space-3);
+}
+
+.agent-registry__add summary {
+  color: var(--color-accent);
+  cursor: pointer;
+}
+
+/* 既存の設定ナビの幅 220px と、行の操作に必要な幅を下回ると縦に並べる */
+@media (max-width: 760px) {
+  .agent-registry__head {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  .agent-registry__state {
+    grid-row: 2;
+  }
+  .settings:has(.agent-registry) .settings__nav {
+    width: auto;
+    max-width: 30%;
+    padding: var(--space-1);
+  }
+  .settings:has(.agent-registry) .settings__content {
+    padding: var(--space-3);
+  }
+}

@@ -11,7 +11,7 @@ const ICONS = {
   advanced: '<path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0" /><circle cx="16" cy="6" r="2" /><circle cx="10" cy="12" r="2" /><circle cx="18" cy="18" r="2" />',
 };
 
-// ctx.agents() は見つかった AI エージェントの一覧を返す（app.js が渡す）
+// ctx.agents() は起動できるもの、ctx.registry() は未導入・非表示を含む一覧を返す
 export const SECTIONS = [
   {
     id: 'appearance',
@@ -75,6 +75,7 @@ export const SECTIONS = [
           ...ctx.agents().map((a) => ({ value: a.command, label: `${a.command.split('/').pop()}（${a.label}）` })),
         ],
       },
+      { key: 'agents', type: 'registry' },
     ],
   },
   {
@@ -84,7 +85,7 @@ export const SECTIONS = [
       {
         type: 'action',
         label: '設定ファイルを開く',
-        help: 'この画面に無い設定（足すエージェントの agents など）は、設定ファイルに書く',
+        help: 'この画面に無い設定は、設定ファイルに書く',
         run: () => terp.openConfigFile(),
       },
     ],
@@ -98,6 +99,7 @@ const statusEl = document.getElementById('settings-status');
 
 let ctx = { agents: () => [] };
 let current = SECTIONS[0].id;
+let sectionRenderSerial = 0;
 let values = {};
 let onClose = () => {};
 let statusTimer = null;
@@ -111,6 +113,7 @@ export function initSettings(context) {
   document.getElementById('settings-close').addEventListener('click', closeSettings);
   overlay.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
+      if (document.querySelector('dialog[open]')) return;
       e.preventDefault();
       closeSettings();
     }
@@ -122,10 +125,19 @@ export function isSettingsOpen() {
 }
 
 export async function openSettings(sectionId) {
+  const wasOpen = isSettingsOpen();
   if (sectionId) current = sectionId;
+  flushRegistry();
+  await registrySaveQueue;
   const res = await terp.rawConfig();
   values = res.ok ? res.value : {};
   themeColorCache.clear();
+  if (!wasOpen) {
+    registrySession++;
+    registryStatuses = null;
+    registryChecking = false;
+    expandedAgents.clear();
+  }
   overlay.hidden = false;
   renderNav();
   await renderSection();
@@ -133,6 +145,11 @@ export async function openSettings(sectionId) {
 }
 
 export function closeSettings() {
+  sectionRenderSerial++;
+  flushRegistry();
+  registrySession++;
+  registryStatuses = null;
+  registryChecking = false;
   cancelThemeAi();
   overlay.hidden = true;
   onClose();
@@ -168,6 +185,8 @@ function renderNav() {
     btn.innerHTML = `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true">${ICONS[section.id] || ''}</svg><span></span>`;
     btn.querySelector('span').textContent = section.label;
     btn.addEventListener('click', async () => {
+      flushRegistry();
+      await registrySaveQueue;
       current = section.id;
       renderNav();
       await renderSection();
@@ -177,18 +196,29 @@ function renderNav() {
 }
 
 async function renderSection() {
+  const serial = ++sectionRenderSerial;
   const section = SECTIONS.find((s) => s.id === current) || SECTIONS[0];
+  flushRegistry();
   content.textContent = '';
   const title = document.createElement('h2');
   title.className = 'settings__title';
   title.textContent = section.label;
   content.append(title);
-  for (const field of section.fields) content.append(await renderField(field));
+  for (const field of section.fields) {
+    const row = await renderField(field);
+    if (serial !== sectionRenderSerial) return;
+    content.append(row);
+  }
+  if (section.id === 'agents') {
+    renderRegistryRows();
+    if (registryStatuses === null && !registryChecking) recheckRegistry();
+  }
 }
 
 // 種類ごとの部品。どれも { el, } を返し、変えたら save を呼ぶ
 const FIELD_TYPES = {
   theme: createThemePicker,
+  registry: createAgentRegistry,
   async select(field, value, id) {
     const select = document.createElement('select');
     select.className = 'input';
@@ -204,7 +234,10 @@ const FIELD_TYPES = {
       select.append(new Option(`${value}（見つかりません）`, value));
     }
     select.value = value === null || value === undefined ? '' : value;
-    select.addEventListener('change', () => save(field.key, select.selectedOptions[0].dataset.null === 'true' ? null : select.value));
+    select.addEventListener('change', async () => {
+      await save(field.key, select.selectedOptions[0].dataset.null === 'true' ? null : select.value);
+      if (field.key === 'mainAgent') updateRegistryHeadings();
+    });
     return select;
   },
 
@@ -338,7 +371,7 @@ async function renderField(field) {
   row.className = 'settings__field';
   const id = `setting-${field.key || field.label}`;
   const control = await FIELD_TYPES[field.type](field, values[field.key], id);
-  if (field.type !== 'action') {
+  if (field.type !== 'action' && field.type !== 'registry') {
     const label = document.createElement('label');
     label.className = 'settings__label';
     label.htmlFor = id;
@@ -365,6 +398,343 @@ async function renderField(field) {
   }
   if (field.key) row.dataset.key = field.key;
   return row;
+}
+
+const FALLBACK_AGENT_ICON = '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="8" width="16" height="12" rx="2" /><path d="M12 4v4M9 13v2M15 13v2M2 14h2M20 14h2" /></svg>';
+
+export function agentIcon(agent) {
+  const icon = agent.icon;
+  if (!icon || !/^[a-z-]+\.svg$/.test(icon.file)) return FALLBACK_AGENT_ICON;
+  const url = `./icons/agents/${icon.file}`;
+  return icon.mode === 'mask'
+    ? `<span class="agent-icon agent-icon--mask" style="mask-image:url('${url}')" aria-hidden="true"></span>`
+    : `<img class="agent-icon" src="${url}" alt="" aria-hidden="true">`;
+}
+
+let registryStatuses = null;
+let registryChecking = false;
+let registrySession = 0;
+let registrySaveQueue = Promise.resolve();
+const registryCommits = new Set();
+const expandedAgents = new Set();
+const LOGIN_LABELS = { in: '済み', out: '未', unknown: '確かめられない', unsupported: '確かめる方法が無い' };
+
+function flushRegistry() {
+  for (const commit of registryCommits) commit();
+  registryCommits.clear();
+}
+
+function registryText(label, value, placeholder, commitValue, key) {
+  const wrap = element('label', 'field');
+  wrap.append(element('span', 'field__label', label));
+  const input = element('input', 'input');
+  input.value = value || '';
+  input.placeholder = placeholder || '';
+  input.spellcheck = false;
+  if (key) input.dataset.agentField = key;
+  let saved = input.value;
+  let timer;
+  const commit = () => {
+    clearTimeout(timer);
+    if (saved === input.value) return;
+    saved = input.value;
+    commitValue(input.value);
+  };
+  registryCommits.add(commit);
+  input.addEventListener('input', () => {
+    registryCommits.add(commit);
+    clearTimeout(timer);
+    timer = setTimeout(commit, 800);
+  });
+  input.addEventListener('blur', commit);
+  wrap.append(input);
+  return wrap;
+}
+
+function registryAction(text, action, name) {
+  const button = element('button', 'btn btn--xs', text);
+  button.type = 'button';
+  if (name) button.dataset.action = name;
+  button.addEventListener('click', action);
+  return button;
+}
+
+// 複数の欄を続けて変えたときも、先の保存結果に次の変更を重ねる
+function changeRegistry(transform, redraw = true) {
+  registrySaveQueue = registrySaveQueue.then(async () => {
+    const configured = new Map();
+    for (const item of Array.isArray(values.agents) ? values.agents : []) {
+      if (item?.command) configured.set(item.command, { ...configured.get(item.command), ...item });
+    }
+    const next = transform([...configured.values()]);
+    if (!await save('agents', next)) return;
+    await ctx.refreshAgents();
+    if (isSettingsOpen() && current === 'agents') {
+      updateMainAgentChoices();
+      if (redraw) renderRegistryRows();
+      else updateRegistryHeadings();
+    }
+  }).catch(() => showStatus('保存できない。設定ファイルを確認する', 'error'));
+  return registrySaveQueue;
+}
+
+function patchAgent(command, key, value, redraw = false) {
+  if (key === 'path' && registryStatuses) registryStatuses = registryStatuses.filter((s) => s.command !== command);
+  return changeRegistry((list) => {
+    const next = list.map((a) => ({ ...a }));
+    let item = next.find((a) => a.command === command);
+    if (!item) next.push(item = { command });
+    if (value === undefined) delete item[key];
+    else item[key] = value;
+    return next;
+  }, redraw);
+}
+
+function effectiveMainAgent() {
+  const list = ctx.registry().filter((a) => a.found && !a.hidden);
+  return list.find((a) => a.command === values.mainAgent || a.command.split('/').pop() === values.mainAgent) || list[0];
+}
+
+function updateMainAgentChoices() {
+  const select = document.getElementById('setting-mainAgent');
+  if (!select) return;
+  select.textContent = '';
+  select.append(new Option('見つかった最初のもの', ''));
+  select.options[0].dataset.null = 'true';
+  for (const a of ctx.registry().filter((a) => a.found && !a.hidden)) select.append(new Option(a.label, a.command));
+  if (values.mainAgent && ![...select.options].some((o) => o.value === values.mainAgent)) {
+    select.append(new Option(`${values.mainAgent}（見つからない／非表示）`, values.mainAgent));
+  }
+  select.value = values.mainAgent || '';
+}
+
+function updateRegistryHeadings() {
+  for (const row of content.querySelectorAll('.agent-registry__row')) {
+    const agent = ctx.registry().find((a) => a.command === row.dataset.command);
+    if (!agent) continue;
+    row.querySelector('.agent-registry__name').textContent = agent.label;
+    row.querySelector('.agent-registry__main').hidden = effectiveMainAgent()?.command !== agent.command;
+    row.querySelector('[data-action="main"]').disabled = !agent.found || agent.hidden;
+    row.querySelector('.agent-registry__path').textContent = `見つかった場所: ${agent.path || '見つからない'}`;
+  }
+  updateRegistryStatuses();
+}
+
+function updateRegistryStatuses() {
+  const refresh = document.getElementById('agents-recheck');
+  if (refresh) {
+    refresh.textContent = registryChecking ? '確かめ中…' : '確かめ直す';
+    refresh.disabled = registryChecking;
+  }
+  for (const row of content.querySelectorAll('.agent-registry__row')) {
+    const agent = ctx.registry().find((a) => a.command === row.dataset.command);
+    if (!agent) continue;
+    const state = registryStatuses?.find((s) => s.command === agent.command);
+    row.querySelector('.agent-registry__installed').textContent = agent.found
+      ? `入っている${state?.version ? ` · ${state.version}` : ''}` : '見つからない';
+    row.querySelector('.agent-registry__login').textContent = `ログイン: ${registryChecking ? '確かめ中…' : LOGIN_LABELS[state?.login || (['claude', 'codex'].includes(agent.command.split('/').pop()) ? 'unknown' : 'unsupported')]}${!registryChecking && state?.method ? `（${state.method}）` : ''}`;
+  }
+}
+
+async function recheckRegistry() {
+  if (registryChecking) return;
+  const session = registrySession;
+  registryChecking = true;
+  updateRegistryStatuses();
+  try {
+    await ctx.refreshAgents();
+    if (session !== registrySession) return;
+    updateMainAgentChoices();
+    updateRegistryHeadings();
+    const res = await terp.agentStatus();
+    if (session !== registrySession) return;
+    registryStatuses = res.ok ? res.value : [];
+    if (!res.ok) showStatus('状態を確かめられない。確かめ直すを押して再試行', 'error');
+  } catch {
+    if (session === registrySession) {
+      registryStatuses = [];
+      showStatus('状態を確かめられない。確かめ直すを押して再試行', 'error');
+    }
+  } finally {
+    if (session === registrySession) {
+      registryChecking = false;
+      updateRegistryStatuses();
+    }
+  }
+}
+
+function agentEnvironmentEditor(agent, raw) {
+  const wrap = element('div', 'agent-registry__env');
+  wrap.append(element('h3', 'settings__label', '環境変数'));
+  const rows = element('div');
+  const commitEnv = () => {
+    const pairs = [...rows.children].map((row) => [...row.querySelectorAll('input')].map((input) => input.value));
+    if (pairs.some(([key, value]) => (!key && value) || (key && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)))) {
+      showStatus('環境変数の名前は半角英数字と _ を使い、数字で始めない', 'error');
+      return;
+    }
+    const filled = pairs.filter(([key]) => key);
+    if (new Set(filled.map(([key]) => key)).size !== filled.length) {
+      showStatus('環境変数の名前が重複している', 'error');
+      return;
+    }
+    patchAgent(agent.command, 'env', filled.length ? Object.fromEntries(filled) : undefined);
+  };
+  const addRow = (key = '', value = '') => {
+    const row = element('div', 'agent-registry__env-row');
+    row.append(registryText('名前', key, 'EXAMPLE_NAME', commitEnv, 'env-name'), registryText('値', value, '', commitEnv, 'env-value'),
+      registryAction('消す', () => { row.remove(); commitEnv(); }, 'env-remove'));
+    rows.append(row);
+  };
+  Object.entries(raw.env || {}).forEach(([key, value]) => addRow(key, value));
+  wrap.append(rows, registryAction('環境変数を足す', () => addRow(), 'env-add'));
+  return wrap;
+}
+
+function confirmAgentRemoval(agent) {
+  const dialog = element('dialog', 'dialog');
+  dialog.id = 'agent-remove-dialog';
+  const body = element('div', 'dialog__body');
+  const title = element('h2', 'dialog__title', 'エージェントを削除');
+  title.id = 'agent-remove-title';
+  dialog.setAttribute('aria-labelledby', title.id);
+  body.append(title, element('p', 'dialog__note', `${agent.label} の登録と起動設定を削除する`));
+  const actions = element('div', 'dialog__actions');
+  const cancel = registryAction('やめる', () => dialog.close());
+  actions.append(cancel, registryAction('削除', async () => {
+    flushRegistry();
+    await changeRegistry((list) => list.filter((a) => a.command !== agent.command));
+    dialog.close();
+  }, 'confirm-remove'));
+  body.append(actions);
+  dialog.append(body);
+  dialog.addEventListener('close', () => dialog.remove(), { once: true });
+  document.body.append(dialog);
+  dialog.showModal();
+  cancel.focus();
+}
+
+function renderRegistryRows() {
+  const host = document.getElementById('agent-registry-rows');
+  if (!host) return;
+  flushRegistry();
+  host.textContent = '';
+  const agents = ctx.registry();
+  agents.forEach((agent, index) => {
+    const raw = (values.agents || []).find((a) => a.command === agent.command) || {};
+    const row = element('div', 'agent-registry__row');
+    row.dataset.command = agent.command;
+    const head = element('div', 'agent-registry__head');
+    const open = element('button', 'agent-registry__open');
+    open.type = 'button';
+    open.innerHTML = agentIcon(agent);
+    const name = element('span', 'agent-registry__identity');
+    name.append(element('strong', 'agent-registry__name', agent.label), element('span', 'settings__unit', agent.command));
+    open.append(name);
+    const main = element('span', 'agent-registry__main session__bypass', 'メイン');
+    main.hidden = effectiveMainAgent()?.command !== agent.command;
+    open.append(main);
+    const state = element('div', 'agent-registry__state');
+    state.setAttribute('aria-live', 'polite');
+    state.append(element('span', 'agent-registry__installed'), element('span', 'agent-registry__login settings__unit'));
+    const show = element('label', 'agent-registry__show');
+    const checkbox = element('input');
+    checkbox.type = 'checkbox';
+    checkbox.checked = !agent.hidden;
+    checkbox.dataset.action = 'visible';
+    checkbox.addEventListener('change', () => { flushRegistry(); patchAgent(agent.command, 'hidden', !checkbox.checked, true); });
+    show.append(checkbox, document.createTextNode('表示する'));
+    const order = element('div', 'settings__inline');
+    [-1, 1].forEach((direction) => {
+      const move = registryAction(direction < 0 ? '↑' : '↓', () => {
+        flushRegistry();
+        changeRegistry((list) => {
+          const commands = ctx.registry().map((a) => a.command);
+          const at = commands.indexOf(agent.command);
+          [commands[at], commands[at + direction]] = [commands[at + direction], commands[at]];
+          return commands.map((command) => list.find((a) => a.command === command) || { command });
+        });
+      }, direction < 0 ? 'up' : 'down');
+      move.setAttribute('aria-label', `${agent.label} を${direction < 0 ? '上' : '下'}へ`);
+      move.disabled = direction < 0 ? index === 0 : index === agents.length - 1;
+      order.append(move);
+    });
+    head.append(open, state, show, order);
+    head.addEventListener('click', (event) => {
+      if (!event.target.closest('button, label, input')) open.click();
+    });
+    const detail = element('div', 'agent-registry__detail');
+    detail.hidden = !expandedAgents.has(agent.command);
+    open.setAttribute('aria-expanded', String(!detail.hidden));
+    open.addEventListener('click', () => {
+      detail.hidden = !detail.hidden;
+      if (detail.hidden) { expandedAgents.delete(agent.command); flushRegistry(); }
+      else expandedAgents.add(agent.command);
+      open.setAttribute('aria-expanded', String(!detail.hidden));
+    });
+    for (const [key, label, placeholder] of [
+      ['label', '表示名', agent.defaults.label || agent.command],
+      ['path', 'コマンドの場所', '空なら PATH から探す'],
+      ['args', 'いつも付ける引数', ''],
+      ['bypassArgs', '確認を飛ばす引数', agent.defaults.bypassArgs],
+    ]) {
+      detail.append(registryText(label, raw[key], placeholder, (value) => patchAgent(agent.command, key, value.trim() || undefined), key));
+    }
+    detail.append(element('p', 'settings__help agent-registry__path', `見つかった場所: ${agent.path || '見つからない'}`));
+    detail.append(agentEnvironmentEditor(agent, raw));
+    const actions = element('div', 'settings__inline');
+    const setMain = registryAction('メインにする', async () => {
+      flushRegistry();
+      await registrySaveQueue;
+      if (await save('mainAgent', agent.command)) { updateMainAgentChoices(); updateRegistryHeadings(); }
+    }, 'main');
+    setMain.disabled = !agent.found || agent.hidden;
+    actions.append(setMain);
+    detail.append(actions);
+    detail.append(registryAction(agent.known ? '既定に戻す' : '削除', () => {
+      if (!agent.known) return confirmAgentRemoval(agent);
+      flushRegistry();
+      changeRegistry((list) => list.filter((a) => a.command !== agent.command));
+    }, agent.known ? 'reset' : 'remove'));
+    row.append(head, detail);
+    host.append(row);
+  });
+  updateRegistryStatuses();
+}
+
+async function createAgentRegistry() {
+  await ctx.refreshAgents();
+  const wrap = element('div', 'agent-registry');
+  const heading = element('div', 'agent-registry__heading');
+  const refresh = registryAction('確かめ直す', recheckRegistry);
+  refresh.id = 'agents-recheck';
+  heading.append(element('h3', 'settings__label', '登録したエージェント'), refresh);
+  const rows = element('div');
+  rows.id = 'agent-registry-rows';
+  const add = element('details', 'agent-registry__add');
+  add.append(element('summary', '', '＋ エージェントを足す'));
+  const command = registryText('コマンドの名前か絶対パス', '', '', () => {}, 'new-command');
+  const label = registryText('表示名', '', '', () => {}, 'new-label');
+  const error = element('p', 'dialog__error');
+  error.setAttribute('role', 'alert');
+  add.append(command, label, error, registryAction('追加', async () => {
+    const name = command.querySelector('input').value.trim();
+    const display = label.querySelector('input').value.trim();
+    if (!name || !display) { error.textContent = 'コマンドと表示名を入れる'; return; }
+    if (ctx.registry().some((a) => a.command === name)) { error.textContent = '同じコマンドが登録されている'; return; }
+    if (/\s/.test(name) && !name.startsWith('/')) { error.textContent = 'コマンドは名前か絶対パスで指定する'; return; }
+    flushRegistry();
+    await changeRegistry((list) => [...list, { command: name, label: display }]);
+    if ((values.agents || []).some((a) => a.command === name)) {
+      command.querySelector('input').value = '';
+      label.querySelector('input').value = '';
+      add.open = false;
+      error.textContent = '';
+    }
+  }, 'add'));
+  wrap.append(heading, rows, add);
+  // renderField の後で DOM に追加されるため、描画は呼び出し側で行う
+  return wrap;
 }
 
 function element(tag, className, text) {

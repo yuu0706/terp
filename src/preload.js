@@ -46,6 +46,7 @@ contextBridge.exposeInMainWorld('terp', {
   openExternalFile: (file) => ipcRenderer.invoke('files:open-external', file),
   revealFile: (file) => ipcRenderer.invoke('files:reveal', file),
   listAgents: () => ipcRenderer.invoke('agents:list'),
+  agentStatus: () => ipcRenderer.invoke('agents:status'),
   listSubagents: () => ipcRenderer.invoke('subagents:list'),
   readSubagent: (file, offset) => ipcRenderer.invoke('subagents:read', file, offset),
   historyLog: (opts) => ipcRenderer.invoke('history:log', opts),

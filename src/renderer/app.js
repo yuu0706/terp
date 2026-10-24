@@ -8,7 +8,7 @@ import { initGitPanel, refresh as refreshGit, setGitVisible } from './gitpanel.j
 import { initFilesPanel, refreshFiles, setFilesVisible, markActiveFile } from './filespanel.js';
 import { renderFileView, applyEditorConfig } from './fileview.js';
 import { createPathLinkProvider } from './pathlinks.js';
-import { initSettings, openSettings } from './settings.js';
+import { initSettings, openSettings, agentIcon } from './settings.js';
 import { createPane, paneList, splitPane, closePane, replacePane, restoreLayout, createPaneView, makeTabDraggable, MAX_PANES } from './panes.js';
 import { terminalPaths, pathDropTarget, pathsFromTransfer } from './droppaths.js';
 
@@ -105,6 +105,7 @@ function applyConfig(c) {
   configError.hidden = !c.error;
   // skipApprovals を切り替えたら、エージェントのボタンの説明と印も変える
   if (agentList.length) renderAgentButtons();
+  refreshAgents();
   for (const s of sessions.values()) {
     s.term.options.theme = terminalTheme(c);
     s.term.options.fontFamily = c.font.family;
@@ -663,13 +664,19 @@ async function addProject(dir) {
 // ---- AI エージェントの起動 ----
 
 const agentsEl = document.getElementById('agents');
-const AGENT_ICON = `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="8" width="16" height="12" rx="2" /><path d="M12 4v4M9 13v2M15 13v2M2 14h2M20 14h2" /></svg>`;
 let agentList = [];
+let agentRegistry = [];
+let agentRefreshSerial = 0;
 
-// シェルに打つ1行。絶対パスに空白があれば引用符で囲む。bypass なら確認を飛ばす引数を足す
+// シェルに打つ1行。args は既存のシェルの書式を保つ。場所を上書きしたときだけ絶対パスで打ち、
+// 実行ファイルは記号を含むときだけ、環境変数の値は必ず引用する
 function agentCommandLine(a, bypass = false) {
-  const command = /[\s'"]/.test(a.command) ? `'${a.command.replace(/'/g, `'\\''`)}'` : a.command;
-  return [command, a.args, bypass ? a.bypassArgs : ''].filter(Boolean).join(' ');
+  const quote = (value) => "'" + String(value).replace(/'/g, "'\\''") + "'";
+  const env = Object.entries(a.env || {}).filter(([key]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(key));
+  const prefix = env.length ? ['env', ...env.map(([key, value]) => `${key}=${quote(value)}`)] : [];
+  const file = a.configuredPath || a.command;
+  const command = /^[\w@%+=:,./-]+$/.test(file) ? file : quote(file);
+  return [...prefix, command, a.args, bypass ? a.bypassArgs : ''].filter(Boolean).join(' ');
 }
 
 // 確認を飛ばすか。普段は設定の skipApprovals に従い、⌥ を押しながらなら逆にする。飛ばす引数が無いものは飛ばさない
@@ -685,10 +692,13 @@ function agentTitle(a) {
 }
 
 async function refreshAgents() {
+  const serial = ++agentRefreshSerial;
   const res = await terp.listAgents();
-  if (!res.ok || JSON.stringify(res.value) === JSON.stringify(agentList)) return;
-  agentList = res.value;
+  if (serial !== agentRefreshSerial || !res.ok) return;
+  agentRegistry = res.value;
+  agentList = agentRegistry.filter((a) => a.found && !a.hidden);
   renderAgentButtons();
+  if (!tabMenu.hidden) openTabMenu();
 }
 
 function renderAgentButtons() {
@@ -698,7 +708,8 @@ function renderAgentButtons() {
     btn.type = 'button';
     btn.className = 'btn btn--agent';
     btn.dataset.command = a.command;
-    btn.innerHTML = `${AGENT_ICON}<span></span>`;
+    btn.innerHTML = `${agentIcon(a)}<span></span>`;
+    // 左の一覧は幅が狭いため、表示名ではなく短いコマンドの名前を出す
     btn.querySelector('span').textContent = a.command.split('/').pop();
     btn.title = agentTitle(a);
     btn.dataset.bypass = String(wantsBypass(a));
@@ -726,6 +737,7 @@ function renderMainAgentButton() {
   const a = mainAgent();
   mainAgentBtn.hidden = !a;
   if (!a) return;
+  mainAgentBtn.innerHTML = agentIcon(a);
   mainAgentBtn.dataset.command = a.command;
   mainAgentBtn.dataset.bypass = String(wantsBypass(a));
   mainAgentBtn.title = agentTitle(a);
@@ -747,7 +759,7 @@ function openTabMenu() {
   const items = [
     { label: 'ターミナル', hint: '⌘T', run: () => newTerminal() },
     ...agentList.map((a) => ({
-      label: a.command.split('/').pop(),
+      label: a.label,
       agent: a,
       run: (altKey) => launchAgent(a, wantsBypass(a, altKey)),
     })),
@@ -763,7 +775,7 @@ function openTabMenu() {
     btn.type = 'button';
     btn.className = 'menu__item';
     btn.setAttribute('role', 'menuitem');
-    btn.innerHTML = `${item.agent ? AGENT_ICON : '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 17l6-6-6-6M12 19h8" /></svg>'}<span class="menu__label"></span>`;
+    btn.innerHTML = `${item.agent ? agentIcon(item.agent) : '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 17l6-6-6-6M12 19h8" /></svg>'}<span class="menu__label"></span>`;
     btn.querySelector('.menu__label').textContent = item.label;
     if (item.agent) {
       btn.dataset.command = item.agent.command;
@@ -1832,6 +1844,8 @@ initGitPanel({ activeCwd });
 initHistoryPanel({ activeCwd, openCommit });
 initSettings({
   agents: () => agentList,
+  registry: () => agentRegistry,
+  refreshAgents,
   onClose: () => (activeKey?.startsWith('t:') ? sessions.get(activeId)?.term.focus() : null),
 });
 initFilesPanel({
