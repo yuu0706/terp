@@ -829,18 +829,6 @@ button.subagent:hover,
   opacity: 1;
 }
 
-.session__status {
-  flex: none;
-  font-size: var(--text-sm);
-  font-variant-numeric: tabular-nums;
-  opacity: 0.85;
-}
-
-.session__status:empty { display: none; }
-.session[data-agent-state='working'] .session__status { color: var(--color-accent); }
-.session[data-agent-state='waiting'] .session__status { color: var(--history-yellow); }
-.session[data-agent-state='done'] .session__status { color: var(--history-green); }
-
 .work__status {
   display: inline-flex;
   align-items: center;

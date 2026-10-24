@@ -255,6 +255,10 @@ function renderStatus(el, s, state) {
   dot.setAttribute('role', 'img');
   dot.setAttribute('aria-label', STATE_LABELS[state]);
   dot.textContent = state === 'waiting' ? '!' : '';
+  // 文字は出さず、経過は印に指を置いたときだけ見せる
+  const text = isAgent(s) ? agentStatusText(state, s, Date.now()) : '';
+  if (text) dot.title = text;
+  else dot.removeAttribute('title');
 }
 
 const termKey = (id) => `t:${id}`;
@@ -298,7 +302,6 @@ function renderItem(s, index = visibleKeys().indexOf(termKey(s.id))) {
   renderStatus(li, s, state);
   li.setAttribute('aria-current', String(activeKey === termKey(s.id)));
   li.title = [s.title, shortPath(s.cwd)].filter(Boolean).join('\n');
-  li.querySelector('.session__status').textContent = isAgent(s) ? agentStatusText(state, s, Date.now()) : '';
   const nameEl = li.querySelector('.session__name');
   if (nameEl) nameEl.textContent = displayName(s);
   const name = displayName(s);
@@ -1143,7 +1146,6 @@ function createItem(s) {
     <span class="session__key"></span>
     <span class="session__line2">
       <span class="session__bypass" title="ファイルの読み書きやコマンドの実行の確認を飛ばして起動しています" hidden>確認なし</span>
-      <span class="session__status"></span>
       <span class="session__sub"></span>
     </span>
     <button class="session__close" type="button" aria-label="閉じる" title="閉じる（⌘W）">

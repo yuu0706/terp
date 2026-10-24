@@ -263,10 +263,10 @@ require('readline').createInterface({ input: process.stdin }).on('line', (comman
     await sleep(2300);
     await input(first, 'work');
     await wait(async () => (await state(first)) === 'working');
-    const before = await js(`${row(first)}.querySelector('.session__status').textContent`);
+    const before = await js(`${row(first)}.querySelector('.session__dot').title`);
     await sleep(1200);
-    const after = await js(`${row(first)}.querySelector('.session__status').textContent`);
-    check('考え中の秒が進む', /^考え中 0:0\d$/.test(before) && before !== after);
+    const after = await js(`${row(first)}.querySelector('.session__dot').title`);
+    check('考え中の経過は印の説明に出て秒が進む', /^考え中 0:0\d$/.test(before) && before !== after);
     check('一覧とタブに強調色の輪を出す', await colorMatches(first, 'borderTopColor', '--color-accent') && await js(`(() => {
       const dot = ${row(first)}.querySelector('.session__dot');
       const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -274,7 +274,7 @@ require('readline').createInterface({ input: process.stdin }).on('line', (comman
     })()`));
     await input(first, 'permission');
     await wait(async () => (await state(first)) === 'waiting');
-    check('許可待ちは黄色の ! と文字で出す', await colorMatches(first, 'backgroundColor', '--history-yellow') && await js(`${row(first)}.querySelector('.session__dot').textContent === '!' && ${row(first)}.querySelector('.session__status').textContent === '許可待ち' && ${tab(first)}.querySelector('.tab__dot').textContent === '!'`));
+    check('許可待ちは黄色の ! で出す', await colorMatches(first, 'backgroundColor', '--history-yellow') && await js(`${row(first)}.querySelector('.session__dot').textContent === '!' && ${row(first)}.querySelector('.session__dot').title === '許可待ち' && ${tab(first)}.querySelector('.tab__dot').textContent === '!'`));
     check('通知を切っていても Dock は許可待ちを数える', await wait(() => badge() === '1'));
     await input(first, 'echo');
     await wait(async () => (await state(first)) === 'idle');
@@ -291,7 +291,7 @@ require('readline').createInterface({ input: process.stdin }).on('line', (comman
     await input(first, 'blip');
     await sleep(1500);
     check('終わった後の1回の出力では考え中に戻らない', await state(first) === 'done');
-    check('見ていない応答の終わりは一覧とタブが緑になる', await colorMatches(first, 'backgroundColor', '--history-green') && await js(`${tab(first)}.dataset.agentState === 'done' && ${row(first)}.querySelector('.session__status').textContent.startsWith('終わった · ')`));
+    check('見ていない応答の終わりは一覧とタブが緑になる', await colorMatches(first, 'backgroundColor', '--history-green') && await js(`${tab(first)}.dataset.agentState === 'done' && ${row(first)}.querySelector('.session__dot').title.startsWith('終わった · ')`));
     await input(second, 'approval');
     await wait(async () => (await state(second)) === 'waiting');
     // 一覧は 500ms ごとに描き直すため、描き直しを待ってから撮る
