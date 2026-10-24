@@ -520,10 +520,7 @@ button.subagent:hover,
 /* 記録は端末やファイルと同じ面で開く。右の面の開閉にも幅を合わせる */
 .subagent-view {
   position: absolute;
-  top: var(--titlebar-height);
-  left: 0;
-  right: 0;
-  bottom: 0;
+  inset: 0;
   min-width: 0;
   display: flex;
   flex-direction: column;
@@ -786,10 +783,7 @@ button.subagent:hover,
 
 .term {
   position: absolute;
-  top: var(--titlebar-height);
-  left: 0;
-  right: 0;
-  bottom: 0;
+  inset: 0;
   padding: 0 var(--term-padding-x) var(--term-padding-y);
 }
 
@@ -1379,10 +1373,7 @@ button.subagent:hover,
 /* ---- タブで開いたファイル ---- */
 .fileview {
   position: absolute;
-  top: var(--titlebar-height);
-  left: 0;
-  right: 0;
-  bottom: 0;
+  inset: 0;
   display: flex;
   flex-direction: column;
   /* 背景は端末と同じ奥の面で塗り、Monaco の透過を保つ */
@@ -2024,3 +2015,75 @@ button.subagent:hover,
   outline: 2px solid var(--color-accent);
   outline-offset: 2px;
 }
+
+
+/* 枠の中の重なりはここに閉じ込め、差分（2）とメニュー（10）の下に置く。 */
+.panes {
+  position: absolute;
+  inset: var(--titlebar-height) 0 0;
+  overflow: auto;
+  isolation: isolate;
+  z-index: 0;
+}
+
+.pane-split {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+}
+
+.pane-split[data-dir='column'] { flex-direction: column; }
+
+.pane {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.panes[data-split='true'] .pane[data-active='true'] {
+  outline: 1px solid var(--color-accent);
+  outline-offset: -1px;
+}
+
+.pane__close {
+  position: absolute;
+  top: var(--space-1);
+  right: var(--space-1);
+  z-index: 1;
+  background: var(--color-bg);
+}
+
+.pane__close[hidden] { display: none; }
+
+.pane-gutter {
+  flex: 0 0 calc(var(--space-1) + 1px);
+  background: var(--color-border);
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.pane-split[data-dir='column'] > .pane-gutter { cursor: row-resize; }
+.pane-gutter:hover,
+.panes[data-resizing] .pane-gutter { background: var(--color-accent); }
+.panes[data-resizing] { user-select: none; }
+.panes[data-resizing] .pane > :not(.pane__close) { pointer-events: none; }
+
+.pane[data-drop]::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  background: color-mix(in srgb, var(--color-accent) 25%, transparent);
+  border: 1px solid var(--color-accent);
+}
+
+.pane[data-drop='left']::after { right: 50%; }
+.pane[data-drop='right']::after { left: 50%; }
+.pane[data-drop='top']::after { bottom: 50%; }
+.pane[data-drop='bottom']::after { top: 50%; }

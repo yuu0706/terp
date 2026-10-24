@@ -8,6 +8,7 @@ import { initFilesPanel, refreshFiles, setFilesVisible, markActiveFile } from '.
 import { renderFileView, applyEditorConfig } from './fileview.js';
 import { createPathLinkProvider } from './pathlinks.js';
 import { initSettings, openSettings } from './settings.js';
+import { createPane, paneList, splitPane, closePane, replacePane, restoreLayout, createPaneView, makeTabDraggable, MAX_PANES } from './panes.js';
 
 const terp = window.terp;
 const container = document.getElementById('terminals');
@@ -50,6 +51,16 @@ let projects = [];
 // Orca と同じく、上のタブには表示中のタブと同じ作業（worktree）のものだけを出す
 let tabOrder = [];
 let activeKey = null;
+let layout = createPane();
+let activePaneId = layout.id;
+const paneHost = document.getElementById('panes');
+const viewStore = document.getElementById('view-store');
+const panes = createPaneView(paneHost, {
+  onActivate: activatePane,
+  onClose: closeWorkspacePane,
+  onDrop: dropTabInPane,
+  onResize: (next) => { layout = next; syncPanes(); saveTabs(); },
+});
 // 途中の状態で控えを上書きすると、まだ開き直していないファイルが消える
 let restoringTabs = true;
 let saveTabsTimer = null;
@@ -200,7 +211,7 @@ function renderAll() {
     el.querySelector('.work__row').setAttribute('aria-current', String(group === el.dataset.path));
   }
   renderTabs(visible);
-  empty.hidden = tabOrder.length > 0;
+  empty.hidden = Boolean(activeKey);
 }
 
 // ---- 上のタブ ----
@@ -222,6 +233,7 @@ function renderTabs(visible) {
       const tab = document.createElement('div');
       tab.className = 'tab';
       tab.dataset.key = key;
+      makeTabDraggable(tab, key);
       tab.setAttribute('role', 'tab');
       tab.innerHTML = `${key.startsWith('t:') ? '<span class="session__dot tab__dot"></span>' : key.startsWith('s:') ? AGENT_ICON : TAB_FILE_ICON}<span class="tab__name"></span>
         <button class="tab__close" type="button" aria-label="閉じる" title="閉じる（⌘W）">${CLOSE_ICON}</button>`;
@@ -478,7 +490,10 @@ function renderSubagents(id) {
     row.querySelector('.subagent__name').textContent = agent.description || agent.agentType || 'サブエージェント';
     row.querySelector('.subagent__action').textContent = agent.lastAction || '';
     row.querySelector('.subagent__time').textContent = elapsedLabel(row.dataset.since);
-    if (clickable) row.addEventListener('click', () => openSubagent(id, agent));
+    if (clickable) {
+      row.addEventListener('click', () => openSubagent(id, agent));
+      makeTabDraggable(row, subagentKey(agent.file));
+    }
     li.append(row);
     rows.append(li);
   }
@@ -596,20 +611,23 @@ async function readSubagentView(view) {
   }
 }
 
-async function openSubagent(sessionId, agent) {
+async function openSubagent(sessionId, agent, show = true) {
   const key = subagentKey(agent.file);
-  if (subagentViews.has(agent.file)) return activateKey(key);
+  if (subagentViews.has(agent.file)) {
+    if (show) activateKey(key);
+    return;
+  }
   const el = document.createElement('section');
   el.className = 'subagent-view';
   el.hidden = true;
   el.innerHTML = '<header class="subagent-view__head"><h2 class="subagent-view__title"></h2><span class="subagent-view__meta"></span></header><p class="subagent-view__notice" role="status">記録を読み込み中</p><div class="subagent-view__body" tabindex="0" aria-label="サブエージェントの記録"></div>';
   const view = { agent, sessionId, cwd: sessions.get(sessionId)?.cwd, el, notice: el.querySelector('.subagent-view__notice'), offset: undefined, reading: false };
   subagentViews.set(agent.file, view);
-  container.append(el);
+  viewStore.append(el);
   updateSubagentHeading(view);
   const at = tabOrder.indexOf(activeKey);
   tabOrder.splice(at < 0 ? tabOrder.length : at + 1, 0, key);
-  activateKey(key);
+  if (show) activateKey(key);
   await readSubagentView(view);
 }
 
@@ -924,6 +942,7 @@ function createItem(s) {
   const li = document.createElement('li');
   li.className = 'session';
   li.dataset.id = String(s.id);
+  makeTabDraggable(li, termKey(s.id));
   li.innerHTML = `
     <span class="session__dot" role="img"></span>
     <span class="session__name"></span>
@@ -1011,36 +1030,127 @@ function hideView(key) {
   }
 }
 
-function activateKey(key) {
-  const isTerm = key.startsWith('t:');
-  const target = isTerm ? sessions.get(Number(key.slice(2))) : key.startsWith('s:') ? subagentViews.get(key.slice(2)) : fileViews.get(key.slice(2));
+function viewOf(key) {
+  if (!key) return null;
+  return key.startsWith('t:') ? sessions.get(Number(key.slice(2))) : key.startsWith('s:') ? subagentViews.get(key.slice(2)) : fileViews.get(key.slice(2));
+}
+
+function syncPanes() {
+  const displayed = new Set(paneList(layout).map((p) => p.key));
+  for (const key of tabOrder) {
+    const view = viewOf(key);
+    if (view && !displayed.has(key)) {
+      hideView(key);
+      if (view.el.parentElement !== viewStore) viewStore.appendChild(view.el);
+    }
+  }
+  panes.render(layout, activePaneId);
+  for (const pane of paneList(layout)) {
+    const view = viewOf(pane.key);
+    if (!view) continue;
+    const el = panes.element(pane.id);
+    if (view.el.parentElement !== el) el.appendChild(view.el);
+    view.el.hidden = false;
+    if (pane.key.startsWith('t:')) {
+      attachWebgl(view);
+      view.fit.fit();
+    } else view.view?.editor?.layout();
+  }
+  const activePane = paneList(layout).find((p) => p.id === activePaneId);
+  if (activePane && !activePane.key) panes.element(activePane.id).appendChild(empty);
+  else if (empty.parentElement !== viewStore) viewStore.appendChild(empty);
+  empty.hidden = Boolean(activeKey);
+}
+
+function activatePane(id, focus = true) {
+  const pane = paneList(layout).find((p) => p.id === id);
+  if (!pane || (id === activePaneId && !focus)) return;
+  activePaneId = id;
+  if (pane.key) activateKey(pane.key, focus);
+  else {
+    activeKey = null;
+    syncPanes();
+    renderAll();
+    saveTabs();
+  }
+}
+
+function activateKey(key, focus = true) {
+  const target = viewOf(key);
   if (!target) return;
-  if (activeKey && activeKey !== key) hideView(activeKey);
+  const existing = paneList(layout).find((p) => p.key === key);
+  if (existing) activePaneId = existing.id;
+  else layout = replacePane(layout, activePaneId, key);
   activeKey = key;
   recent = [key, ...recent.filter((k) => k !== key)];
-  target.el.hidden = false;
   target.lastActive = Date.now();
-  if (isTerm) {
-    const s = target;
-    activeId = s.id;
-    terp.setMeta(s.id, { lastActive: s.lastActive });
-    s.unread = false;
-    s.notify = false;
-    attachWebgl(s);
-    s.fit.fit();
-    s.term.focus();
-    s.li.scrollIntoView({ block: 'nearest' });
-  } else {
-    if (target.view?.editor) {
-      target.view.editor.layout();
-      target.view.editor.focus();
-    } else target.el.querySelector('.fileview__body, .subagent-view__body')?.focus({ preventScroll: true });
+  syncPanes();
+  if (key.startsWith('t:')) {
+    activeId = target.id;
+    terp.setMeta(target.id, { lastActive: target.lastActive });
+    target.unread = false;
+    target.notify = false;
+    if (focus) target.term.focus();
+    target.li.scrollIntoView({ block: 'nearest' });
+  } else if (focus) {
+    if (target.view?.editor) target.view.editor.focus();
+    else target.el.querySelector('.fileview__body, .subagent-view__body')?.focus({ preventScroll: true });
   }
   refreshGit(true);
   refreshFiles(false);
   markActiveFile();
   renderAll();
   saveTabs();
+}
+
+function closeWorkspacePane(id) {
+  if (paneList(layout).length === 1) return;
+  const before = paneList(layout);
+  const index = before.findIndex((p) => p.id === id);
+  layout = closePane(layout, id);
+  if (activePaneId === id) activePaneId = paneList(layout)[Math.max(0, index - 1)].id;
+  syncPanes();
+  activatePane(activePaneId);
+}
+
+async function dropTabInPane(key, paneId, side = 'center') {
+  if (!['left', 'right', 'top', 'bottom', 'center'].includes(side) || typeof key !== 'string') return;
+  if (!paneList(layout).some((p) => p.id === paneId)) return;
+  if (!viewOf(key)) {
+    if (key.startsWith('f:') && key.slice(2).startsWith('/')) await openFile(key.slice(2), { show: false });
+    else if (key.startsWith('s:')) {
+      for (const [id, agents] of Object.entries(subagents)) {
+        const agent = agents.find((a) => a.file === key.slice(2));
+        if (agent) { await openSubagent(Number(id), agent, false); break; }
+      }
+    }
+  }
+  if (!viewOf(key) || !paneList(layout).some((p) => p.id === paneId)) return;
+  layout = side === 'center' ? replacePane(layout, paneId, key) : splitPane(layout, paneId, key, side);
+  activePaneId = paneList(layout).find((p) => p.key === key).id;
+  activateKey(key);
+}
+
+async function splitRight() {
+  if (paneList(layout).length >= MAX_PANES) return;
+  const paneId = activePaneId;
+  const s = await openTerminal({ cwd: activeCwd(), show: false });
+  await dropTabInPane(termKey(s.id), paneId, 'right');
+}
+
+function movePane(side) {
+  const current = panes.element(activePaneId).getBoundingClientRect();
+  const horizontal = side === 'left' || side === 'right';
+  const center = (r) => horizontal ? (r.left + r.right) / 2 : (r.top + r.bottom) / 2;
+  const cross = (r) => horizontal ? (r.top + r.bottom) / 2 : (r.left + r.right) / 2;
+  const sign = side === 'left' || side === 'top' ? -1 : 1;
+  const gap = (r) => ({ left: current.left - r.right, right: r.left - current.right, top: current.top - r.bottom, bottom: r.top - current.bottom })[side];
+  const candidates = paneList(layout).filter((p) => p.id !== activePaneId).map((p) => ({ ...p, rect: panes.element(p.id).getBoundingClientRect() }))
+    .filter((p) => sign * (center(p.rect) - center(current)) > 0 && (horizontal
+      ? Math.min(p.rect.bottom, current.bottom) > Math.max(p.rect.top, current.top)
+      : Math.min(p.rect.right, current.right) > Math.max(p.rect.left, current.left)))
+    .sort((a, b) => (gap(a.rect) - gap(b.rect)) || (Math.abs(cross(a.rect) - cross(current)) - Math.abs(cross(b.rect) - cross(current))));
+  if (candidates[0]) activatePane(candidates[0].id);
 }
 
 function activate(id) {
@@ -1055,7 +1165,8 @@ function saveTabs() {
   saveTabsTimer = setTimeout(() => {
     const order = tabOrder.filter((key) => !key.startsWith('s:'));
     const active = activeKey?.startsWith('s:') ? recent.find((key) => !key.startsWith('s:')) || null : activeKey;
-    terp.saveTabs({ files: [...fileViews.keys()], order, active });
+    const savedLayout = restoreLayout(layout, order);
+    terp.saveTabs({ files: [...fileViews.keys()], order, active, layout: savedLayout });
   }, 250);
 }
 
@@ -1067,18 +1178,23 @@ async function restoreTabs() {
     const remaining = new Set(tabOrder);
     tabOrder = [...res.value.order.filter((key) => remaining.delete(key)), ...remaining];
     const active = tabOrder.includes(res.value.active) ? res.value.active : fallback;
-    if (active) activateKey(active);
+    layout = res.value.layout ? restoreLayout(res.value.layout, tabOrder) : createPane(active);
+    activePaneId = (paneList(layout).find((p) => p.key === active) || paneList(layout)[0]).id;
+    activeKey = paneList(layout).find((p) => p.id === activePaneId).key;
+    syncPanes();
+    if (activeKey) activateKey(activeKey);
+    else if (active) activateKey(active);
     renderAll();
   }
   restoringTabs = false;
   saveTabs();
 }
 
-async function openFile(path, { line, column } = {}) {
+async function openFile(path, { line, column, show = true } = {}) {
   const key = fileKey(path);
   if (fileViews.has(path)) {
     const f = fileViews.get(path);
-    activateKey(key);
+    if (show) activateKey(key);
     await f.view.ready;
     if (line !== undefined && activeKey === key) f.view.reveal(line, column);
     return f;
@@ -1086,13 +1202,13 @@ async function openFile(path, { line, column } = {}) {
   const el = document.createElement('section');
   el.className = 'fileview';
   el.hidden = true;
-  container.appendChild(el);
+  viewStore.appendChild(el);
   const f = { path, el, lastActive: Date.now() };
   fileViews.set(path, f);
   // 表示中のタブの隣に開く
   const at = tabOrder.indexOf(activeKey);
   tabOrder.splice(at < 0 ? tabOrder.length : at + 1, 0, key);
-  activateKey(key);
+  if (show) activateKey(key);
   f.view = renderFileView(el, path, workOfPath(path)?.path || null, {
     confirm: confirmFile,
     onChange: () => renderTabs(visibleKeys()),
@@ -1134,8 +1250,8 @@ async function closeFileView(f) {
   }
   f.view.dispose();
   f.el.remove();
-  fileViews.delete(f.path);
   dropTab(fileKey(f.path));
+  fileViews.delete(f.path);
   return true;
 }
 
@@ -1194,19 +1310,22 @@ terp.onCloseRequest(async (id) => {
   }
 });
 
-// タブを並びから外す。表示中だったら、同じ作業の最近見たタブ、無ければ最近見たタブへ移る
-function dropTab(key) {
-  const group = groupOf(key);
-  const wasActive = activeKey === key;
+// 閉じたタブの枠は、同じ作業の未表示のタブで埋める。
+function dropTab(key, group = groupOf(key)) {
   tabOrder = tabOrder.filter((k) => k !== key);
   recent = recent.filter((k) => k !== key);
-  if (wasActive) {
-    activeKey = null;
-    const next = recent.find((k) => groupOf(k) === group) ?? recent[0];
-    if (next) activateKey(next);
+  const pane = paneList(layout).find((p) => p.key === key);
+  if (pane) {
+    const displayed = new Set(paneList(layout).map((p) => p.key));
+    const next = recent.find((k) => tabOrder.includes(k) && groupOf(k) === group && !displayed.has(k));
+    if (next) layout = replacePane(layout, pane.id, next);
+    else layout = closePane(layout, pane.id);
   }
-  renderAll();
-  saveTabs();
+  if (!paneList(layout).some((p) => p.id === activePaneId)) activePaneId = paneList(layout)[0].id;
+  activeKey = paneList(layout).find((p) => p.id === activePaneId).key;
+  syncPanes();
+  if (activeKey) activateKey(activeKey);
+  else { renderAll(); saveTabs(); }
 }
 
 // ---- 右の面（ファイル・変更） ----
@@ -1331,12 +1450,12 @@ function registerSession(id, { el, term, fit }, extra = {}) {
   return s;
 }
 
-async function openTerminal({ cwd } = {}) {
+async function openTerminal({ cwd, show = true } = {}) {
   const view = buildTerminal();
   const { id, cwd: startCwd } = await terp.createPty({ cols: view.term.cols, rows: view.term.rows, cwd });
   const s = registerSession(id, view, { cwd: startCwd });
   tabOrder.push(termKey(id));
-  activate(id);
+  if (show) activate(id);
   return s;
 }
 
@@ -1423,16 +1542,7 @@ function removeSession(id) {
   s.li.remove();
   sessions.delete(id);
   if (activeId === id) activeId = null;
-  const wasActive = activeKey === key;
-  tabOrder = tabOrder.filter((k) => k !== key);
-  recent = recent.filter((k) => k !== key);
-  if (wasActive) {
-    activeKey = null;
-    const next = recent.find((k) => groupOf(k) === group) ?? recent[0];
-    if (next) activateKey(next);
-  }
-  renderAll();
-  saveTabs();
+  dropTab(key, group);
 }
 
 function switchRecent() {
@@ -1485,6 +1595,15 @@ terp.onMenu((action, arg) => {
   switch (action) {
     case 'new':
       newTerminal();
+      break;
+    case 'split-right':
+      splitRight();
+      break;
+    case 'pane-left':
+    case 'pane-right':
+    case 'pane-up':
+    case 'pane-down':
+      movePane(action.slice(5).replace('up', 'top').replace('down', 'bottom'));
       break;
     case 'close':
       closeKey(activeKey);
@@ -1565,6 +1684,9 @@ setInterval(() => {
 // 自己診断（TERP_SELFTEST）から操作するための口
 window.__terp = {
   sessions,
+  layout: () => structuredClone(layout),
+  dropTab: dropTabInPane,
+  get activePaneId() { return activePaneId; },
   get activeId() {
     return activeId;
   },

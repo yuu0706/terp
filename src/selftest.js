@@ -64,8 +64,9 @@ async function runThemeAiTest({ win, js, check, outDir }) {
   const config = require('./config');
   if (!process.env.TERP_CONFIG_DIR) throw new Error('テーマの自己診断には一時フォルダの TERP_CONFIG_DIR が必要です');
   const saved = () => JSON.parse(fs.readFileSync(config.CONFIG_PATH, 'utf8'));
+  // 作り直しを含めると偽の claude を2回呼ぶため、他の試しを続けて流して忙しいときも足りるよう 15 秒まで待つ
   const wait = async (code) => {
-    for (let n = 0; n < 100; n++) {
+    for (let n = 0; n < 300; n++) {
       if (await js(code)) return true;
       await sleep(50);
     }
@@ -268,6 +269,97 @@ async function runFilesTest({ win, js, check, outDir }) {
   check('右の面を変更に切り替えられる', (await js(`document.getElementById('git-view').hidden`)) === false && (await js(`document.getElementById('files-view').hidden`)) === true);
   await shot('2-git');
   await js(`window.__terp.activateKey('t:${looseId}')`);
+}
+
+// 合成イベントでも本物と同じ境目の処理を通し、端末の fit まで待って確かめる。
+async function dragSplitGutter(js, distance) {
+  return js(`(() => {
+    const gutter = document.querySelector('#panes > .pane-split > .pane-gutter');
+    const r = gutter.getBoundingClientRect();
+    const x = r.left + r.width / 2, y = r.top + r.height / 2;
+    for (const [type, dx, buttons] of [['pointerdown', 0, 1], ['pointermove', ${distance}, 1], ['pointerup', ${distance}, 0]]) {
+      gutter.dispatchEvent(new PointerEvent(type, { bubbles: true, pointerId: 1, button: 0, buttons, clientX: x + dx, clientY: y }));
+    }
+  })()`);
+}
+
+// TERP_SELFTEST_SPLIT は、枠の操作・HTML のドラッグ・境目・メニューを確かめる。
+async function runSplitTest({ win, js, check, outDir }) {
+  const leaves = () => js(`(() => {
+    const visit = (n) => n.type === 'pane' ? [n] : n.children.flatMap(visit);
+    return visit(window.__terp.layout());
+  })()`);
+  const waitFor = async (test) => {
+    for (let i = 0; i < 40; i++) {
+      if (await test()) return true;
+      await sleep(100);
+    }
+    return false;
+  };
+  await js(`Promise.all(window.__terp.tabOrder.map((key) => window.__terp.closeKey(key)))`);
+  await waitFor(() => js('window.__terp.sessions.size === 0'));
+  const first = await js('window.__terp.open(window.terp.home)');
+  const second = await js('window.__terp.open(window.terp.home)');
+  await js(`window.__terp.activateKey('t:${first}')`);
+  const target = (await leaves())[0].id;
+  await js(`window.__terp.dropTab('t:${second}', ${JSON.stringify(target)}, 'right')`);
+  await sleep(300);
+  check('右へ落とすと2枠になる', (await leaves()).length === 2);
+  check('両方の端末に幅と高さがある', await js(`[${first}, ${second}].every((id) => {
+    const el = window.__terp.sessions.get(id).el;
+    const r = el.getBoundingClientRect();
+    return !el.hidden && r.width > 0 && r.height > 0;
+  })`));
+  check('表示中の端末には両方 WebGL が付く', await js(`[${first}, ${second}].every((id) => Boolean(window.__terp.sessions.get(id).webgl))`));
+
+  const third = await js('window.__terp.open(window.terp.home)');
+  await js(`(() => {
+    const tab = [...document.querySelectorAll('#tabs .tab')].find((el) => el.dataset.key === 't:${second}');
+    const pane = document.querySelector('[data-pane-id="${target}"]');
+    const r = pane.getBoundingClientRect();
+    const dataTransfer = new DataTransfer();
+    tab.dispatchEvent(new DragEvent('dragstart', { bubbles: true, dataTransfer }));
+    const point = { bubbles: true, cancelable: true, dataTransfer, clientX: r.left + r.width / 2, clientY: r.bottom - 2 };
+    pane.dispatchEvent(new DragEvent('dragover', point));
+    pane.dispatchEvent(new DragEvent('drop', point));
+    tab.dispatchEvent(new DragEvent('dragend', { bubbles: true, dataTransfer }));
+  })()`);
+  check('上のタブの dragstart・dragover・drop でも下に分割できる', await waitFor(async () => (await leaves()).length === 3));
+  if (outDir) {
+    await sleep(800);
+    fs.writeFileSync(path.join(outDir, 'split.png'), (await win.webContents.capturePage()).toPNG());
+  }
+  check('落とす予告は終わったら消える', await js("!document.querySelector('.pane[data-drop]')"));
+
+  const beforeSizes = await js('window.__terp.layout().sizes');
+  const beforeCols = await js(`window.__terp.sessions.get(${first}).term.cols`);
+  await dragSplitGutter(js, 70);
+  check('境目をずらすと割合が変わる', JSON.stringify(beforeSizes) !== JSON.stringify(await js('window.__terp.layout().sizes')));
+  check('境目をずらすと左の端末の列数が変わる', await waitFor(() => js(`window.__terp.sessions.get(${first}).term.cols !== ${beforeCols}`)));
+  await js(`document.querySelector('[data-pane-id="${target}"] .xterm-helper-textarea').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))`);
+  check('端末を押すとその枠が操作中になる', (await js('window.__terp.activeKey')) === `t:${first}`);
+  await js(`document.querySelector('#tabs .tab[data-key="t:${third}"]').click()`);
+  const thirdPane = (await leaves()).find((p) => p.key === `t:${third}`);
+  check('別の枠のタブを押すとその枠が操作中になる', (await js('window.__terp.activePaneId')) === thirdPane.id && (await leaves()).length === 3);
+  const sessionCount = await js('window.__terp.sessions.size');
+  await js(`document.querySelector('[data-pane-id="${thirdPane.id}"] .pane__close').click()`);
+  check('枠の × は枠だけを閉じる', (await leaves()).length === 2 && (await js('window.__terp.sessions.size')) === sessionCount);
+  check('隠した端末から WebGL が外れる', await js(`!window.__terp.sessions.get(${third}).webgl`));
+  await js(`window.__terp.closeKey('t:${third}')`);
+  await waitFor(() => js(`!window.__terp.sessions.has(${third})`));
+  await js(`window.__terp.closeKey('t:${second}')`);
+  check('補充するタブが無い枠は閉じる', await waitFor(async () => (await leaves()).length === 1));
+
+  const count = await js('window.__terp.sessions.size');
+  win.webContents.send('menu', 'split-right');
+  check('右に分割のメニューで枠と新しい端末が増える', await waitFor(async () => (await leaves()).length === 2 && (await js('window.__terp.sessions.size')) === count + 1));
+  const right = (await leaves())[1];
+  win.webContents.send('menu', 'pane-left');
+  await sleep(100);
+  check('左の枠のメニューで隣へ移る', (await js('window.__terp.activeKey')) === `t:${first}`);
+  win.webContents.send('menu', 'pane-right');
+  await sleep(100);
+  check('右の枠のメニューで隣へ移る', (await js('window.__terp.activePaneId')) === right.id);
 }
 
 // TERP_SELFTEST_PATHLINKS を付けると、実在確認・折り返し・ファイルの行と桁への移動を確かめる
@@ -715,7 +807,13 @@ async function runPersistTest({ js, check, outDir, phase }) {
     await js(`window.__terp.activateKey(${JSON.stringify(`f:${files[0]}`)})`);
     check('1回目: 2つのファイルをタブで開く', (await fileKeys()).length === 2);
     check('1回目: 1つ目のファイルを表示する', (await js('window.__terp.activeKey')) === `f:${files[0]}`);
-    fs.writeFileSync(statePath, JSON.stringify({ files, order: await order() }));
+    await js(`window.__terp.dropTab('t:${id}', window.__terp.layout().id, 'right')`);
+    await dragSplitGutter(js, 70);
+    await js(`window.__terp.activateKey(${JSON.stringify(`f:${files[0]}`)})`);
+    const layout = await js('window.__terp.layout()');
+    check('1回目: ファイルと端末を2枠で表示する', layout.type === 'split' && layout.children.length === 2);
+    check('1回目: 枠の大きさを変える', layout.sizes[0] !== 0.5);
+    fs.writeFileSync(statePath, JSON.stringify({ files, order: await order(), layout }));
     // 作業場所の控えが /tmp になるまで待つ（1.5 秒ごとに拾う）
     await sleep(3500);
     return;
@@ -730,6 +828,7 @@ async function runPersistTest({ js, check, outDir, phase }) {
     check('2回目: 前の出力が画面に戻る', /phase1-output/.test(await buffer(id)));
     const files = await fileKeys();
     check('2回目: 2つのファイルのタブが戻る', files.length === 2 && saved.files.every((file) => files.includes(`f:${file}`)));
+    check('2回目: 枠の並びと大きさが戻る', JSON.stringify(await js('window.__terp.layout()')) === JSON.stringify(saved.layout));
     check('2回目: タブの並びが1回目と同じ', JSON.stringify(await order()) === JSON.stringify(saved.order));
     check('2回目: 1つ目のファイルを表示している', (await js('window.__terp.activeKey')) === `f:${saved.files[0]}`);
     await send(id, 'echo "mark=$TERP_MARK"\r');
@@ -1056,6 +1155,13 @@ exports.run = (win) => {
 
     if (process.env.TERP_SELFTEST_PATHLINKS === '1') {
       await runPathLinksTest({ js, check, outDir });
+      fs.writeFileSync(path.join(outDir, 'result.txt'), log.join('\n') + '\n');
+      await finish();
+      return;
+    }
+
+    if (process.env.TERP_SELFTEST_SPLIT) {
+      await runSplitTest({ win, js, check, outDir });
       fs.writeFileSync(path.join(outDir, 'result.txt'), log.join('\n') + '\n');
       await finish();
       return;
