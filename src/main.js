@@ -9,6 +9,7 @@ const { setBlur } = require('./blur');
 const projects = require('./projects');
 const gitops = require('./git');
 const gitpanel = require('./gitpanel');
+const history = require('./history');
 const agents = require('./agents');
 const themegen = require('./themegen');
 const subagents = require('./subagents');
@@ -226,6 +227,9 @@ ipcMain.handle('subagents:list', safe(async () => {
   return Object.fromEntries([...known].map(([id, entry]) => [id, byPid.get(entry.pid) || []]));
 }));
 ipcMain.handle('subagents:read', safe((_e, file, offset) => subagents.read(file, offset)));
+ipcMain.handle('history:log', safe((_e, { dir, ...options }) => history.log(dir, options)));
+ipcMain.handle('history:commit', safe((_e, { dir, hash }) => history.commit(dir, hash)));
+ipcMain.handle('history:diff', safe((_e, { dir, hash, file }) => history.commitDiff(dir, hash, file)));
 ipcMain.handle('git:status', safe((_e, dir) => gitpanel.status(dir)));
 ipcMain.handle('git:diff', safe((_e, { top, file, kind }) => gitpanel.diff(top, file, kind)));
 ipcMain.handle('git:stage', safe((_e, { top, files }) => gitpanel.stage(top, files)));
@@ -327,6 +331,7 @@ function buildMenu() {
       submenu: [
         { label: 'ファイル', accelerator: 'CmdOrCtrl+Shift+E', click: send('toggle-files') },
         { label: '変更の一覧', accelerator: 'CmdOrCtrl+Shift+G', click: send('toggle-git') },
+        { label: '履歴', accelerator: 'CmdOrCtrl+Shift+H', click: send('toggle-history') },
         { type: 'separator' },
         { role: 'toggleDevTools', label: '開発者ツール' },
         { role: 'togglefullscreen', label: 'フルスクリーン' },

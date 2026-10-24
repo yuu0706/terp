@@ -270,7 +270,7 @@ function notice(text) {
 }
 
 // unified diff を、古い行番号・新しい行番号・本文の3列の表にする
-function renderDiff(text) {
+export function renderDiff(text) {
   const table = document.createElement('table');
   table.className = 'diff__table';
   const body = document.createElement('tbody');

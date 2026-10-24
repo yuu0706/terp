@@ -96,7 +96,7 @@ function notice(text, file) {
 }
 
 // 状態はこの戻り値に集め、タブ側は dirty と editor を参照する
-export function renderFileView(el, file, root, { confirm, onChange, isActive }) {
+export function renderFileView(el, file, root, { confirm, onChange, isActive, onHistory }) {
   const rel = root && file.startsWith(root + '/') ? file.slice(root.length + 1) : file;
   const view = { editor: null, dirty: false, mtime: null, ready: null, get saving() { return saving; }, reveal, reload, save, checkExternal, dispose };
   views.add(view);
@@ -120,7 +120,8 @@ export function renderFileView(el, file, root, { confirm, onChange, isActive }) 
   head.append(title, meta,
     button('再読み込み', () => reload()),
     button('Finder で表示', () => terp.revealFile(file)),
-    button('既定のアプリで開く', () => terp.openExternalFile(file)));
+    button('既定のアプリで開く', () => terp.openExternalFile(file)),
+    button('履歴', () => onHistory(file)));
   const banner = document.createElement('div');
   banner.className = 'fileview__banner';
   banner.setAttribute('role', 'status');

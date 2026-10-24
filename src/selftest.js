@@ -910,6 +910,168 @@ async function runGitTest({ win, js, check, outDir }) {
   await shot('3-pushed');
 }
 
+// TERP_SELFTEST_HISTORY は一時リポジトリだけにコミットし、履歴の閲覧を確かめる
+async function runHistoryTest({ win, js, check, outDir }) {
+  const { execFileSync } = require('child_process');
+  const sh = (args, cwd) => execFileSync('git', ['-c', 'core.hooksPath=/dev/null', '-c', 'commit.gpgSign=false', ...args], { cwd, encoding: 'utf8' }).trim();
+  const base = fs.realpathSync(fs.mkdtempSync(path.join(path.resolve(outDir), 'history-')));
+  const remote = path.join(base, 'remote.git');
+  const work = path.join(base, 'work');
+  sh(['init', '-q', '--bare', '-b', 'main', remote], base);
+  sh(['clone', '-q', remote, work], base);
+  sh(['config', 'user.name', 'test'], work);
+  sh(['config', 'user.email', 'test@example.com'], work);
+  const commit = (subject, body) => {
+    sh(['add', '.'], work);
+    sh(['commit', '-q', '-m', subject, ...(body ? ['-m', body] : [])], work);
+    return sh(['rev-parse', 'HEAD'], work);
+  };
+  fs.writeFileSync(path.join(work, 'a.txt'), '初期\n');
+  const root = commit('最初のコミット');
+  sh(['switch', '-q', '-c', 'topic'], work);
+  fs.writeFileSync(path.join(work, 'topic.txt'), '枝の変更\n');
+  commit('枝のコミット');
+  sh(['switch', '-q', 'main'], work);
+  for (let n = 0; n < 120; n++) {
+    fs.writeFileSync(path.join(work, 'a.txt'), `更新 ${n}\n`);
+    commit(`更新 ${String(n).padStart(3, '0')}`);
+  }
+  sh(['merge', '-q', '--no-ff', 'topic', '-m', '枝をマージ'], work);
+  const merge = sh(['rev-parse', 'HEAD'], work);
+  sh(['tag', 'history-tag'], work);
+  sh(['switch', '-q', '-c', 'unmerged', root], work);
+  fs.writeFileSync(path.join(work, 'unmerged.txt'), '未マージ\n');
+  const unmerged = commit('未マージのコミット');
+  sh(['switch', '-q', 'main'], work);
+  sh(['push', '-q', '-u', 'origin', 'main'], work);
+  fs.writeFileSync(path.join(work, 'a.txt'), '未プッシュ 1\n');
+  const parent = commit('未プッシュ 1');
+  fs.writeFileSync(path.join(work, 'a.txt'), '未プッシュ 2\n');
+  const head = commit('未プッシュ 2', '詳細の本文\n\n2段落目');
+  const total = Number(sh(['rev-list', '--count', 'HEAD'], work));
+  const click = (selector) => js(`document.querySelector(${JSON.stringify(selector)}).click()`);
+  const wait = async (code) => {
+    for (let n = 0; n < 200; n++) {
+      if (await js(code)) return true;
+      await sleep(50);
+    }
+    throw new Error(`履歴の待機が期限切れ: ${code}`);
+  };
+  const ready = () => wait(`document.querySelector('#history-status').textContent === '' && !document.querySelector('#history-more').disabled`);
+  const rows = () => js(`[...document.querySelectorAll('#history-list [data-hash]')].map((r) => r.dataset.hash)`);
+  const search = async (text) => {
+    await js(`(() => { const q = document.querySelector('#history-query'); q.value = ${JSON.stringify(text)}; q.dispatchEvent(new Event('input')); })()`);
+    await sleep(350);
+    await ready();
+  };
+  const terminal = await js(`window.__terp.open(${JSON.stringify(work)})`);
+  win.webContents.send('menu', 'toggle-history');
+  await ready();
+  check('履歴を開くと最初の100件が出る', (await rows()).length === 100);
+  check('マージのところに枝の線と線だけの行が出る', await js(`Boolean(document.querySelector('[data-hash="${merge}"] .history__graph').textContent.includes('*')) && [...document.querySelectorAll('.history__line')].some((r) => /[\\/\\\\]/.test(r.textContent))`));
+  check('ブランチとタグの印が出る', await js(`document.querySelector('#history-list').textContent.includes('main') && document.querySelector('#history-list').textContent.includes('history-tag')`));
+  check('未プッシュの2件だけに矢印が付く', await js(`document.querySelectorAll('#history-list .history__unpushed').length === 2 && ['${parent}', '${head}'].every((h) => document.querySelector('[data-hash="' + h + '"] .history__unpushed'))`));
+  await click('#history-more');
+  await wait(`document.querySelectorAll('#history-list [data-hash]').length === ${total}`);
+  check('さらに読み込むと残りが足され、末尾でボタンが消える', (await rows()).length === total && await js(`document.querySelector('#history-more').hidden`));
+  check('現在のブランチに未マージのコミットを混ぜない', !(await rows()).includes(unmerged));
+  await js(`(() => { const s = document.querySelector('#history-scope'); s.value = 'all'; s.dispatchEvent(new Event('change')); })()`);
+  await ready();
+  await click('#history-more');
+  await ready();
+  check('すべてのブランチには未マージのコミットが出る', (await rows()).includes(unmerged));
+  await search('更新 11');
+  check('件名の一部で絞れる', await js(`document.querySelectorAll('#history-list [data-hash]').length === 10 && [...document.querySelectorAll('#history-list .history__subject')].every((r) => r.textContent.includes('更新 11'))`));
+  await search('TEST');
+  check('作者でも大文字小文字を区別せず絞れる', (await rows()).length === 100);
+  await search(head.slice(0, 12));
+  check('ハッシュの先頭はそのコミットだけを返す', (await rows()).join() === head);
+  const before = await js('window.__terp.activeKey');
+  await click(`#history-list [data-hash="${head}"]`);
+  await wait(`document.querySelector('.commit-view:not([hidden]) .commit-view__message')`);
+  const key = `c:${work}@${head}`;
+  check('表示中のタブの隣に詳細が開く', await js(`window.__terp.activeKey === ${JSON.stringify(key)} && window.__terp.tabOrder.indexOf(${JSON.stringify(key)}) === window.__terp.tabOrder.indexOf(${JSON.stringify(before)}) + 1`));
+  check('メッセージの全文と変更ファイルが出る', await js(`document.querySelector('.commit-view:not([hidden]) .commit-view__message').textContent.includes(${JSON.stringify('詳細の本文\n\n2段落目')}) && Boolean(document.querySelector('.commit-view:not([hidden]) [data-file="a.txt"]'))`));
+  const order = await js('window.__terp.tabOrder.length');
+  await click(`#history-list [data-hash="${head}"]`);
+  check('同じコミットのタブを増やさない', (await js('window.__terp.tabOrder.length')) === order);
+  await click('.commit-view:not([hidden]) [data-file="a.txt"]');
+  await wait(`document.querySelector('.commit-view:not([hidden]) .diff__row--add') && document.querySelector('.commit-view:not([hidden]) .diff__row--del')`);
+  check('ファイルを押すと追加と削除の差分が出る', true);
+  await click('.commit-view:not([hidden]) [data-file="a.txt"]');
+  check('もう一度押すと差分が閉じる', await js(`document.querySelector('.commit-view:not([hidden]) .commit-view__diff').hidden`));
+  await click(`.commit-view:not([hidden]) [data-parent="${parent}"]`);
+  await wait(`window.__terp.activeKey === ${JSON.stringify(`c:${work}@${parent}`)}`);
+  check('親のハッシュで親のコミットのタブが開く', true);
+  const paneId = await js('window.__terp.activePaneId');
+  await js(`window.__terp.dropTab(${JSON.stringify(key)}, ${JSON.stringify(paneId)}, 'right')`);
+  check('詳細タブを別の枠へ動かせる', await js(`window.__terp.layout().type === 'split'`));
+  await sleep(400);
+  const saved = await js('window.terp.loadTabs()');
+  check('詳細タブを開き直し用の控えに入れない', saved.ok && saved.value.order.every((k) => !k.startsWith('c:')) && !saved.value.active?.startsWith('c:') && !JSON.stringify(saved.value.layout).includes('c:'));
+  await search('');
+  await js(`window.__terp.openFile(${JSON.stringify(path.join(work, 'a.txt'))})`);
+  await js(`[...document.querySelectorAll('.fileview:not([hidden]) .fileview__head button')].find((b) => b.textContent === '履歴').click()`);
+  await ready();
+  check('ファイルの履歴に絞っていることが見出しに出る', await js(`!document.querySelector('#history-path-filter').hidden && document.querySelector('#history-path').textContent.includes('a.txt')`));
+  await click('#history-more');
+  await ready();
+  const expected = sh(['log', '--all', '--format=%H', '--', 'a.txt'], work).split('\n').sort();
+  check('そのファイルを変更したコミットだけになる', (await rows()).sort().join() === expected.join());
+  await click('#history-path-clear');
+  await ready();
+  check('×でファイルの絞り込みを解除できる', await js(`document.querySelector('#history-path-filter').hidden`));
+  await js(`(() => { const s = document.querySelector('#history-scope'); s.value = 'current'; s.dispatchEvent(new Event('change')); })()`);
+  await ready();
+  await js(`[...document.querySelectorAll('.fileview:not([hidden]) .fileview__head button')].find((b) => b.textContent === '履歴').click()`);
+  await ready();
+  const otherWork = path.join(base, 'other-worktree');
+  sh(['worktree', 'add', '-q', '-b', 'other-worktree', otherWork, root], work);
+  await js(`window.__terp.open(${JSON.stringify(otherWork)})`);
+  await ready();
+  check('別の worktree へ移ると読み直し、ファイルの絞り込みを解除する', (await rows()).join() === root && await js(`document.querySelector('#history-path-filter').hidden && document.querySelector('#history-work').textContent === 'other-worktree'`));
+  await js(`window.__terp.activate(${terminal})`);
+  await ready();
+  for (const name of ['files', 'git', 'history']) {
+    await js(`window.__terp.setPanel('${name}')`);
+    check(`${name} の面だけを表示する`, await js(`['files', 'git', 'history'].every((n) => document.getElementById(n + '-view').hidden === (n !== '${name}'))`));
+  }
+  const outside = path.join(base, 'outside');
+  fs.mkdirSync(outside);
+  await js(`window.__terp.open(${JSON.stringify(outside)})`);
+  await wait(`document.querySelector('#history-status').textContent === 'git のリポジトリではありません'`);
+  check('git の外では案内を出す', true);
+  await js(`window.__terp.activate(${terminal})`);
+  await ready();
+  check('別の場所から戻ると履歴を読み直す', (await rows()).length === 100);
+  for (const api of ['historyCommit', 'historyDiff']) {
+    for (const hash of ['HEAD', '--all', 'abc', 'a'.repeat(41), '1234;echo test']) {
+      const result = await js(`window.terp.${api}(${JSON.stringify({ dir: work, hash, file: 'a.txt' })})`);
+      check(`${api} は使えないハッシュを IPC で拒否する: ${hash}`, !result.ok && result.error.includes('16進'));
+    }
+  }
+  // git の代わりに呼び出し回数を数え、検証より先に git を呼ばないことを確かめる
+  const gitops = require('./git');
+  const originalGit = gitops.git;
+  const gitpanel = require('./gitpanel');
+  const originalToplevel = gitpanel.toplevel;
+  const modulePath = require.resolve('./history');
+  const cached = require.cache[modulePath];
+  let calls = 0;
+  try {
+    gitops.git = () => { calls++; throw new Error('git を呼び出した'); };
+    gitpanel.toplevel = () => { calls++; throw new Error('git を呼び出した'); };
+    delete require.cache[modulePath];
+    const isolated = require('./history');
+    for (const fn of [() => isolated.commit(work, 'HEAD'), () => isolated.commitDiff(work, '--all', 'a.txt')]) await fn().catch(() => {});
+    check('ハッシュの検証に失敗したら git を呼ばない', calls === 0);
+  } finally {
+    gitops.git = originalGit;
+    gitpanel.toplevel = originalToplevel;
+    require.cache[modulePath] = cached;
+  }
+}
+
 // TERP_SELFTEST_PERSIST=1→2→3 の順に、同じ TERP_CONFIG_DIR で3回起動して、セッションの保持を確かめる。
 // 1: 印を付けて終わる / 2: 開き直してもシェルが生きている。常駐のプロセスを止める（Mac の再起動に当たる）/
 // 3: 控えから同じ場所・名前で開き直す
@@ -1246,6 +1408,13 @@ exports.run = (win) => {
       // 1 と 2 は常駐のプロセスを残したまま終わる（開き直しを確かめるため）
       if (process.env.TERP_SELFTEST_PERSIST === '3') await finish();
       else app.quit();
+      return;
+    }
+
+    if (process.env.TERP_SELFTEST_HISTORY) {
+      await runHistoryTest({ win, js, check, outDir });
+      fs.writeFileSync(path.join(outDir, 'result.txt'), log.join('\n') + '\n');
+      await finish();
       return;
     }
 

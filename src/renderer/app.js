@@ -3,6 +3,7 @@ import { FitAddon } from '../../node_modules/@xterm/addon-fit/lib/addon-fit.mjs'
 import { WebglAddon } from '../../node_modules/@xterm/addon-webgl/lib/addon-webgl.mjs';
 import { Unicode11Addon } from '../../node_modules/@xterm/addon-unicode11/lib/addon-unicode11.mjs';
 import { WebLinksAddon } from '../../node_modules/@xterm/addon-web-links/lib/addon-web-links.mjs';
+import { initHistoryPanel, setHistoryVisible, refreshHistory, filterFileHistory, renderCommitView } from './historypanel.js';
 import { initGitPanel, refresh as refreshGit, setGitVisible } from './gitpanel.js';
 import { initFilesPanel, refreshFiles, setFilesVisible, markActiveFile } from './filespanel.js';
 import { renderFileView, applyEditorConfig } from './fileview.js';
@@ -48,11 +49,13 @@ const fileViews = new Map();
 // サブエージェントの記録と、端末ごとの一覧。開閉状態はこの窓の間だけ持つ
 const subagentViews = new Map();
 const subagentLists = new Map();
+// コミットの詳細は、この窓の間だけ持つ
+const commitViews = new Map();
 let subagents = {};
 let subagentsRefresh = null;
 // projects.json のリポジトリと、その worktree。git から読み直す（refreshProjects）
 let projects = [];
-// タブは開いた順に並べる。キーは端末が 't:<番号>'、ファイルが 'f:<パス>'、サブの記録が 's:<パス>'。
+// タブは開いた順に並べる。キーは端末が 't:<番号>'、ファイルが 'f:<パス>'、サブの記録が 's:<パス>'、コミットが 'c:<worktree>@<ハッシュ>'。
 // Orca と同じく、上のタブには表示中のタブと同じ作業（worktree）のものだけを出す
 let tabOrder = [];
 let activeKey = null;
@@ -157,6 +160,7 @@ const fileKey = (path) => `f:${path}`;
 const subagentKey = (path) => `s:${path}`;
 
 function groupOf(key) {
+  if (key.startsWith('c:')) return workOfPath(commitViews.get(key)?.top)?.path || LOOSE;
   if (key.startsWith('t:')) {
     const s = sessions.get(Number(key.slice(2)));
     return (s && workOf(s)?.path) || LOOSE;
@@ -177,6 +181,7 @@ function visibleKeys() {
 
 // 新しいターミナルやエージェントを開く場所: ファイルのタブならそのフォルダ、ターミナルならその作業場所
 function activeCwd() {
+  if (activeKey?.startsWith('c:')) return commitViews.get(activeKey)?.top || null;
   if (activeKey?.startsWith('f:')) return activeKey.slice(2).replace(/\/[^/]*$/, '');
   if (activeKey?.startsWith('s:')) {
     const view = subagentViews.get(activeKey.slice(2));
@@ -226,6 +231,10 @@ function renderAll() {
 const TAB_FILE_ICON = `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" /><path d="M14 3v5h5" /></svg>`;
 
 function tabLabel(key) {
+  if (key.startsWith('c:')) {
+    const view = commitViews.get(key);
+    return `${view.hash.slice(0, 7)} ${view.subject || ''}`.trim();
+  }
   if (key.startsWith('t:')) return displayName(sessions.get(Number(key.slice(2))));
   if (key.startsWith('s:')) return subagentViews.get(key.slice(2))?.agent.description || 'サブエージェント';
   return key.split('/').pop();
@@ -1028,6 +1037,9 @@ function hideView(key) {
     if (!s) return;
     s.el.hidden = true;
     detachWebgl(s);
+  } else if (key.startsWith('c:')) {
+    const view = commitViews.get(key);
+    if (view) view.el.hidden = true;
   } else if (key.startsWith('s:')) {
     const view = subagentViews.get(key.slice(2));
     if (view) view.el.hidden = true;
@@ -1039,7 +1051,7 @@ function hideView(key) {
 
 function viewOf(key) {
   if (!key) return null;
-  return key.startsWith('t:') ? sessions.get(Number(key.slice(2))) : key.startsWith('s:') ? subagentViews.get(key.slice(2)) : fileViews.get(key.slice(2));
+  return key.startsWith('c:') ? commitViews.get(key) : key.startsWith('t:') ? sessions.get(Number(key.slice(2))) : key.startsWith('s:') ? subagentViews.get(key.slice(2)) : fileViews.get(key.slice(2));
 }
 
 function syncPanes() {
@@ -1101,9 +1113,10 @@ function activateKey(key, focus = true) {
     target.li.scrollIntoView({ block: 'nearest' });
   } else if (focus) {
     if (target.view?.editor) target.view.editor.focus();
-    else target.el.querySelector('.fileview__body, .subagent-view__body')?.focus({ preventScroll: true });
+    else target.el.querySelector('.fileview__body, .subagent-view__body, .commit-view__body')?.focus({ preventScroll: true });
   }
   refreshGit(true);
+  refreshHistory();
   refreshFiles(false);
   markActiveFile();
   renderAll();
@@ -1202,8 +1215,9 @@ function saveTabs() {
   if (restoringTabs) return;
   clearTimeout(saveTabsTimer);
   saveTabsTimer = setTimeout(() => {
-    const order = tabOrder.filter((key) => !key.startsWith('s:'));
-    const active = activeKey?.startsWith('s:') ? recent.find((key) => !key.startsWith('s:')) || null : activeKey;
+    const persistent = (key) => key && !key.startsWith('s:') && !key.startsWith('c:');
+    const order = tabOrder.filter(persistent);
+    const active = persistent(activeKey) ? activeKey : recent.find(persistent) || null;
     const savedLayout = restoreLayout(layout, order);
     terp.saveTabs({ files: [...fileViews.keys()], order, active, layout: savedLayout });
   }, 250);
@@ -1252,6 +1266,7 @@ async function openFile(path, { line, column, show = true } = {}) {
     confirm: confirmFile,
     onChange: () => renderTabs(visibleKeys()),
     isActive: () => activeKey === key,
+    onHistory: (file) => { filterFileHistory(file); setPanel('history'); },
   });
   await f.view.ready;
   if (line !== undefined && activeKey === key) f.view.reveal(line, column);
@@ -1261,7 +1276,14 @@ async function openFile(path, { line, column, show = true } = {}) {
 function closeKey(key) {
   if (!key) return;
   if (key.startsWith('t:')) closeSession(Number(key.slice(2)));
-  else if (key.startsWith('s:')) {
+  else if (key.startsWith('c:')) {
+    const view = commitViews.get(key);
+    if (!view) return;
+    view.view.dispose();
+    view.el.remove();
+    dropTab(key);
+    commitViews.delete(key);
+  } else if (key.startsWith('s:')) {
     const view = subagentViews.get(key.slice(2));
     if (!view) return;
     // 所属を求められるうちに次のタブへ移る
@@ -1367,7 +1389,27 @@ function dropTab(key, group = groupOf(key)) {
   else { renderAll(); saveTabs(); }
 }
 
-// ---- 右の面（ファイル・変更） ----
+// ---- コミットの詳細 ----
+
+function openCommit(top, hash, subject = '') {
+  const key = `c:${top}@${hash}`;
+  if (commitViews.has(key)) { activateKey(key); return; }
+  const el = document.createElement('section');
+  el.className = 'commit-view';
+  el.hidden = true;
+  const view = { top, hash, subject, el };
+  commitViews.set(key, view);
+  viewStore.append(el);
+  const at = tabOrder.indexOf(activeKey);
+  tabOrder.splice(at < 0 ? tabOrder.length : at + 1, 0, key);
+  view.view = renderCommitView(el, top, hash, {
+    openCommit,
+    onLoad: (info) => { view.subject = info.subject; renderTabs(visibleKeys()); },
+  });
+  activateKey(key);
+}
+
+// ---- 右の面（ファイル・変更・履歴） ----
 
 let panelTab = null;
 
@@ -1376,7 +1418,8 @@ function setPanel(tab) {
   rightPanel.hidden = !tab;
   setFilesVisible(tab === 'files');
   setGitVisible(tab === 'git');
-  for (const [id, name] of [['panel-tab-files', 'files'], ['panel-tab-git', 'git'], ['files-toggle', 'files'], ['git-toggle', 'git']]) {
+  setHistoryVisible(tab === 'history');
+  for (const [id, name] of [['panel-tab-files', 'files'], ['panel-tab-git', 'git'], ['files-toggle', 'files'], ['git-toggle', 'git'], ['panel-tab-history', 'history'], ['history-toggle', 'history']]) {
     const el = document.getElementById(id);
     el.setAttribute(el.getAttribute('role') === 'tab' ? 'aria-selected' : 'aria-pressed', String(tab === name));
   }
@@ -1625,6 +1668,7 @@ terp.onInfo((info) => {
     s.cwd = cwd;
     s.program = program;
   }
+  refreshHistory();
   renderAll();
 });
 
@@ -1671,6 +1715,9 @@ terp.onMenu((action, arg) => {
     case 'new-work':
       openWorkDialog();
       break;
+    case 'toggle-history':
+      togglePanel('history');
+      break;
     case 'toggle-git':
       togglePanel('git');
       break;
@@ -1694,11 +1741,13 @@ terp.onMenu((action, arg) => {
 
 document.getElementById('new-terminal').addEventListener('click', () => newTerminal());
 document.getElementById('files-toggle').addEventListener('click', () => togglePanel('files'));
+document.getElementById('history-toggle').addEventListener('click', () => togglePanel('history'));
+document.getElementById('panel-tab-history').addEventListener('click', () => setPanel('history'));
 document.getElementById('git-toggle').addEventListener('click', () => togglePanel('git'));
 document.getElementById('panel-tab-files').addEventListener('click', () => setPanel('files'));
 document.getElementById('panel-tab-git').addEventListener('click', () => setPanel('git'));
 document.getElementById('panel-close').addEventListener('click', () => setPanel(null));
-document.getElementById('panel-refresh').addEventListener('click', () => (panelTab === 'files' ? refreshFiles(true) : refreshGit(true)));
+document.getElementById('panel-refresh').addEventListener('click', () => (panelTab === 'files' ? refreshFiles(true) : panelTab === 'history' ? refreshHistory('refresh') : refreshGit(true)));
 document.getElementById('empty-new').addEventListener('click', () => newTerminal());
 document.getElementById('new-work').addEventListener('click', () => openWorkDialog());
 document.getElementById('add-project').addEventListener('click', () => addProject());
@@ -1780,6 +1829,7 @@ window.__terp = {
 
 applyConfig(config);
 initGitPanel({ activeCwd });
+initHistoryPanel({ activeCwd, openCommit });
 initSettings({
   agents: () => agentList,
   onClose: () => (activeKey?.startsWith('t:') ? sessions.get(activeId)?.term.focus() : null),

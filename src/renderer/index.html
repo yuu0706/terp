@@ -102,6 +102,10 @@
             <span>変更</span>
             <span id="git-toggle-count" class="badge" hidden></span>
           </button>
+          <button id="history-toggle" class="btn topbar__btn" type="button" aria-pressed="false" title="履歴（⌘⇧H）">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></svg>
+            <span>履歴</span>
+          </button>
         </div>
       </div>
       <div id="panes" class="panes"></div>
@@ -130,6 +134,7 @@
         <div class="segmented" role="tablist" aria-label="右の面の切り替え">
           <button id="panel-tab-files" class="segmented__btn" type="button" role="tab" aria-selected="false">ファイル</button>
           <button id="panel-tab-git" class="segmented__btn" type="button" role="tab" aria-selected="false">変更</button>
+          <button id="panel-tab-history" class="segmented__btn" type="button" role="tab" aria-selected="false">履歴</button>
         </div>
         <button id="panel-refresh" class="icon-btn" type="button" aria-label="読み直す" title="読み直す">
           <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.3-5.6M20 4v5h-5" /></svg>
@@ -142,6 +147,28 @@
         <div class="files__root" id="files-root"></div>
         <p id="files-empty" class="panel__empty" hidden></p>
         <ul id="files-tree" class="files__tree" role="tree"></ul>
+      </section>
+      <section id="history-view" class="panel__section" hidden aria-label="git の履歴">
+        <div class="history__head">
+          <strong id="history-work" class="history__work"></strong>
+          <label for="history-scope">ブランチ</label>
+          <select id="history-scope" class="history__input">
+            <option value="current">いまのブランチ</option>
+            <option value="all">すべてのブランチ</option>
+          </select>
+          <label for="history-query">絞り込み</label>
+          <input id="history-query" class="history__input" type="search" placeholder="件名・作者・ハッシュ" />
+          <div id="history-path-filter" class="history__path-filter" hidden>
+            <span id="history-path"></span>
+            <button id="history-path-clear" class="icon-btn" type="button" aria-label="ファイルの絞り込みを解除" title="絞り込みを解除">×</button>
+          </div>
+        </div>
+        <div id="history-scroll" class="history__scroll" tabindex="0" aria-label="コミットの一覧">
+          <div id="history-status" class="panel__empty" role="status"></div>
+          <button id="history-retry" class="btn" type="button" hidden>読み直す</button>
+          <div id="history-list"></div>
+          <button id="history-more" class="btn history__more" type="button" hidden>さらに読み込む</button>
+        </div>
       </section>
       <section id="git-view" class="panel__section" aria-label="変更" hidden>
       <p id="git-empty" class="panel__empty" hidden></p>

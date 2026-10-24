@@ -113,4 +113,4 @@ async function fetch(top) {
   return git(['fetch', '--prune'], top, { timeout: NETWORK_TIMEOUT });
 }
 
-module.exports = { toplevel, status, diff, stage, unstage, commit, push, pull, fetch, parseStatus };
+module.exports = { toplevel, status, diff, stage, unstage, commit, push, pull, fetch, parseStatus, DIFF_LINE_LIMIT };
