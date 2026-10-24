@@ -3,28 +3,43 @@ const { git } = require('./git');
 const { toplevel, DIFF_LINE_LIMIT } = require('./gitpanel');
 
 const HASH = /^[0-9a-f]{4,40}$/i;
-const FORMAT = '%x1e%H%x1f%h%x1f%P%x1f%an%x1f%aI%x1f%D%x1f%s';
+const FORMAT = '%x1e%H%x1f%h%x1f%P%x1f%an%x1f%aI%x1f%D%x1f%s%x1f%b%x00';
 
 function validateHash(hash) {
   if (typeof hash !== 'string' || !HASH.test(hash)) throw new Error('ハッシュは16進の4〜40字で指定');
 }
 
-function parseGraph(out) {
-  return out.split('\n').filter(Boolean).map((line) => {
-    const at = line.indexOf('\x1e');
-    if (at < 0) return { graph: line, commit: null };
-    const fields = line.slice(at + 1).split('\x1f');
-    const [hash, shortHash, parents, author, date, refs] = fields;
-    return { graph: line.slice(0, at), commit: { hash, shortHash, parents: parents ? parents.split(' ') : [], author, date, refs, subject: fields.slice(6).join('\x1f') } };
+function parseRefs(text, remoteNames) {
+  return text.split(', ').filter(Boolean).flatMap((value) => {
+    const current = value.startsWith('HEAD -> ');
+    if (current) value = value.slice(8);
+    if (value === 'HEAD') return [{ name: 'HEAD', kind: 'head', current: false }];
+    if (value.startsWith('tag: ')) return [{ name: value.slice(5).replace(/^refs\/tags\//, ''), kind: 'tag', current: false }];
+    if (value.startsWith('refs/remotes/')) {
+      const name = value.slice(13);
+      const remote = remoteNames.find((r) => name.startsWith(r + '/'));
+      if (!remote || name === remote + '/HEAD') return [];
+      return [{ name, kind: 'remote', current: false }];
+    }
+    return [{ name: value.replace(/^refs\/heads\//, ''), kind: 'branch', current }];
   });
 }
 
-function pageRows(rows, skip, limit) {
-  let count = 0;
-  return rows.filter((row) => {
-    if (row.commit) count++;
-    return count > skip && count <= skip + limit;
+function parseLog(out, remoteNames, reachable) {
+  return out.split('\0').filter((record) => record.trim()).map((record) => {
+    const fields = record.slice(record.indexOf('\x1e') + 1).split('\x1f');
+    const [hash, shortHash, parents, author, date, refs, subject] = fields;
+    return { commit: {
+      hash, shortHash, parents: parents ? parents.split(' ') : [], author, date,
+      refs: parseRefs(refs, remoteNames), subject, hasBody: Boolean(fields.slice(7).join('\x1f')),
+      reachable: reachable === null || reachable.has(hash),
+    } };
   });
+}
+
+function isGithub(url) {
+  try { return new URL(url).hostname.toLowerCase() === 'github.com'; }
+  catch { return /^(?:[^@/:]+@)?github\.com:/i.test(url); }
 }
 
 async function log(dir, { limit = 100, skip = 0, all = false, path = null, query = '' } = {}) {
@@ -33,18 +48,24 @@ async function log(dir, { limit = 100, skip = 0, all = false, path = null, query
   if (typeof query !== 'string' || query.includes('\0')) throw new Error('絞り込みの文字を確認');
   const top = await toplevel(dir);
   if (!top) return null;
+  const remoteNames = (await git(['remote'], top)).trim().split('\n').filter(Boolean).sort((a, b) => b.length - a.length);
+  const remotes = Object.fromEntries(await Promise.all(remoteNames.map(async (name) => [name, {
+    github: isGithub((await git(['remote', 'get-url', '--', name], top)).trim()),
+  }])));
   const unpushed = (await git(['rev-list', '@{u}..HEAD'], top).catch(() => '')).trim().split('\n').filter(Boolean);
   const exists = await git(['rev-parse', '--verify', '--quiet', 'HEAD'], top).then(() => true, () => false);
-  if (!exists && !all) return { top, rows: [], unpushed, nextSkip: null, hasMore: false };
+  if (!exists && !all) return { top, rows: [], unpushed, remotes, nextSkip: null, hasMore: false };
+  const reachable = all ? new Set(exists ? (await git(['rev-list', 'HEAD'], top)).trim().split('\n') : []) : null;
   const scope = all ? ['--all'] : ['HEAD'];
   const paths = path ? ['--', path] : ['--'];
-  const base = ['--literal-pathspecs', 'log', '--no-color', '--no-show-signature', '--decorate=short'];
+  const base = ['--literal-pathspecs', 'log', '--topo-order', '--no-color', '--no-show-signature', '--decorate=full'];
+  const parse = (out) => parseLog(out, remoteNames, reachable);
   query = query.trim();
   let rows;
   if (HASH.test(query)) {
     // ハッシュの検索は祖先をたどらず、そのコミットだけを返す
     const hash = (await git(['rev-parse', '--verify', `${query.toLowerCase()}^{commit}`], top)).trim();
-    rows = parseGraph(await git([...base, '--graph', `--format=${FORMAT}`, '-1', `${hash}^!`, ...paths], top));
+    rows = parse(await git([...base, `--format=${FORMAT}`, '-1', `${hash}^!`, ...paths], top));
   } else if (query) {
     // --grep と --author は同時に指定すると AND になるため、集合を合わせてから枝の順に絞る
     const matches = await Promise.all(['--grep', '--author'].map((flag) => git([
@@ -53,19 +74,14 @@ async function log(dir, { limit = 100, skip = 0, all = false, path = null, query
     const subjects = new Set(matches[0].split('\n').filter(Boolean));
     const authors = new Set(matches[1].split('\n').filter(Boolean));
     const needle = query.toLocaleLowerCase();
-    let include = false;
-    rows = !subjects.size && !authors.size ? [] : parseGraph(await git([...base, '--graph', `--format=${FORMAT}`, ...scope, ...paths], top)).filter((row) => {
-      if (row.commit) include = authors.has(row.commit.hash) || (subjects.has(row.commit.hash) && row.commit.subject.toLocaleLowerCase().includes(needle));
-      return include;
-    });
+    rows = !subjects.size && !authors.size ? [] : parse(await git([...base, `--format=${FORMAT}`, ...scope, ...paths], top)).filter(({ commit }) =>
+      authors.has(commit.hash) || (subjects.has(commit.hash) && commit.subject.toLocaleLowerCase().includes(needle)));
   } else {
-    rows = parseGraph(await git([...base, '--graph', `--format=${FORMAT}`, `--skip=${skip}`, `--max-count=${limit + 1}`, ...scope, ...paths], top));
+    rows = parse(await git([...base, `--format=${FORMAT}`, `--skip=${skip}`, `--max-count=${limit + 1}`, ...scope, ...paths], top));
   }
   const offset = query ? skip : 0;
-  const count = rows.filter((row) => row.commit).length;
-  const selected = pageRows(rows, offset, limit);
-  const hasMore = count > offset + limit;
-  return { top, rows: selected, unpushed, nextSkip: hasMore ? skip + limit : null, hasMore };
+  const hasMore = rows.length > offset + limit;
+  return { top, rows: rows.slice(offset, offset + limit), unpushed, remotes, nextSkip: hasMore ? skip + limit : null, hasMore };
 }
 
 async function commit(dir, hash) {

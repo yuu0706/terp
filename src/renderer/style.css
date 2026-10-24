@@ -2159,23 +2159,24 @@ button.subagent:hover,
 #history-retry[hidden],
 .commit-view[hidden],
 .commit-view__diff[hidden] { display: none; }
-.history__row,
-.history__line {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-1);
-  padding: var(--space-1) var(--space-2);
-  font-size: var(--text-sm);
-}
 .history__row {
+  --history-row-h: 22px;
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  box-sizing: border-box;
+  height: var(--history-row-h);
   width: 100%;
+  padding: 0 var(--space-2);
   border: 0;
-  border-bottom: 1px solid var(--color-border);
   text-align: left;
   background: transparent;
   color: var(--color-text);
-  font-family: inherit;
+  font: inherit;
+  font-size: var(--text-sm);
   cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
 }
 .history__row:hover,
 .commit-view__file-toggle:hover { background: var(--color-bg-hover); }
@@ -2186,14 +2187,13 @@ button.subagent:hover,
 }
 .history__graph {
   flex: none;
-  white-space: pre;
-  font-family: var(--font-mono);
-  color: var(--color-accent);
+  height: var(--history-row-h);
+  overflow: hidden;
 }
-.history__line { padding-block: 0; }
-.history__summary { flex: 1; min-width: 0; }
+.history__graph[data-clipped="true"] { border-right: 1px dashed var(--color-text-muted); }
 .history__subject {
-  display: block;
+  flex: 0 1 auto;
+  min-width: 0;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
@@ -2203,19 +2203,37 @@ button.subagent:hover,
   flex-wrap: wrap;
   gap: var(--space-1);
 }
-.history__refs .work__tag {
-  overflow-wrap: anywhere;
-  white-space: normal;
-}
-.history__meta {
-  display: flex;
+.history__refs .work__tag { overflow-wrap: anywhere; white-space: normal; }
+.history__row > .history__refs {
+  display: inline-flex;
+  flex-wrap: nowrap;
   align-items: center;
-  gap: var(--space-2);
-  color: var(--color-text-muted);
+  flex: none;
 }
-.history__author { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.history__meta time { flex: none; margin-left: auto; }
-.history__unpushed { color: var(--color-busy); }
+.history__ref {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  box-sizing: border-box;
+  height: calc(var(--history-row-h) - var(--space-1));
+  padding: 0 var(--space-1);
+  border: 1px solid var(--ref-color);
+  border-radius: var(--space-1);
+  background: color-mix(in srgb, var(--ref-color) 14%, transparent);
+  color: var(--color-text);
+}
+.history__ref[data-current="true"] { font-weight: 700; }
+/* 札は縮めず、長い名前だけを末尾で切る。件名の方を先に縮める */
+.history__ref-name { max-width: 16em; overflow: hidden; text-overflow: ellipsis; }
+.history__ref .icon { width: var(--text-sm); height: var(--text-sm); flex: none; }
+.history__body-mark { flex: none; color: var(--color-text-muted); }
+.history__unpushed { flex: none; margin-left: auto; color: var(--color-busy); }
+.history__row[data-reachable="false"] { color: var(--color-text-muted); }
+/* 文字の色の差だけでは見分けにくいテーマがあるため、件名を薄くする */
+.history__row[data-reachable="false"] .history__subject,
+.history__row[data-reachable="false"] .history__body-mark { opacity: 0.6; }
+.history__row[data-reachable="false"] .history__unpushed { color: inherit; }
 .history__more,
 #history-retry { margin: var(--space-2); }
 .commit-view {

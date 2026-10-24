@@ -103,6 +103,7 @@ function applyConfig(c) {
   root.setProperty('--surface-term', withAlpha(c.chrome['term-bg'], c.window.opacity));
   root.setProperty('--surface-sidebar', withAlpha(c.chrome.bg, c.window.opacity));
   root.setProperty('--font-mono', c.font.family);
+  for (const [key, value] of Object.entries(c.terminal)) root.setProperty(`--history-${key}`, value);
   configError.textContent = c.error || '';
   configError.hidden = !c.error;
   // skipApprovals を切り替えたら、エージェントのボタンの説明と印も変える

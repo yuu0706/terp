@@ -1,5 +1,6 @@
 // 右の履歴の一覧と、作業画面に開くコミットの詳細
 import { renderDiff } from './gitpanel.js';
+import { buildHistoryGraph, GRAPH_COLORS } from './historygraph.js';
 const terp = window.terp;
 const panel = document.getElementById('history-view');
 const list = document.getElementById('history-list');
@@ -159,15 +160,6 @@ function apply(value, append) {
   scroll.scrollTop = nextAnchor ? nextAnchor.offsetTop - offset : previous;
 }
 
-function relativeDate(date) {
-  const minutes = Math.max(0, Math.floor((Date.now() - new Date(date).getTime()) / 60000));
-  if (!Number.isFinite(minutes)) return date;
-  if (minutes < 1) return 'いま';
-  if (minutes < 60) return `${minutes}分前`;
-  if (minutes < 1440) return `${Math.floor(minutes / 60)}時間前`;
-  return `${Math.floor(minutes / 1440)}日前`;
-}
-
 function element(tag, cls, text) {
   const el = document.createElement(tag);
   if (cls) el.className = cls;
@@ -175,43 +167,134 @@ function element(tag, cls, text) {
   return el;
 }
 
-function badges(refs) {
-  const el = element('span', 'history__refs');
-  for (const ref of refs.split(', ').filter(Boolean)) el.append(element('span', 'work__tag', ref));
+function svgElement(tag, attrs = {}) {
+  const el = document.createElementNS('http://www.w3.org/2000/svg', tag);
+  for (const [key, value] of Object.entries(attrs)) el.setAttribute(key, value);
   return el;
+}
+
+const GITHUB_PATH = 'M8 0c4.42 0 8 3.58 8 8a8.013 8.013 0 0 1-5.45 7.59c-.4.08-.55-.17-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 0-.88-.31-1.59-.82-2.15.08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27-.68 0-1.36.09-2 .27-1.53-1.03-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12-.51.56-.82 1.28-.82 2.15 0 3.06 1.86 3.75 3.64 3.95-.23.2-.44.55-.51 1.07-.46.21-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9.82 1.13.16.45.68 1.31 2.69.94 0 .67.01 1.3.01 1.49 0 .21-.15.45-.55.38A7.995 7.995 0 0 1 0 8c0-4.42 3.58-8 8-8Z';
+
+function refIcon(kind) {
+  const svg = svgElement('svg', { class: 'icon', viewBox: '0 0 16 16', 'aria-hidden': 'true', 'data-icon': kind });
+  // GitHub の印は Octicons の mark-github（MIT）を使用する
+  const paths = {
+    github: GITHUB_PATH,
+    check: 'M3 8l3 3 7-7',
+    tag: 'M2 2h6l6 6-6 6-6-6Z M5 5h.01',
+    cloud: 'M4.5 12h7a3 3 0 0 0 .5-6 4 4 0 0 0-7.7-.5A3.3 3.3 0 0 0 4.5 12Z',
+  };
+  svg.append(svgElement('path', { d: paths[kind], fill: kind === 'github' ? 'currentColor' : 'none', stroke: kind === 'github' ? 'none' : 'currentColor', 'stroke-width': 1.5, 'stroke-linecap': 'round', 'stroke-linejoin': 'round' }));
+  return svg;
+}
+
+function graphColor(color) {
+  const name = GRAPH_COLORS[color % GRAPH_COLORS.length];
+  return name === 'accent' ? 'var(--color-accent)' : `var(--history-${name}, var(--color-accent))`;
+}
+
+function badges(refs, color = 'var(--color-accent)', remotes = {}) {
+  const el = element('span', 'history__refs');
+  // 詳細タブの印は従来の文字列をそのまま表示する
+  if (typeof refs === 'string') {
+    for (const ref of refs.split(', ').filter(Boolean)) el.append(element('span', 'work__tag', ref));
+    return el;
+  }
+  const names = Object.keys(remotes).sort((a, b) => b.length - a.length);
+  const remoteOf = (ref) => names.find((name) => ref.name.startsWith(name + '/'));
+  const localNames = new Set(refs.filter((ref) => ref.kind === 'branch').map((ref) => ref.name));
+  for (const ref of refs) {
+    const remote = ref.kind === 'remote' ? remoteOf(ref) : null;
+    if (remote && localNames.has(ref.name.slice(remote.length + 1))) continue;
+    const paired = ref.kind === 'branch' ? refs.filter((r) => r.kind === 'remote' && r.name.slice((remoteOf(r) || '').length + 1) === ref.name) : [];
+    const badge = element('span', 'history__ref');
+    badge.dataset.kind = ref.kind;
+    badge.dataset.current = String(ref.current);
+    badge.style.setProperty('--ref-color', ref.kind === 'tag' ? 'var(--history-magenta, var(--color-accent))' : color);
+    badge.title = [ref.name, ...paired.map((r) => r.name)].join(', ');
+    if (ref.current) badge.append(refIcon('check'));
+    if (ref.kind === 'tag') badge.append(refIcon('tag'));
+    if (remote || paired.length) {
+      const github = remote ? remotes[remote].github : paired.some((r) => remotes[remoteOf(r)]?.github);
+      badge.append(refIcon(github ? 'github' : 'cloud'));
+    }
+    const name = document.createElement('span');
+    name.className = 'history__ref-name';
+    name.textContent = ref.name;
+    badge.append(name);
+    el.append(badge);
+  }
+  return el;
+}
+
+// 幅は行ごとに、その行で使う列だけにする（VS Code と同じく、件名が線の図のすぐ右から始まる）
+function rowColumns(graph) {
+  return 1 + Math.max(graph.node.column,
+    ...graph.through.map((p) => p.column),
+    ...[...graph.incoming, ...graph.outgoing].flatMap((p) => [p.from, p.to]));
+}
+
+function renderGraph(graph) {
+  const columns = rowColumns(graph);
+  const width = Math.min(8, columns) * 16;
+  const svg = svgElement('svg', { class: 'history__graph', width, height: 22, viewBox: `0 0 ${width} 22`, 'aria-hidden': 'true', 'data-clipped': String(columns > 8) });
+  function line(from, to, start, end, color, edge) {
+    const x1 = from * 16 + 8;
+    const x2 = to * 16 + 8;
+    const middle = (start + end) / 2;
+    const d = from === to ? `M${x1} ${start}V${end}` : `M${x1} ${start}C${x1} ${middle} ${x2} ${middle} ${x2} ${end}`;
+    svg.append(svgElement('path', { d, stroke: graphColor(color), fill: 'none', 'stroke-width': 2, 'data-edge': edge, 'data-from': from, 'data-to': to }));
+  }
+  for (const path of graph.through) line(path.column, path.column, 0, 22, path.color, 'through');
+  for (const path of graph.incoming) line(path.from, path.to, 0, 11, path.color, 'incoming');
+  for (const path of graph.outgoing) line(path.from, path.to, 11, 22, path.color, 'outgoing');
+  const node = graph.node;
+  if (node.column < 8) {
+    const x = node.column * 16 + 8;
+    svg.append(svgElement('circle', { cx: x, cy: 11, r: node.merge ? 7 : 4, fill: node.merge ? 'var(--color-bg)' : graphColor(node.color), stroke: graphColor(node.color), 'stroke-width': 2, class: node.merge ? 'history__merge' : 'history__dot' }));
+    if (node.merge) svg.append(svgElement('path', { d: `M${x - 3} 10l3 3 3-3`, fill: 'none', stroke: graphColor(node.color), 'stroke-width': 1.5 }));
+  }
+  return svg;
 }
 
 function renderRows() {
   const fragment = document.createDocumentFragment();
   const unpushed = new Set(state.unpushed);
   const top = state.top;
-  for (const { graph, commit } of state.rows) {
-    if (!commit) {
-      const line = element('div', 'history__line');
-      line.append(element('span', 'history__graph', graph));
-      line.setAttribute('aria-hidden', 'true');
-      fragment.append(line);
-      continue;
-    }
+  const commits = state.rows.map((row) => row.commit);
+  const hashes = new Set(commits.map((commit) => commit.hash));
+  const filtered = Boolean(fileFilter || query.value.trim());
+  const graph = buildHistoryGraph(filtered ? commits.map((commit) => ({ ...commit, parents: commit.parents.filter((hash) => hashes.has(hash)) })) : commits);
+  commits.forEach((commit, index) => {
+    const layout = graph.rows[index];
+    // 絞り込みで親が省かれても、マージの印は元の親の数から決める
+    layout.node.merge = commit.parents.length > 1;
     const row = element('button', 'history__row');
     row.type = 'button';
     row.dataset.hash = commit.hash;
+    row.dataset.reachable = String(commit.reachable);
+    row.dataset.column = layout.node.column;
     row.title = `${commit.hash}\n${commit.author}\n${commit.date}\n${commit.subject}`;
-    const body = element('span', 'history__summary');
-    const heading = element('span', 'history__subject', commit.subject);
-    const meta = element('span', 'history__meta');
-    meta.append(element('span', 'history__author', commit.author), element('time', '', relativeDate(commit.date)));
+    const heading = element('span', 'history__subject');
+    const prefix = commit.subject.match(/^[a-z]+(\([^)]*\))?!?:/);
+    if (prefix) heading.append(element('strong', '', prefix[0]), document.createTextNode(commit.subject.slice(prefix[0].length)));
+    else heading.textContent = commit.subject;
+    row.append(renderGraph(layout), badges(commit.refs, graphColor(layout.node.color), state.remotes), heading);
+    if (commit.hasBody) {
+      const body = element('span', 'history__body-mark', '↩');
+      body.title = '本文あり';
+      body.setAttribute('aria-label', '本文あり');
+      row.append(body);
+    }
     if (unpushed.has(commit.hash)) {
       const arrow = element('span', 'history__unpushed', '↑');
       arrow.title = 'まだプッシュしていない';
       arrow.setAttribute('aria-label', 'まだプッシュしていない');
-      meta.append(arrow);
+      row.append(arrow);
     }
-    body.append(heading, badges(commit.refs), meta);
-    row.append(element('span', 'history__graph', graph), body);
     row.addEventListener('click', () => openCommit(top, commit.hash, commit.subject));
     fragment.append(row);
-  }
+  });
   list.replaceChildren(fragment);
 }
 
