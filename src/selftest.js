@@ -188,6 +188,161 @@ async function runSettingsTest({ win, js, check, outDir }) {
   check('Esc で閉じる', await js(`document.getElementById('settings').hidden`));
 }
 
+// TERP_SELFTEST_AGENTSTATUS は、名前を実際に拾える偽 CLI でエージェントの表示と移動を確かめる。
+async function runAgentStatusTest({ win, js, check, outDir }) {
+  const { CONFIG_PATH } = require('./config');
+  if (!process.env.TERP_CONFIG_DIR) throw new Error('状態の自己診断には一時フォルダの TERP_CONFIG_DIR が必要');
+  const original = fs.readFileSync(CONFIG_PATH, 'utf8');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'terp-agent-status-'));
+  const fake = path.join(dir, 'claude');
+  const script = path.join(dir, 'status.js');
+  // 本体は前面のプログラムの名前を実行ファイルの実体から拾うため、リンクでは名前が変わらない。
+  // macOS は写したシステムのプログラム（/bin/sh など）を起動時に止めるため、node の実行ファイルを写して使う
+  const node = require('child_process').execFileSync('/bin/zsh', ['-lc', 'command -v node'], { encoding: 'utf8' }).trim();
+  fs.copyFileSync(node, fake);
+  fs.chmodSync(fake, 0o755);
+  const ids = [];
+  const quote = (value) => "'" + value.replace(/'/g, "'\\''") + "'";
+  fs.writeFileSync(script, `require('child_process').execSync('stty -echo', { stdio: 'inherit' });
+const out = (text) => process.stdout.write(text);
+out('agent-status-ready\\n');
+require('readline').createInterface({ input: process.stdin }).on('line', (command) => {
+  if (command === 'work') out('\\x1b]0;⠂ 状態の確認\\x07');
+  if (command === 'done') out('\\x1b]0;✳ 状態の確認\\x07');
+  if (command === 'permission') out('\\x1b]9;Claude needs your permission to use Bash\\x07');
+  if (command === 'approval') out('\\x1b]777;notify;Claude;承認待ち\\x07');
+  if (command === 'echo') out('input-echo\\n');
+  if (command === 'output') setTimeout(() => {
+    let n = 0;
+    const timer = setInterval(() => { out('agent-output\\n'); if (++n === 8) clearInterval(timer); }, 250);
+  }, 600);
+  if (command === 'blip') setTimeout(() => out('agent-blip\\n'), 800);
+});
+`);
+  const wait = async (fn) => {
+    for (let i = 0; i < 200; i++) {
+      if (await fn()) return true;
+      await sleep(50);
+    }
+    throw new Error('エージェントの状態の自己診断で応答を待ち切れなかった');
+  };
+  const settings = async (patch) => {
+    const result = await js(`window.terp.updateConfig(${JSON.stringify(patch)})`);
+    if (!result.ok) throw new Error(result.error);
+    await wait(() => js(`Object.entries(${JSON.stringify(patch)}).every(([key, value]) => window.__terp.config[key] === value)`));
+  };
+  const state = (id) => js(`window.__terp.sessions.get(${id}).li.dataset.agentState`);
+  const input = (id, command) => js(`window.__terp.sessions.get(${id}).term.input(${JSON.stringify(command + '\r')}, true)`);
+  const tab = (id) => `document.querySelector('.tab[data-key="t:${id}"]')`;
+  const row = (id) => `window.__terp.sessions.get(${id}).li`;
+  const badge = () => require('./main').__test.dockBadge;
+  const colorMatches = (id, property, variable) => js(`(() => {
+    const probe = document.createElement('span');
+    probe.style.color = 'var(${variable})';
+    document.body.append(probe);
+    const expected = getComputedStyle(probe).color;
+    probe.remove();
+    return getComputedStyle(${row(id)}.querySelector('.session__dot'))[${JSON.stringify(property)}] === expected;
+  })()`);
+  try {
+    await settings({ notifications: false, dockBadge: true });
+    await js('window.__terp.setFocusForTest(true)');
+    const root = path.resolve(__dirname, '..');
+    const added = await js(`window.__terp.addProject(${JSON.stringify(root)})`);
+    if (!added.ok) throw new Error(added.error);
+    for (let i = 0; i < 2; i++) {
+      const id = await js(`window.__terp.open(${JSON.stringify(root)})`);
+      ids.push(id);
+      await js(`window.terp.write(${id}, ${JSON.stringify(quote(fake) + ' ' + quote(script) + '\r')})`);
+      await wait(() => js(`window.__terp.bufferText(${id}).includes('agent-status-ready') && window.__terp.sessions.get(${id}).program === 'claude'`));
+    }
+    const [first, second] = ids;
+    check('偽 CLI の名前を本体が claude として拾う', await js(`${JSON.stringify(ids)}.every((id) => window.__terp.sessions.get(id).program === 'claude')`));
+    const shell = await js(`window.__terp.open(${JSON.stringify(root)})`);
+    ids.push(shell);
+    await sleep(2300);
+    await input(first, 'work');
+    await wait(async () => (await state(first)) === 'working');
+    const before = await js(`${row(first)}.querySelector('.session__status').textContent`);
+    await sleep(1200);
+    const after = await js(`${row(first)}.querySelector('.session__status').textContent`);
+    check('考え中の秒が進む', /^考え中 0:0\d$/.test(before) && before !== after);
+    check('一覧とタブに強調色の輪を出す', await colorMatches(first, 'borderTopColor', '--color-accent') && await js(`(() => {
+      const dot = ${row(first)}.querySelector('.session__dot');
+      const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+      return getComputedStyle(dot).animationName === (reduced ? 'agent-pulse' : 'agent-spin') && ${tab(first)}.dataset.agentState === 'working';
+    })()`));
+    await input(first, 'permission');
+    await wait(async () => (await state(first)) === 'waiting');
+    check('許可待ちは黄色の ! と文字で出す', await colorMatches(first, 'backgroundColor', '--history-yellow') && await js(`${row(first)}.querySelector('.session__dot').textContent === '!' && ${row(first)}.querySelector('.session__status').textContent === '許可待ち' && ${tab(first)}.querySelector('.tab__dot').textContent === '!'`));
+    check('通知を切っていても Dock は許可待ちを数える', await wait(() => badge() === '1'));
+    await input(first, 'echo');
+    await wait(async () => (await state(first)) === 'idle');
+    check('打鍵で許可待ちを下ろし、直後の出力は考え中にしない', await state(first) === 'idle');
+    // 題名で知らせたことの無い端末だけ、続く出力で考え中にする
+    await input(second, 'output');
+    check('題名を出さない端末は続く出力で考え中にする', await wait(async () => (await state(second)) === 'working'));
+    await wait(async () => (await state(second)) === 'idle');
+    await sleep(2300);
+    await input(first, 'work');
+    await wait(async () => (await state(first)) === 'working');
+    await input(first, 'done');
+    await wait(async () => (await state(first)) === 'done');
+    await input(first, 'blip');
+    await sleep(1500);
+    check('終わった後の1回の出力では考え中に戻らない', await state(first) === 'done');
+    check('見ていない応答の終わりは一覧とタブが緑になる', await colorMatches(first, 'backgroundColor', '--history-green') && await js(`${tab(first)}.dataset.agentState === 'done' && ${row(first)}.querySelector('.session__status').textContent.startsWith('終わった · ')`));
+    await input(second, 'approval');
+    await wait(async () => (await state(second)) === 'waiting');
+    // 一覧は 500ms ごとに描き直すため、描き直しを待ってから撮る
+    await sleep(700);
+    fs.writeFileSync(path.join(outDir, 'agent-status.png'), (await win.webContents.capturePage()).toPNG());
+    check('Dock は許可待ちと終わったを合計する', await wait(() => badge() === '2'));
+    const workButton = `document.querySelector('.work[data-path="' + CSS.escape(window.__terp.workOf(${first})) + '"] .work__status')`;
+    check('作業の行は終わったより許可待ちを優先する', await js(`${workButton}.dataset.agentState === 'waiting'`));
+    await input(first, 'permission');
+    await wait(async () => (await state(first)) === 'waiting');
+    check('作業の行は同じ状態の件数を添える', await js(`${workButton}.querySelector('.work__status-count').textContent === '2'`));
+    await js(`${workButton}.click()`);
+    check('作業の印を押すと先頭の要対応を表示する', await js(`window.__terp.activeId === ${first}`));
+    const { Menu } = require('electron');
+    const move = Menu.getApplicationMenu().items.find((item) => item.label === '移動');
+    const next = move.submenu.items.find((item) => item.label === '次の要対応');
+    next.click();
+    check('次の要対応は一覧の次の許可待ちへ移る', await wait(() => js(`window.__terp.activeId === ${second}`)));
+    next.click();
+    check('次の要対応は末尾から先頭へ戻る', await wait(() => js(`window.__terp.activeId === ${first}`)));
+    await input(first, 'echo');
+    await input(second, 'echo');
+    await wait(async () => (await state(second)) === 'idle');
+    await js(`window.__terp.activate(${shell})`);
+    await input(first, 'work');
+    await wait(async () => (await state(first)) === 'working');
+    await input(first, 'done');
+    await wait(async () => (await state(first)) === 'done');
+    await js(`window.__terp.activate(${first})`);
+    check('終わった端末を表示すると待機へ戻る', await state(first) === 'idle');
+    await input(second, 'permission');
+    await wait(async () => (await state(second)) === 'waiting');
+    await js("window.__terp.openSettings('notifications')");
+    check('通知が無効でも Dock の設定は触れる', await js("!document.getElementById('setting-dockBadge').disabled"));
+    await js("document.getElementById('setting-dockBadge').click()");
+    check('Dock に数を出すを切ると消える', await wait(() => badge() === ''));
+    await js("document.getElementById('setting-dockBadge').click()");
+    check('Dock を戻すと現在の件数を出す', await wait(() => badge() === '1'));
+    await js(`document.getElementById('settings-close').click(); window.__terp.activate(${shell})`);
+    await js(`window.terp.write(${shell}, "printf 'shell-status-test\\n'\\r")`);
+    check('シェルの印は従来の出力中を保つ', await wait(() => js(`!${row(shell)}.hasAttribute('data-agent-state') && ${row(shell)}.dataset.state === 'busy'`)));
+    await sleep(2300);
+    check('シェルの印は出力後に従来の待機へ戻る', await js(`${row(shell)}.dataset.state === 'idle'`));
+  } finally {
+    for (const id of ids) await js(`window.terp.kill(${id})`).catch(() => {});
+    await js('window.__terp.setFocusForTest(null)').catch(() => {});
+    fs.writeFileSync(CONFIG_PATH, original);
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 // TERP_SELFTEST_NOTIFY は実通知を出さず、端末の出力・設定・通知を押した後の移動を確かめる
 async function runNotifyTest({ win, js, check, outDir }) {
   const { CONFIG_PATH } = require('./config');
@@ -1809,6 +1964,13 @@ exports.run = (win) => {
     if (process.env.TERP_SELFTEST_AGENTREG) {
       await runAgentRegistryTest({ win, js, check, outDir });
       check('CSP の違反が無い', !log.some((line) => line.startsWith('console:') && line.includes('violates')));
+      fs.writeFileSync(path.join(outDir, 'result.txt'), log.join('\n') + '\n');
+      await finish();
+      return;
+    }
+
+    if (process.env.TERP_SELFTEST_AGENTSTATUS) {
+      await runAgentStatusTest({ win, js, check, outDir });
       fs.writeFileSync(path.join(outDir, 'result.txt'), log.join('\n') + '\n');
       await finish();
       return;

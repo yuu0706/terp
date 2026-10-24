@@ -27,6 +27,20 @@ let connecting = null;
 // 作業場所と前面のプログラム名の最新の値。控え（snapshot）にも使う
 const known = new Map();
 let win = null;
+let dockAttentionCount = 0;
+let lastDockBadge = '';
+function updateDockBadge() {
+  lastDockBadge = config.loadConfig().dockBadge && dockAttentionCount > 0 ? String(dockAttentionCount) : '';
+  app.dock?.setBadge(lastDockBadge);
+}
+
+ipcMain.on('dock:badge', (event, count) => {
+  if (event.sender !== win?.webContents || !Number.isSafeInteger(count) || count < 0) return;
+  dockAttentionCount = count;
+  updateDockBadge();
+});
+
+exports.__test = { get dockBadge() { return lastDockBadge; } };
 notify.init({ getWindow: () => win, toWindow });
 
 // 起動元（npm・Electron・Claude Code）の環境変数をシェルへ持ち込まない
@@ -350,6 +364,7 @@ function buildMenu() {
         { label: '直前のタブ', accelerator: 'Ctrl+Tab', registerAccelerator: false, click: send('recent') },
         { label: '前のタブ', accelerator: 'CmdOrCtrl+Shift+[', click: send('prev') },
         { label: '次のタブ', accelerator: 'CmdOrCtrl+Shift+]', click: send('next') },
+        { label: '次の要対応', accelerator: 'CmdOrCtrl+Shift+J', click: send('next-attention') },
         { type: 'separator' },
         { label: '左の枠', accelerator: 'CmdOrCtrl+Alt+Left', click: send('pane-left') },
         { label: '右の枠', accelerator: 'CmdOrCtrl+Alt+Right', click: send('pane-right') },
@@ -439,6 +454,7 @@ app.whenReady().then(() => {
   createWindow();
   // 設定ファイルを保存したら、開いている端末にすぐ反映する
   config.watchConfig((loaded) => {
+    updateDockBadge();
     if (!win || win.isDestroyed()) return;
     setBlur(win, loaded.window.blur);
     toWindow('config', loaded);

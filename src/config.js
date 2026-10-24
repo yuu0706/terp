@@ -29,6 +29,7 @@ const DEFAULT_CONFIG = {
   // タブの並びの隣のボタンで、プルダウンなしで起動するエージェントの command。null なら見つかった最初のもの
   mainAgent: null,
   notifications: true,
+  dockBadge: true,
   notifyAgentDone: true,
   notifyBell: true,
   notifyWhenVisible: false,
@@ -190,6 +191,7 @@ function loadConfig() {
     skipApprovals: config.skipApprovals === true,
     mainAgent: typeof config.mainAgent === 'string' ? config.mainAgent : null,
     notifications: config.notifications === true,
+    dockBadge: config.dockBadge !== false,
     notifyAgentDone: config.notifyAgentDone === true,
     notifyBell: config.notifyBell === true,
     notifyWhenVisible: config.notifyWhenVisible === true,

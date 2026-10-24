@@ -109,6 +109,7 @@ function applyConfig(c) {
   // skipApprovals を切り替えたら、エージェントのボタンの説明と印も変える
   if (agentList.length) renderAgentButtons();
   refreshAgents();
+  updateDockBadge();
   for (const s of sessions.values()) {
     s.term.options.theme = terminalTheme(c);
     s.term.options.fontFamily = c.font.family;
@@ -149,15 +150,110 @@ function placeLabel(s) {
   return shortPath(s.cwd) === displayName(s) ? '' : shortPath(s.cwd);
 }
 
-function stateOf(s) {
+// 時計と DOM を参照しない、エージェントの状態と遷移。
+function permissionMessage(message) {
+  return /permission|approv|allow|許可|承認/i.test(message);
+}
+
+function agentState(s, now) {
+  if (s.agentWaiting) return 'waiting';
+  if (s.agentWorking || outputWorking(s, now)) return 'working';
+  return s.agentDone ? 'done' : 'idle';
+}
+
+// 題名で作業中を知らせないもの（codex など）だけ、出力で考え中とみなす。
+// 終わった後の1回の描き直しで考え中に戻らないよう、1秒以上続いている出力に限る
+function outputWorking(s, now) {
+  if (s.titleAware || !(s.lastAgentOutput > 0) || now - s.lastAgentOutput >= BUSY_MS) return false;
+  return s.lastAgentOutput - (s.outputSince ?? s.lastAgentOutput) >= 1000;
+}
+
+function agentOutputCounts(lastInputAt, now) {
+  return lastInputAt == null || now - lastInputAt > 500;
+}
+
+function reduceAgentStatus(s, event, now) {
+  const next = {
+    agentWorking: Boolean(s.agentWorking), agentWaiting: Boolean(s.agentWaiting),
+    agentDone: Boolean(s.agentDone), lastAgentOutput: s.lastAgentOutput || 0,
+    lastInputAt: s.lastInputAt ?? null, workingSince: s.workingSince ?? null, doneAt: s.doneAt ?? null,
+    titleAware: Boolean(s.titleAware), outputSince: s.outputSince ?? null,
+  };
+  const before = agentState(next, now);
+  if (event.type === 'input') {
+    next.lastInputAt = now;
+    next.agentWaiting = false;
+  } else if (event.type === 'output' && !event.replaying && agentOutputCounts(next.lastInputAt, now)) {
+    if (!(next.lastAgentOutput > 0) || now - next.lastAgentOutput >= BUSY_MS) next.outputSince = now;
+    next.lastAgentOutput = now;
+    next.agentWaiting = false;
+  } else if (event.type === 'title') {
+    next.agentWorking = event.working;
+    // 一度でも題名で作業中を知らせたものは、以後は題名だけで考え中を決める
+    if (event.working) { next.agentWaiting = false; next.titleAware = true; }
+    else if (s.agentWorking) next.lastAgentOutput = 0;
+  } else if (event.type === 'notification' && !event.replaying) {
+    if (permissionMessage(event.message)) {
+      next.agentWaiting = true;
+      next.agentDone = false;
+      next.agentWorking = false;
+      next.lastAgentOutput = 0;
+    } else if (!next.agentWaiting) {
+      next.agentWorking = false;
+      next.lastAgentOutput = 0;
+      next.agentDone = !event.seen;
+      next.doneAt = now;
+    }
+  } else if (event.type === 'seen') {
+    next.agentDone = false;
+  } else if (event.type === 'reset') {
+    return { agentWorking: false, agentWaiting: false, agentDone: false, lastAgentOutput: 0,
+      lastInputAt: null, workingSince: null, doneAt: null, titleAware: false, outputSince: null };
+  }
+  const after = agentState(next, now);
+  if (after === 'working') {
+    if (before !== 'working' || next.workingSince == null) next.workingSince = now;
+    next.agentDone = false;
+  } else next.workingSince = null;
+  return next;
+}
+
+function agentStatusText(state, s, now) {
+  const seconds = Math.max(0, Math.floor((now - (state === 'working' ? s.workingSince : s.doneAt)) / 1000));
+  if (state === 'working') return '考え中 ' + (seconds >= 3600
+    ? `${Math.floor(seconds / 3600)}時間${Math.floor(seconds / 60) % 60}分`
+    : `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`);
+  if (state === 'waiting') return '許可待ち';
+  if (state === 'done') return '終わった · ' + (seconds < 60 ? 'たった今' : seconds < 3600
+    ? `${Math.floor(seconds / 60)}分前` : `${Math.floor(seconds / 3600)}時間前`);
+  return '';
+}
+
+function stateOf(s, now = Date.now()) {
+  if (isAgent(s)) return agentState(s, now);
   if (s.notify) return 'notify';
-  if (isAgent(s) && s.agentWorking) return 'busy';
-  if (Date.now() - s.lastOutput < BUSY_MS && s.lastOutput > s.createdAt + 1500) return 'busy';
+  if (now - s.lastOutput < BUSY_MS && s.lastOutput > s.createdAt + 1500) return 'busy';
   if (s.unread) return 'unread';
   return 'idle';
 }
 
-const STATE_LABELS = { busy: '出力中', unread: '未読の出力あり', notify: '通知あり', idle: '待機中' };
+const STATE_LABELS = { busy: '出力中', unread: '未読の出力あり', notify: '通知あり', idle: '待機中',
+  working: '考え中', waiting: '許可待ち', done: '終わった' };
+
+function updateAgentStatus(s, event, now = Date.now()) {
+  Object.assign(s, reduceAgentStatus(s, event, now));
+}
+
+// 従来の data-state は自己診断なども読むため、4状態は別の属性へ出す。
+function renderStatus(el, s, state) {
+  el.dataset.state = ({ working: 'busy', waiting: 'notify', done: 'notify' })[state] || state;
+  if (isAgent(s)) el.dataset.agentState = state;
+  else delete el.dataset.agentState;
+  const dot = el.querySelector('.session__dot');
+  dot.setAttribute('role', 'img');
+  dot.setAttribute('aria-label', STATE_LABELS[state]);
+  dot.textContent = state === 'waiting' ? '!' : '';
+}
 
 const termKey = (id) => `t:${id}`;
 const fileKey = (path) => `f:${path}`;
@@ -197,10 +293,10 @@ function activeCwd() {
 function renderItem(s, index = visibleKeys().indexOf(termKey(s.id))) {
   const li = s.li;
   const state = stateOf(s);
-  li.dataset.state = state;
+  renderStatus(li, s, state);
   li.setAttribute('aria-current', String(activeKey === termKey(s.id)));
   li.title = [s.title, shortPath(s.cwd)].filter(Boolean).join('\n');
-  li.querySelector('.session__dot').setAttribute('aria-label', STATE_LABELS[state]);
+  li.querySelector('.session__status').textContent = isAgent(s) ? agentStatusText(state, s, Date.now()) : '';
   const nameEl = li.querySelector('.session__name');
   if (nameEl) nameEl.textContent = displayName(s);
   const name = displayName(s);
@@ -214,6 +310,12 @@ function renderItem(s, index = visibleKeys().indexOf(termKey(s.id))) {
 
 function renderAll() {
   placeSessions();
+  const now = Date.now();
+  const focused = focusForTest ?? document.hasFocus();
+  for (const s of sessions.values()) {
+    updateAgentStatus(s, { type: 'tick' }, now);
+    if (focused && terminalVisible(s)) updateAgentStatus(s, { type: 'seen' }, now);
+  }
   const visible = visibleKeys();
   for (const s of sessions.values()) renderItem(s, visible.indexOf(termKey(s.id)));
   for (const list of subagentLists.values()) {
@@ -226,6 +328,8 @@ function renderAll() {
   for (const el of projectsEl.querySelectorAll('.work')) {
     el.querySelector('.work__row').setAttribute('aria-current', String(group === el.dataset.path));
   }
+  renderWorkStatuses();
+  updateDockBadge();
   renderTabs(visible);
   empty.hidden = Boolean(activeKey);
 }
@@ -273,7 +377,10 @@ function renderTabs(visible) {
     tab.querySelector('.tab__name').textContent = tabLabel(key) + (dirty ? ' ●' : '');
     tab.dataset.dirty = String(Boolean(dirty));
     tab.title = key.startsWith('t:') ? sessions.get(Number(key.slice(2)))?.cwd || '' : key.startsWith('s:') ? `サブエージェント: ${tabLabel(key)}` : key.slice(2);
-    if (key.startsWith('t:')) tab.dataset.state = stateOf(sessions.get(Number(key.slice(2))));
+    if (key.startsWith('t:')) {
+      const s = sessions.get(Number(key.slice(2)));
+      renderStatus(tab, s, stateOf(s));
+    }
   }
   tabsEl.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
 }
@@ -351,15 +458,21 @@ function renderProjects() {
           ${BRANCH_ICON}
           <span class="work__name">${escapeHtml(workLabel(w))}</span>
           ${main}${changes}${remove}
+          <button class="work__status" type="button" hidden><span class="session__dot"></span><span class="work__status-count"></span></button>
         </div>
         <ul class="session-list"></ul>`;
       const row = work.querySelector('.work__row');
       row.addEventListener('click', (e) => {
-        if (e.target.closest('[data-action="remove"]')) return;
+        if (e.target.closest('button')) return;
         openWork({ ...w, repo: p.path });
       });
       row.addEventListener('keydown', (e) => {
+        if (e.target !== row) return;
         if (e.key === 'Enter' || e.key === ' ') openWork({ ...w, repo: p.path });
+      });
+      work.querySelector('.work__status').addEventListener('click', () => {
+        const summary = urgentAgentSessions(sessionsInListOrder().filter((s) => workOf(s)?.path === w.path));
+        if (summary.sessions.length) activate(summary.sessions[0].id);
       });
       work.querySelector('[data-action="remove"]')?.addEventListener('click', () => openRemoveDialog({ ...w, repo: p.path }));
       section.appendChild(work);
@@ -384,6 +497,54 @@ function placeSessions() {
     if (children && s.li.nextElementSibling !== children) s.li.after(children);
   }
   looseSection.hidden = looseList.children.length === 0;
+}
+
+function terminalVisible(s) {
+  return paneList(layout).some((p) => p.key === termKey(s.id));
+}
+
+function sessionsInListOrder() {
+  return [...document.querySelectorAll('#projects .session, #loose .session')]
+    .map((el) => sessions.get(Number(el.dataset.id))).filter(Boolean);
+}
+
+function urgentAgentSessions(list, now = Date.now()) {
+  for (const state of ['waiting', 'done', 'working']) {
+    const matches = list.filter((s) => isAgent(s) && stateOf(s, now) === state);
+    if (matches.length) return { state, sessions: matches };
+  }
+  return { state: 'idle', sessions: [] };
+}
+
+function renderWorkStatuses() {
+  const list = sessionsInListOrder();
+  for (const work of projectsEl.querySelectorAll('.work')) {
+    const summary = urgentAgentSessions(list.filter((s) => workOf(s)?.path === work.dataset.path));
+    const button = work.querySelector('.work__status');
+    button.hidden = summary.sessions.length === 0;
+    if (button.hidden) continue;
+    renderStatus(button, summary.sessions[0], summary.state);
+    button.querySelector('.work__status-count').textContent = summary.sessions.length > 1 ? summary.sessions.length : '';
+    button.setAttribute('aria-label', `${STATE_LABELS[summary.state]} ${summary.sessions.length}件の先頭を表示`);
+  }
+}
+
+let lastDockCount = null;
+function updateDockBadge() {
+  const count = config.dockBadge === false ? 0 : [...sessions.values()]
+    .filter((s) => isAgent(s) && ['waiting', 'done'].includes(stateOf(s))).length;
+  if (count === lastDockCount) return;
+  lastDockCount = count;
+  terp.setDockBadge(count);
+}
+
+function nextAttention() {
+  const list = sessionsInListOrder();
+  const summary = urgentAgentSessions(list);
+  if (!['waiting', 'done'].includes(summary.state)) return;
+  const at = list.findIndex((s) => termKey(s.id) === activeKey);
+  const next = summary.sessions.find((s) => list.indexOf(s) > at) || summary.sessions[0];
+  activate(next.id);
 }
 
 // ---- リポジトリの並べ替え（ドラッグ＆ドロップと ⌥↑ / ⌥↓） ----
@@ -980,6 +1141,7 @@ function createItem(s) {
     <span class="session__key"></span>
     <span class="session__line2">
       <span class="session__bypass" title="ファイルの読み書きやコマンドの実行の確認を飛ばして起動しています" hidden>確認なし</span>
+      <span class="session__status"></span>
       <span class="session__sub"></span>
     </span>
     <button class="session__close" type="button" aria-label="閉じる" title="閉じる（⌘W）">
@@ -1124,6 +1286,7 @@ function activateKey(key, focus = true) {
     terp.setMeta(target.id, { lastActive: target.lastActive });
     target.unread = false;
     target.notify = false;
+    updateAgentStatus(target, { type: 'seen' });
     if (focus) target.term.focus();
     target.li.scrollIntoView({ block: 'nearest' });
   } else if (focus) {
@@ -1452,7 +1615,9 @@ function handleKey(s, event) {
   if (event.type !== 'keydown') return true;
   // claude の改行。VS Code の /terminal-setup と同じく ESC + CR を送る
   if (event.key === 'Enter' && event.shiftKey && !event.metaKey && !event.ctrlKey && !event.altKey) {
+    updateAgentStatus(s, { type: 'input' });
     terp.write(s.id, '\x1b\r');
+    renderAll();
     return false;
   }
   if (event.key === 'Tab' && event.ctrlKey) {
@@ -1504,7 +1669,7 @@ function registerSession(id, { el, term, fit }, extra = {}) {
     title: '',
     customName: null,
     agentTitle: '',
-    agentWorking: false,
+    ...reduceAgentStatus({}, { type: 'reset' }, Date.now()),
     createdAt: Date.now(),
     lastOutput: 0,
     unread: false,
@@ -1525,15 +1690,20 @@ function registerSession(id, { el, term, fit }, extra = {}) {
   s.li = createItem(s);
 
   term.attachCustomKeyEventHandler((event) => handleKey(s, event));
-  term.onData((data) => terp.write(id, data));
+  term.onData((data) => {
+    updateAgentStatus(s, { type: 'input' });
+    terp.write(id, data);
+    renderAll();
+  });
   term.onResize(({ cols, rows }) => terp.resize(id, cols, rows));
   term.onTitleChange((title) => {
     s.title = title;
     const { working, text } = parseTitle(title);
     if (text) s.agentTitle = text;
     // 作業中から入力待ちに変わったら、応答が終わったことを知らせる
-    if (s.agentWorking && !working) markNotify(s, 'done');
-    s.agentWorking = working;
+    const finished = s.agentWorking && !working;
+    updateAgentStatus(s, { type: 'title', working });
+    if (finished) markNotify(s, 'done');
     terp.setMeta(id, { title, agentTitle: s.agentTitle });
     renderItem(s);
   });
@@ -1639,9 +1809,11 @@ function notificationPayload({ kind, message = '', title, context, config, focus
 }
 
 function markNotify(s, kind, message = '') {
+  if (s.replaying) return;
   const focused = focusForTest ?? document.hasFocus();
   const w = workOf(s);
   const now = Date.now();
+  if (kind === 'done') updateAgentStatus(s, { type: 'notification', message, seen: focused && terminalVisible(s) }, now);
   const payload = notificationPayload({
     kind, message, title: displayName(s),
     context: w ? `${w.repo.split('/').pop()} / ${workLabel(w)}` : shortPath(s.cwd),
@@ -1655,9 +1827,8 @@ function markNotify(s, kind, message = '') {
       if (!res.ok) console.error(res.error);
     });
   }
-  if (activeKey === termKey(s.id) && focused) return;
-  s.notify = true;
-  renderItem(s);
+  if (!(activeKey === termKey(s.id) && focused)) s.notify = true;
+  renderAll();
 }
 
 function closeSession(id) {
@@ -1711,6 +1882,7 @@ terp.onData((id, data) => {
     s.pending.push(data);
     return;
   }
+  updateAgentStatus(s, { type: 'output', replaying: s.replaying });
   s.term.write(data);
   s.lastOutput = Date.now();
   if (activeKey !== termKey(id)) s.unread = true;
@@ -1731,6 +1903,7 @@ terp.onInfo((info) => {
     const s = sessions.get(id);
     if (!s) continue;
     s.cwd = cwd;
+    if (isAgent(s) && s.program !== program) updateAgentStatus(s, { type: 'reset' });
     s.program = program;
   }
   refreshHistory();
@@ -1741,6 +1914,9 @@ terp.onMenu((action, arg) => {
   // ファイルのタブを表示している間は、端末向けの操作（消去・すべて選択）を端末に向けない
   const s = activeKey?.startsWith('t:') ? sessions.get(activeId) : null;
   switch (action) {
+    case 'next-attention':
+      nextAttention();
+      break;
     case 'new':
       newTerminal();
       break;
@@ -1838,6 +2014,9 @@ setInterval(() => {
 window.__terp = {
   setFocusForTest: (focused) => { focusForTest = focused; },
   sessions,
+  nextAttention,
+  stateOf,
+  renderAll,
   layout: () => structuredClone(layout),
   dropTab: dropTabInPane,
   dropPaths,

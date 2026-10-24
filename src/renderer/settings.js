@@ -90,6 +90,7 @@ export const SECTIONS = [
       { key: 'notifyWhenVisible', label: '表示中のターミナルも知らせる', type: 'toggle', disabled: (v) => v.notifications === false },
       { key: 'notifySound', label: '音を鳴らす', type: 'toggle', default: true, disabled: (v) => v.notifications === false },
       { key: 'notifyMessage', label: '返答の文を出す', type: 'toggle', default: true, help: 'ロック画面や画面の共有で、返答の中身が見えることがある', disabled: (v) => v.notifications === false },
+      { key: 'dockBadge', label: 'Dock に数を出す', type: 'toggle', default: true },
       {
         type: 'action', label: '試しに通知する',
         help: 'macOS の「システム設定 → 通知」で terp の通知を許可していないと出ない',

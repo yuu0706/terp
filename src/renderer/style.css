@@ -777,6 +777,83 @@ button.subagent:hover,
   opacity: 1;
 }
 
+/* エージェントの印は一覧・タブ・作業の行で共通にする。 */
+:is(.session, .tab, .work__status)[data-agent-state] .session__dot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: var(--space-3);
+  height: var(--space-3);
+  background: transparent;
+  border: 1.5px solid var(--color-text-muted);
+  opacity: 0.6;
+  font-size: var(--text-sm);
+  font-weight: 700;
+  line-height: 1;
+}
+
+:is(.session, .tab, .work__status)[data-agent-state='working'] .session__dot {
+  border-color: var(--color-accent);
+  border-right-color: transparent;
+  opacity: 1;
+  animation: agent-spin 1s linear infinite;
+}
+
+:is(.session, .tab, .work__status)[data-agent-state='waiting'] .session__dot {
+  background: var(--history-yellow);
+  border-color: var(--history-yellow);
+  color: var(--color-bg);
+  opacity: 1;
+}
+
+:is(.session, .tab, .work__status)[data-agent-state='done'] .session__dot {
+  background: var(--history-green);
+  border-color: var(--history-green);
+  opacity: 1;
+}
+
+.session__status {
+  flex: none;
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+  opacity: 0.85;
+}
+
+.session__status:empty { display: none; }
+.session[data-agent-state='working'] .session__status { color: var(--color-accent); }
+.session[data-agent-state='waiting'] .session__status { color: var(--history-yellow); }
+.session[data-agent-state='done'] .session__status { color: var(--history-green); }
+
+.work__status {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  flex: none;
+  min-height: var(--control-h);
+  padding: 0 var(--space-1);
+  border: 0;
+  border-radius: var(--radius);
+  background: transparent;
+  font: inherit;
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+
+.work__status[hidden] { display: none; }
+.work__status:hover { background: var(--color-bg-active); }
+.work__status[data-agent-state='working'] { color: var(--color-accent); }
+.work__status[data-agent-state='waiting'] { color: var(--history-yellow); }
+.work__status[data-agent-state='done'] { color: var(--history-green); }
+
+@keyframes agent-spin { to { transform: rotate(360deg); } }
+@keyframes agent-pulse { 50% { opacity: 0.4; } }
+@media (prefers-reduced-motion: reduce) {
+  :is(.session, .tab, .work__status)[data-agent-state='working'] .session__dot {
+    animation: agent-pulse 2s ease-in-out infinite;
+  }
+}
+
 .topbar__btn[aria-pressed='true'] {
   background: var(--color-bg-active);
 }

@@ -16,6 +16,7 @@ contextBridge.exposeInMainWorld('terp', {
   saveTheme: (theme) => ipcRenderer.invoke('theme:save', theme),
   openConfigFile: () => ipcRenderer.invoke('config:open-file'),
   showNotification: (message) => ipcRenderer.invoke('notify:show', message),
+  setDockBadge: (count) => ipcRenderer.send('dock:badge', count),
   testNotification: () => ipcRenderer.invoke('notify:test'),
   onNotification: (fn) => ipcRenderer.on('notify:activate', (_e, id) => fn(id)),
   loadTabs: () => ipcRenderer.invoke('tabs:load'),
