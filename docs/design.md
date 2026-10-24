@@ -83,6 +83,11 @@ terp は、ターミナルを複数開いて素早く切り替えるための ma
 | `accent` | `null`（テーマのカーソルの色） | 強調色。新規ボタン・未読の印などに使う |
 | `fontFamily` | `"JetBrains Mono", Menlo, "Hiragino Sans", monospace` | フォント |
 | `fontSize` | `14` | 文字の大きさ |
+| `paddingX` | `10` | 端末の左右の余白（0〜40 px の整数）。変更時に端末の寸法を測り直す |
+| `paddingY` | `8` | 端末の上下の余白（0〜40 px の整数） |
+| `minimumContrast` | `1` | xterm.js の `minimumContrastRatio`（1〜21） |
+| `cursorStyle` | `"block"` | カーソルの形（`block`・`bar`・`underline`） |
+| `cursorBlink` | `false` | カーソルの点滅。形と点滅の既定値は xterm.js 6 の既定値を保つ |
 | `backgroundOpacity` | `1` | 背景の不透明度（0.2〜1）。Ghostty の `background-opacity` に当たる |
 | `backgroundBlur` | `false` | 窓の後ろのぼかし。`true`（半径 20）か半径の数値。Ghostty の `background-blur` に当たる |
 
@@ -92,7 +97,43 @@ terp は、ターミナルを複数開いて素早く切り替えるための ma
 - xterm.css は `.xterm-viewport` を `#000` で塗るため、透明に上書きしている。
 - ぼかしは Electron の vibrancy を使わない。vibrancy は窓の裏にすりガラスの板を敷く仕組みで、暗いテーマでは板がほぼ不透明に見え、透過が効かなくなった（2026-10-23 に利用者の目で確認）。Ghostty と同じく macOS の非公開の関数 `CGSSetWindowBackgroundBlurRadius` を koffi で呼ぶ（`src/blur.js`）。macOS の更新で関数が消えたら、ぼかしだけが無くなり透過は残る。
 - macOS の全画面は窓を専用の Space へ移し、後ろに壁紙も他の窓も無くなるため、透過しても灰色の板しか見えない（Ghostty はこのため全画面の間は透過を切る）。terp は全画面に入ったら、いまの壁紙を窓の後ろに敷き、窓と同じ半径でぼかす（`src/wallpaper.js`）。壁紙の場所は JXA で `NSWorkspace.desktopImageURLForScreen` に聞く（System Events を通さないため、操作の許可を求められない）。HEIC は画面で出せないため `sips` で長い辺 2560 の JPEG にし、設定のフォルダの `cache/` に控える。全画面の Space には元々他の窓が無いため、見た目はほぼ透過と同じになる。Space を作らない全画面（`setSimpleFullScreen`）も試したが、利用者は新しい Space に入ることを望んだため採らなかった（2026-10-24）。
-- Ghostty の設定（`~/.config/ghostty/config`）からのフォント・余白・透過の取り込み、キー割り当ての設定、プラグインは未実装。
+- 余白・最小のコントラスト・カーソルの形と点滅は、既存の設定ファイルに無ければ既定値を使う。値に誤りがあれば警告を出し、その項目だけ既定値で動く。
+- キー割り当ての設定とプラグインは未実装。
+
+### Ghostty の設定の取り込み
+
+設定画面の「外観」の先頭に「Ghostty から取り込む」を置く。読み取りは本体の IPC、書式の解析と写し方は `src/ghostty.js` が受け持つ。入出力と環境は呼び出し側から渡す。
+
+[Ghostty の公式資料](https://ghostty.org/docs/config)に従い、次の順ですべての存在するファイルを読む。後に読んだ値を優先する（2026-10-24 確認）。
+
+1. `$XDG_CONFIG_HOME/ghostty/config.ghostty`
+2. `$XDG_CONFIG_HOME/ghostty/config`
+3. `~/Library/Application Support/com.mitchellh.ghostty/config.ghostty`
+4. `~/Library/Application Support/com.mitchellh.ghostty/config`
+
+`XDG_CONFIG_HOME` が未設定なら `~/.config` を使う。`TERP_GHOSTTY_CONFIG` を指定した場合は、その1ファイルを入口にする。`config-file` は記述元の末尾で順に読み、相対パスは記述元のフォルダを基準にする。`~/` はホームフォルダへ展開する。同じ実体のファイルは1回だけ読み、輪と重複を止める。先頭に `?` があるパスの欠落は無視し、必須ファイルの欠落や読み取りの失敗は表示して保存を止める。
+
+空行と `#` で始まる行を除き、最初の `=` で項目と値を分ける。値の前後の空白と外側の二重引用符を除く。同じ項目は最後の値を使い、`font-family` だけは順に連結する。空の `font-family` はそれまでの並びを消す。
+
+| Ghostty | terp | 写し方 |
+| --- | --- | --- |
+| `theme` | `theme` | `light:A,dark:B` は `B`。`listThemes` に無ければ写さない |
+| `font-family` | `fontFamily` | 名前を二重引用符で囲み順に連結し、`Menlo, "Hiragino Sans", monospace` を末尾に足す |
+| `font-size` | `fontSize` | 数値にし、9〜32 に収める |
+| `background-opacity` | `backgroundOpacity` | 0.2〜1 に収める |
+| `background-blur`・`background-blur-radius` | `backgroundBlur` | 真偽か数値。数値は既存のぼかしと同じ0〜100に収め、別名同士でも後の値を優先する |
+| `window-padding-x`・`window-padding-y` | `paddingX`・`paddingY` | 1値か2値。2値は平均を四捨五入し、0〜40に収める |
+| `minimum-contrast` | `minimumContrast` | 1〜21 に収める |
+| `cursor-style` | `cursorStyle` | `block`・`bar`・`underline`。`block_hollow` は `block` に置き換え、理由も表示する |
+| `cursor-style-blink` | `cursorBlink` | `true`・`false` を写す |
+
+テーマが無ければ「テーマが見つからない」、`macos-option-as-alt` は「terp は常に Meta」として写さない。`bold-color`・`faint-opacity`・`window-padding-balance`・`keybind` など、表に無い項目は「terp に無い」と表示する。数値や真偽の形式を読めない項目も、理由を付けて写さない。`config-file` は読み取りの指示として処理する。
+
+確認欄は変わる項目のラベルと前後の値、写さない項目と理由、読んだファイルのパスを表示する。同じ値は差分から除き、差分が無ければ「変わる項目はない」として取り込めない。「やめる」は保存せず、「取り込む」は差分をまとめて `updateConfig` で保存し、設定欄を描き直す。設定が見つからない場合は入口を無効にして理由を表示する。
+
+取り込みは1回きりとし、以後は terp の設定を正とする。Ghostty の設定を監視すると、terp の画面で直した値が上書きされるため、継続的な同期は行わない。保存後は既存の terp の設定監視を通して、開いている端末へ反映する。
+
+`TERP_SELFTEST_GHOSTTY=1` は一時フォルダの `TERP_CONFIG_DIR` を必須とする。偽の Ghostty 設定とテーマを作り、追加ファイル・差分・理由・取り消し・保存・端末と余白への反映・再取り込み・入口の欠落を確かめる。`TERP_GHOSTTY_CONFIG` は試験中だけ一時ファイルへ向ける。
 
 ## 設定の画面
 
@@ -339,7 +380,7 @@ terp を閉じても開き直しても、シェルと中のプログラム（cla
 | ① | 1 枚のターミナルで `claude`・`codex` が動く | 済（自己診断で確認） |
 | ② | 複数枚と切り替え、左の一覧、新規作成のボタン | 済（`⌘P` を除く。自己診断で確認） |
 | ③ | 新規作成と設定ファイル | 設定ファイル・テーマ・透過は済（自己診断で確認）。`⌘N`・プロファイル・起動時の並べ直しは未着手 |
-| ④ | テーマと Ghostty の設定の取り込み | テーマは済。Ghostty の設定の取り込みは未着手 |
+| ④ | テーマと Ghostty の設定の取り込み | 済 |
 | ⑤ | 作業ごとの worktree | 済（自己診断で確認） |
 | ⑥ | セッションの保持 | 済（自己診断で確認。claude の再開は会話の ID の拾い方だけ確認） |
 | ⑦ | git の管理（変更の差分・ステージ・コミット・プッシュ・プル） | 済（自己診断で確認） |

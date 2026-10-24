@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld('terp', {
   rawConfig: () => ipcRenderer.invoke('config:raw'),
   updateConfig: (patch) => ipcRenderer.invoke('config:update', patch),
   listThemes: () => ipcRenderer.invoke('config:themes'),
+  ghosttyConfig: () => ipcRenderer.invoke('config:ghostty'),
   themeColors: (name) => ipcRenderer.invoke('config:theme-colors', name),
   generateTheme: (answers) => ipcRenderer.invoke('theme:generate', answers),
   saveTheme: (theme) => ipcRenderer.invoke('theme:save', theme),

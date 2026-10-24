@@ -5,6 +5,7 @@ const { pathToFileURL } = require('url');
 const fs = require('fs');
 const os = require('os');
 const config = require('./config');
+const ghostty = require('./ghostty');
 const { setBlur } = require('./blur');
 const projects = require('./projects');
 const gitops = require('./git');
@@ -210,6 +211,14 @@ const safe = (fn) => async (...args) => {
 ipcMain.handle('config:raw', safe(() => config.rawConfig()));
 ipcMain.handle('config:update', safe((_e, patch) => config.updateConfig(patch)));
 ipcMain.handle('config:themes', safe(() => config.listThemes()));
+ipcMain.handle('config:ghostty', safe(() => {
+  const home = os.homedir();
+  const paths = ghostty.ghosttyConfigPaths({ env: process.env, home });
+  const result = ghostty.readGhosttyConfig({ paths, home,
+    readFile: (file) => fs.readFileSync(file, 'utf8'), realpath: (file) => fs.realpathSync(file) });
+  const themes = new Set(config.listThemes());
+  return { files: result.files, ...ghostty.mapGhosttyConfig(result.entries, { themeExists: (name) => themes.has(name) }), current: config.rawConfig() };
+}));
 ipcMain.handle('config:theme-colors', safe((_e, name) => config.getThemeColors(name)));
 ipcMain.handle('theme:generate', safe((_e, answers) => themegen.generate(answers)));
 ipcMain.handle('theme:save', safe((_e, theme) => themegen.saveTheme(theme)));

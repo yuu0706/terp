@@ -18,6 +18,11 @@ const DEFAULT_CONFIG = {
   accent: null,
   fontFamily: '"JetBrains Mono", Menlo, "Hiragino Sans", monospace',
   fontSize: 14,
+  paddingX: 10,
+  paddingY: 8,
+  minimumContrast: 1,
+  cursorStyle: 'block',
+  cursorBlink: false,
   // 背景の不透明度（0〜1）とぼかし（true か半径）。Ghostty の background-opacity・background-blur に当たる
   backgroundOpacity: 1,
   backgroundBlur: false,
@@ -161,6 +166,24 @@ function ensureConfigFile() {
   fs.writeFileSync(CONFIG_PATH, JSON.stringify(DEFAULT_CONFIG, null, 2) + '\n');
 }
 
+const TERMINAL_VALIDATORS = {
+  paddingX: (v) => Number.isInteger(v) && v >= 0 && v <= 40,
+  paddingY: (v) => Number.isInteger(v) && v >= 0 && v <= 40,
+  minimumContrast: (v) => typeof v === 'number' && Number.isFinite(v) && v >= 1 && v <= 21,
+  cursorStyle: (v) => ['block', 'bar', 'underline'].includes(v),
+  cursorBlink: (v) => typeof v === 'boolean',
+};
+
+function normalizeTerminalConfig(config) {
+  let error = null;
+  for (const [key, valid] of Object.entries(TERMINAL_VALIDATORS)) {
+    if (valid(config[key])) continue;
+    config[key] = DEFAULT_CONFIG[key];
+    error = error || `${key} の値を確認する。既定の値で動作中`;
+  }
+  return error;
+}
+
 // 読めないときは error を付けて既定の値で返す。画面はその error を表示する
 function loadConfig() {
   let user = {};
@@ -171,6 +194,8 @@ function loadConfig() {
     if (err.code !== 'ENOENT') error = `config.json を読めません: ${err.message}`;
   }
   const config = { ...DEFAULT_CONFIG, ...user };
+  const terminalError = normalizeTerminalConfig(config);
+  error = error || terminalError;
 
   let theme = BUILTIN_THEME;
   try {
@@ -181,6 +206,11 @@ function loadConfig() {
   return {
     error,
     font: { family: config.fontFamily, size: config.fontSize },
+    paddingX: config.paddingX,
+    paddingY: config.paddingY,
+    minimumContrast: config.minimumContrast,
+    cursorStyle: config.cursorStyle,
+    cursorBlink: config.cursorBlink,
     window: {
       opacity: Math.min(1, Math.max(0.2, Number(config.backgroundOpacity) || 1)),
       // true は Ghostty と同じく半径 20。数値ならその半径
@@ -246,6 +276,7 @@ function updateConfig(patch) {
     if (value === null) delete next[key];
     else {
       if (key === 'agents') validateAgents(value);
+      if (TERMINAL_VALIDATORS[key] && !TERMINAL_VALIDATORS[key](value)) throw new Error(`${key} の値を確認する`);
       next[key] = value;
     }
   }
@@ -264,7 +295,9 @@ function rawConfig() {
   } catch {
     // 読めないときは既定の値を出す。画面の警告は loadConfig の error が出す
   }
-  return { ...DEFAULT_CONFIG, ...user };
+  const config = { ...DEFAULT_CONFIG, ...user };
+  normalizeTerminalConfig(config);
+  return config;
 }
 
 // 選べるテーマの名前。探す場所の順に並べ、同じ名前は先に見つかった方だけ

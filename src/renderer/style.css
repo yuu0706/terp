@@ -865,7 +865,7 @@ button.subagent:hover,
 .term {
   position: absolute;
   inset: 0;
-  padding: 0 var(--term-padding-x) var(--term-padding-y);
+  padding: var(--term-padding-y) var(--term-padding-x);
 }
 
 .term[hidden],
@@ -996,6 +996,28 @@ button.subagent:hover,
   justify-content: flex-end;
   gap: var(--space-2);
   margin-top: var(--space-1);
+}
+
+.ghostty-import {
+  max-height: calc(100vh - var(--space-3) * 2);
+  overflow: hidden;
+}
+
+.ghostty-import .dialog__body {
+  max-height: calc(100vh - var(--space-3) * 6);
+}
+
+.ghostty-import__detail {
+  overflow: auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  overflow-wrap: anywhere;
+}
+
+.ghostty-import__detail > * {
+  flex-shrink: 0;
 }
 
 /* ---- 右の「変更」の面 ---- */

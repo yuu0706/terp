@@ -188,6 +188,81 @@ async function runSettingsTest({ win, js, check, outDir }) {
   check('Esc で閉じる', await js(`document.getElementById('settings').hidden`));
 }
 
+// TERP_SELFTEST_GHOSTTY は、一時フォルダの設定だけで差分・保存・端末への反映を確かめる
+async function runGhosttyTest({ win, js, check }) {
+  const { CONFIG_PATH, CONFIG_DIR } = require('./config');
+  const temporary = fs.realpathSync(os.tmpdir()) + path.sep;
+  if (!process.env.TERP_CONFIG_DIR || !fs.realpathSync(CONFIG_DIR).startsWith(temporary)) {
+    throw new Error('Ghostty の自己診断には一時フォルダの TERP_CONFIG_DIR が必要');
+  }
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'terp-ghostty-'));
+  const previous = process.env.TERP_GHOSTTY_CONFIG;
+  const original = fs.readFileSync(CONFIG_PATH, 'utf8');
+  const theme = 'terp-selftest-ghostty';
+  const themePath = path.join(CONFIG_DIR, 'themes', theme);
+  const saved = () => JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+  const open = async () => { win.webContents.send('menu', 'settings'); await sleep(900); };
+  try {
+    fs.mkdirSync(path.dirname(themePath), { recursive: true });
+    fs.writeFileSync(themePath, 'background = #202020\nforeground = #eeeeee\n');
+    process.env.TERP_GHOSTTY_CONFIG = path.join(dir, 'config');
+    fs.writeFileSync(process.env.TERP_GHOSTTY_CONFIG, [
+      '# 読み取りの確認', 'config-file = extra', 'font-size = 12',
+      'font-family = "Test Mono"', `theme = light:X,dark:${theme}`,
+      'window-padding-x = 4,12', 'window-padding-y = 6,14',
+      'cursor-style = bar', 'cursor-style-blink = true', 'bold-color = #ffffff', 'macos-option-as-alt = true',
+    ].join('\n'));
+    fs.writeFileSync(path.join(dir, 'extra'), [
+      'font-family = "Test Fallback"', 'font-size = 19', 'minimum-contrast = 4.5',
+      'background-opacity = 0.8', 'background-blur = 12', 'config-file = ?missing', 'config-file = config',
+    ].join('\n'));
+    fs.writeFileSync(CONFIG_PATH, '{}\n');
+    await sleep(500);
+    await open();
+    await js(`document.getElementById('ghostty-import-open').click()`);
+    await sleep(500);
+    const preview = await js(`document.getElementById('ghostty-import-detail').textContent`);
+    check('取り込みの差分をラベルと前後の値で表示する', preview.includes('文字の大きさ: 14 → 19') && preview.includes('余白（左右）: 10 → 8'));
+    check('写さない項目に理由を表示する', preview.includes('bold-color = #ffffff — terp に無い') && preview.includes('macos-option-as-alt = true — terp は常に Meta'));
+    check('読んだファイルを表示する', preview.includes(process.env.TERP_GHOSTTY_CONFIG) && preview.includes(path.join(dir, 'extra')));
+    const beforeCancel = fs.readFileSync(CONFIG_PATH, 'utf8');
+    await js(`document.getElementById('ghostty-import-cancel').click()`);
+    await sleep(250);
+    check('やめるでは保存しない', fs.readFileSync(CONFIG_PATH, 'utf8') === beforeCancel && !(await js(`!!document.getElementById('ghostty-import-dialog')`)));
+    await js(`document.getElementById('ghostty-import-open').click()`);
+    await sleep(400);
+    await js(`document.getElementById('ghostty-import-apply').click()`);
+    await sleep(1200);
+    const values = saved();
+    check('取り込んだ値を設定ファイルに書く', values.theme === theme && values.fontSize === 19 && values.paddingX === 8 && values.paddingY === 10 && values.minimumContrast === 4.5 && values.cursorStyle === 'bar' && values.cursorBlink === true && values.backgroundOpacity === 0.8 && values.backgroundBlur === 12);
+    check('フォントの順と日本語の代替フォントを保つ', values.fontFamily === '"Test Mono", "Test Fallback", Menlo, "Hiragino Sans", monospace');
+    check('端末に文字・コントラスト・カーソルを反映する', await js(`(() => {
+      const terminals = [...window.__terp.sessions.values()].map((s) => s.term.options);
+      return terminals.length > 0 && terminals.every((o) => o.fontSize === 19 && o.minimumContrastRatio === 4.5 && o.cursorStyle === 'bar' && o.cursorBlink === true);
+    })()`));
+    check('余白の CSS 変数を反映する', await js(`(() => {
+      const style = getComputedStyle(document.documentElement);
+      return style.getPropertyValue('--term-padding-x').trim() === '8px' && style.getPropertyValue('--term-padding-y').trim() === '10px';
+    })()`));
+    check('設定の欄を描き直す', await js(`document.getElementById('setting-fontSize').value === '19' && document.getElementById('setting-cursorStyle').value === 'bar'`));
+    await js(`document.getElementById('ghostty-import-open').click()`);
+    await sleep(400);
+    check('取り込み直後は差分がなく取り込めない', await js(`document.getElementById('ghostty-import-detail').textContent.includes('変わる項目はない') && document.getElementById('ghostty-import-apply').disabled`));
+    await js(`document.getElementById('ghostty-import-cancel').click()`);
+    await js(`document.getElementById('settings-close').click()`);
+    process.env.TERP_GHOSTTY_CONFIG = path.join(dir, 'missing');
+    await open();
+    check('設定が見つからなければボタンを押せず理由を表示する', await js(`document.getElementById('ghostty-import-open').disabled && document.getElementById('ghostty-import-status').textContent === 'Ghostty の設定が見つからない'`));
+    await js(`document.getElementById('settings-close').click()`);
+  } finally {
+    if (previous === undefined) delete process.env.TERP_GHOSTTY_CONFIG;
+    else process.env.TERP_GHOSTTY_CONFIG = previous;
+    fs.writeFileSync(CONFIG_PATH, original);
+    fs.rmSync(themePath, { force: true });
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 // TERP_SELFTEST_AGENTSTATUS は、名前を実際に拾える偽 CLI でエージェントの表示と移動を確かめる。
 async function runAgentStatusTest({ win, js, check, outDir }) {
   const { CONFIG_PATH } = require('./config');
@@ -2053,6 +2128,13 @@ exports.run = (win) => {
 
     if (process.env.TERP_SELFTEST_NOTIFY) {
       await runNotifyTest({ win, js, check, outDir });
+      fs.writeFileSync(path.join(outDir, 'result.txt'), log.join('\n') + '\n');
+      await finish();
+      return;
+    }
+
+    if (process.env.TERP_SELFTEST_GHOSTTY) {
+      await runGhosttyTest({ win, js, check, outDir });
       fs.writeFileSync(path.join(outDir, 'result.txt'), log.join('\n') + '\n');
       await finish();
       return;

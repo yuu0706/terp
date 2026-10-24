@@ -18,6 +18,7 @@ export const SECTIONS = [
     id: 'appearance',
     label: '外観',
     fields: [
+      { type: 'ghostty' },
       {
         key: 'theme',
         label: 'テーマ',
@@ -31,6 +32,13 @@ export const SECTIONS = [
       { key: 'accent', label: '強調色', type: 'color', help: '新しいターミナルのボタンや未読の印の色。既定に戻すとテーマのカーソルの色になる' },
       { key: 'fontFamily', label: 'フォント', type: 'text', help: 'CSS の font-family の書き方で、使いたい順に並べる' },
       { key: 'fontSize', label: '文字の大きさ', type: 'number', min: 9, max: 32, step: 1, unit: 'px' },
+      { key: 'paddingX', label: '余白（左右）', type: 'number', min: 0, max: 40, step: 1, unit: 'px' },
+      { key: 'paddingY', label: '余白（上下）', type: 'number', min: 0, max: 40, step: 1, unit: 'px' },
+      { key: 'minimumContrast', label: '最小のコントラスト', type: 'number', min: 1, max: 21, step: 0.1 },
+      { key: 'cursorStyle', label: 'カーソルの形', type: 'select', options: () => [
+        { value: 'block', label: '四角' }, { value: 'bar', label: '縦線' }, { value: 'underline', label: '下線' },
+      ] },
+      { key: 'cursorBlink', label: 'カーソルを点滅', type: 'toggle' },
       {
         key: 'backgroundOpacity',
         label: '背景の不透明度',
@@ -189,6 +197,7 @@ export function closeSettings() {
   registryStatuses = null;
   registryChecking = false;
   cancelThemeAi();
+  document.getElementById('ghostty-import-dialog')?.close();
   overlay.hidden = true;
   onClose();
 }
@@ -257,6 +266,7 @@ async function renderSection() {
 
 // 種類ごとの部品。どれも { el, } を返し、変えたら save を呼ぶ
 const FIELD_TYPES = {
+  ghostty: createGhosttyImport,
   theme: createThemePicker,
   registry: createAgentRegistry,
   async select(field, value, id) {
@@ -421,7 +431,7 @@ async function renderField(field) {
   row.className = 'settings__field';
   const id = `setting-${field.key || field.label}`;
   const control = await FIELD_TYPES[field.type](field, values[field.key], id);
-  if (field.type !== 'action' && field.type !== 'registry') {
+  if (!['action', 'registry', 'ghostty'].includes(field.type)) {
     const label = document.createElement('label');
     label.className = 'settings__label';
     label.htmlFor = id;
@@ -785,6 +795,116 @@ async function createAgentRegistry() {
   wrap.append(heading, rows, add);
   // renderField の後で DOM に追加されるため、描画は呼び出し側で行う
   return wrap;
+}
+
+async function createGhosttyImport() {
+  const wrap = element('div', 'settings__inline');
+  const button = element('button', 'btn', 'Ghostty から取り込む');
+  button.id = 'ghostty-import-open';
+  button.type = 'button';
+  button.disabled = true;
+  const state = element('span', 'settings__help', 'Ghostty の設定を確認中…');
+  state.id = 'ghostty-import-status';
+  state.setAttribute('aria-live', 'polite');
+  wrap.append(button, state);
+  const available = await terp.ghosttyConfig();
+  button.disabled = available.ok && !available.value.files.length;
+  state.textContent = !available.ok ? available.error : button.disabled ? 'Ghostty の設定が見つからない' : '';
+  button.addEventListener('click', async () => {
+    button.disabled = true;
+    state.textContent = 'Ghostty の設定を読み込み中…';
+    try {
+      const res = await terp.ghosttyConfig();
+      if (!wrap.isConnected) return;
+      if (!res.ok) { state.textContent = res.error; return; }
+      if (!res.value.files.length) {
+        state.textContent = 'Ghostty の設定が見つからない';
+        return;
+      }
+      state.textContent = '';
+      openGhosttyImport(res.value);
+    } catch (err) {
+      state.textContent = `Ghostty の設定を読めない: ${err.message}`;
+    } finally {
+      button.disabled = state.textContent === 'Ghostty の設定が見つからない';
+    }
+  });
+  return wrap;
+}
+
+function openGhosttyImport({ changes, skipped, files, current: before }) {
+  if (document.getElementById('ghostty-import-dialog')) return;
+  const fields = SECTIONS.flatMap((section) => section.fields);
+  const different = Object.entries(changes).filter(([key, value]) => value !== before[key]);
+  const display = (key, value) => {
+    const field = fields.find((f) => f.key === key);
+    if (key === 'cursorStyle') return ({ block: '四角', bar: '縦線', underline: '下線' })[value] || value;
+    if (typeof value === 'boolean') return value ? '有効' : '無効';
+    return field?.format ? field.format(value) : String(value ?? '内蔵の色');
+  };
+  const dialog = element('dialog', 'dialog ghostty-import');
+  dialog.id = 'ghostty-import-dialog';
+  const body = element('div', 'dialog__body');
+  const title = element('h2', 'dialog__title', 'Ghostty から取り込む');
+  title.id = 'ghostty-import-title';
+  dialog.setAttribute('aria-labelledby', title.id);
+  const actions = element('div', 'dialog__actions');
+  const cancel = element('button', 'btn', 'やめる');
+  cancel.id = 'ghostty-import-cancel';
+  const apply = element('button', 'btn btn--primary', '取り込む');
+  apply.id = 'ghostty-import-apply';
+  cancel.type = apply.type = 'button';
+  apply.disabled = !different.length;
+  actions.append(cancel, apply);
+  const detail = element('div', 'ghostty-import__detail');
+  detail.id = 'ghostty-import-detail';
+  detail.append(element('h3', 'settings__label', '変わる項目'));
+  if (!different.length) detail.append(element('p', 'dialog__note', '変わる項目はない'));
+  for (const [key, value] of different) {
+    const row = element('p', 'dialog__note', `${fields.find((f) => f.key === key)?.label || key}: ${display(key, before[key])} → ${display(key, value)}`);
+    row.dataset.key = key;
+    detail.append(row);
+  }
+  detail.append(element('h3', 'settings__label', '写さない項目'));
+  if (!skipped.length) detail.append(element('p', 'dialog__note', 'なし'));
+  for (const item of skipped) detail.append(element('p', 'dialog__note', `${item.key} = ${item.value} — ${item.reason}`));
+  detail.append(element('h3', 'settings__label', '読んだファイル'));
+  for (const file of files) detail.append(element('p', 'dialog__note', file));
+  const error = element('p', 'dialog__error');
+  error.setAttribute('role', 'alert');
+  body.append(title, actions, error, detail);
+  dialog.append(body);
+  let saving = false;
+  cancel.addEventListener('click', () => dialog.close());
+  dialog.addEventListener('keydown', (event) => event.stopPropagation());
+  dialog.addEventListener('cancel', (event) => { if (saving) event.preventDefault(); });
+  dialog.addEventListener('close', () => dialog.remove(), { once: true });
+  apply.addEventListener('click', async () => {
+    if (saving || !different.length) return;
+    saving = true;
+    apply.disabled = cancel.disabled = true;
+    apply.textContent = '取り込み中…';
+    try {
+      const res = await terp.updateConfig(Object.fromEntries(different));
+      if (!res.ok) { error.textContent = res.error; return; }
+      const raw = await terp.rawConfig();
+      values = raw.ok ? raw.value : { ...before, ...changes };
+      themeColorCache.clear();
+      dialog.close();
+      await renderSection();
+      showStatus('取り込みました');
+      document.getElementById('ghostty-import-open')?.focus();
+    } catch (err) {
+      error.textContent = `取り込めない: ${err.message}`;
+    } finally {
+      saving = false;
+      apply.disabled = cancel.disabled = false;
+      apply.textContent = '取り込む';
+    }
+  });
+  document.body.append(dialog);
+  dialog.showModal();
+  cancel.focus();
 }
 
 function element(tag, className, text) {

@@ -105,6 +105,8 @@ function applyConfig(c) {
   root.setProperty('--window-blur', `${c.window.blur}px`);
   showWallpaper();
   root.setProperty('--font-mono', c.font.family);
+  root.setProperty('--term-padding-x', `${c.paddingX}px`);
+  root.setProperty('--term-padding-y', `${c.paddingY}px`);
   for (const [key, value] of Object.entries(c.terminal)) root.setProperty(`--history-${key}`, value);
   configError.textContent = c.error || '';
   configError.hidden = !c.error;
@@ -116,6 +118,9 @@ function applyConfig(c) {
     s.term.options.theme = terminalTheme(c);
     s.term.options.fontFamily = c.font.family;
     s.term.options.fontSize = c.font.size;
+    s.term.options.minimumContrastRatio = c.minimumContrast;
+    s.term.options.cursorStyle = c.cursorStyle;
+    s.term.options.cursorBlink = c.cursorBlink;
     if (!s.el.hidden) s.fit.fit();
   }
 }
@@ -1661,6 +1666,9 @@ function buildTerminal() {
     allowTransparency: true,
     fontFamily: config.font.family,
     fontSize: config.font.size,
+    minimumContrastRatio: config.minimumContrast,
+    cursorStyle: config.cursorStyle,
+    cursorBlink: config.cursorBlink,
     macOptionIsMeta: true,
     macOptionClickForcesSelection: true,
     scrollback: 10000,
