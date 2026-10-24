@@ -1421,6 +1421,38 @@ async function runGitTest({ win, js, check, outDir }) {
 // TERP_SELFTEST_HISTORY は一時リポジトリだけにコミットし、履歴の閲覧を確かめる
 // TERP_SELFTEST_WALLPAPER は、全画面に入ったときの壁紙を窓の後ろに敷くことを確かめる。
 // 本物の全画面は Space を切り替えて利用者の画面を動かすため、全画面に入ったときと同じ合図を送って確かめる
+// TERP_SELFTEST_KEYS は、行の編集のキー（⌥←→・⌘←→・⌘⌫）が zsh で効くことを確かめる
+async function runKeysTest({ js, check }) {
+  const id = await js('window.__terp.activeId');
+  const key = (k, mods) => js(`window.__terp.sessions.get(${id}).term.textarea.dispatchEvent(new KeyboardEvent('keydown', { key: ${JSON.stringify(k)}, bubbles: true, cancelable: true, ...${JSON.stringify(mods)} }))`);
+  const type = (text) => js(`window.terp.write(${id}, ${JSON.stringify(text)})`);
+  const line = async () => {
+    await sleep(400);
+    return js(`window.__terp.bufferText(${id}).trimEnd().split('\\n').at(-1)`);
+  };
+  await sleep(1500);
+  await type('echo abc def');
+  await key('ArrowLeft', { altKey: true });
+  await type('X');
+  check('⌥← で1語戻る', (await line()).endsWith('echo abc Xdef'), await line());
+  await key('ArrowRight', { altKey: true });
+  await type('Y');
+  check('⌥→ で1語進む', (await line()).endsWith('echo abc XdefY'), await line());
+  await key('ArrowLeft', { metaKey: true });
+  await type('Z');
+  check('⌘← で行の頭へ', (await line()).endsWith('Zecho abc XdefY'), await line());
+  await key('ArrowRight', { metaKey: true });
+  await type('W');
+  check('⌘→ で行の末尾へ', (await line()).endsWith('Zecho abc XdefYW'), await line());
+  await key('Backspace', { metaKey: true });
+  check('⌘⌫ で行の頭まで消す', /[%$#] ?$/.test(await line()), await line());
+  await type('echo q');
+  await key('ArrowLeft', { ctrlKey: true });
+  await type('R');
+  check('⌃← は xterm の既定のまま（単語の移動に変えない）', !(await line()).endsWith('echo Rq'), await line());
+  await type('\x15');
+}
+
 async function runWallpaperTest({ win, js, check, outDir }) {
   const wait = async (code) => {
     for (let i = 0; i < 100; i++) {
@@ -1965,6 +1997,13 @@ exports.run = (win) => {
       // 1 と 2 は常駐のプロセスを残したまま終わる（開き直しを確かめるため）
       if (process.env.TERP_SELFTEST_PERSIST === '3') await finish();
       else app.quit();
+      return;
+    }
+
+    if (process.env.TERP_SELFTEST_KEYS) {
+      await runKeysTest({ js, check });
+      fs.writeFileSync(path.join(outDir, 'result.txt'), log.join('\n') + '\n');
+      await finish();
       return;
     }
 

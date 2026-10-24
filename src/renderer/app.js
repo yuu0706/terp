@@ -1627,8 +1627,25 @@ function handleKey(s, event) {
     switchRecent();
     return false;
   }
+  // 行の編集のキーは iTerm2 の「自然な文字編集」・Terminal.app と同じ信号にする。
+  // xterm.js は ⌥← を ESC[1;3D で送るが、zsh・bash・claude はこれを単語の移動として受け取らない
+  const sequence = editingSequence(event);
+  if (sequence) {
+    event.preventDefault();
+    updateAgentStatus(s, { type: 'input' });
+    terp.write(s.id, sequence);
+    return false;
+  }
   // ⌘ の付くキーはメニュー（main.js）が受け取る
   return !event.metaKey;
+}
+
+// ⌥←→ は単語の移動（ESC b / ESC f）、⌘←→ は行の頭と末尾（^A / ^E）、⌘⌫ は行の頭まで消す（^U）
+function editingSequence(event) {
+  if (event.shiftKey || event.ctrlKey) return null;
+  if (event.altKey && !event.metaKey) return { ArrowLeft: '\x1bb', ArrowRight: '\x1bf' }[event.key] || null;
+  if (event.metaKey && !event.altKey) return { ArrowLeft: '\x01', ArrowRight: '\x05', Backspace: '\x15' }[event.key] || null;
+  return null;
 }
 
 function buildTerminal() {

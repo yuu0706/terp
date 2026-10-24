@@ -47,6 +47,9 @@ notify.init({ getWindow: () => win, toWindow });
 // 起動元（npm・Electron・Claude Code）の環境変数をシェルへ持ち込まない
 function shellEnv() {
   const env = { ...process.env };
+  // npm・npx は EDITOR が無いと EDITOR=vi を足す（npm の設定 editor の既定）。シェルに渡すと zsh が vi の打ち方で始まり、
+  // ⌥← などの行の編集が効かなくなる（2026-10-24 観測）。npm から起動したときの vi だけを外し、他の値は残す
+  if (env.npm_execpath && env.EDITOR === 'vi') delete env.EDITOR;
   for (const key of Object.keys(env)) {
     if (/^(ELECTRON_|npm_|CLAUDECODE$|CLAUDE_CODE_|NODE_OPTIONS$)/.test(key)) delete env[key];
   }

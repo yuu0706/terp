@@ -32,9 +32,9 @@ terp は、ターミナルを複数開いて素早く切り替えるための ma
 
 - シェルはログインシェル（`$SHELL -l`）で起動する。Finder から起動したアプリは PATH を引き継がないため。
 - 環境変数: `TERM=xterm-256color`、`COLORTERM=truecolor`、`TERM_PROGRAM=terp`。`LANG` が UTF-8 でなければ `ja_JP.UTF-8` にする。
-- 起動元の環境変数（`ELECTRON_*`・`npm_*`・`CLAUDECODE`・`CLAUDE_CODE_*`・`NODE_OPTIONS`）はシェルへ渡さない。
+- 起動元の環境変数（`ELECTRON_*`・`npm_*`・`CLAUDECODE`・`CLAUDE_CODE_*`・`NODE_OPTIONS`）はシェルへ渡さない。npm・npx から起動したときに npm が足す `EDITOR=vi` も渡さない。渡すと zsh が vi の打ち方で始まり、行の編集のキーが効かなくなる。
 - 文字幅は Unicode 11 の規則に従う（Unicode11 アドオン）。
-- キー: ⌘ の付くキーはアプリが受け取り、それ以外はすべてシェルへ送る。Option は Meta として扱う。Shift+Enter は ESC + CR を送る（`claude` の改行。VS Code の `/terminal-setup` と同じ）。
+- キー: ⌘ の付くキーはアプリが受け取り、それ以外はすべてシェルへ送る。Option は Meta として扱う。Shift+Enter は ESC + CR を送る（`claude` の改行。VS Code の `/terminal-setup` と同じ）。行の編集のキーは iTerm2 の「自然な文字編集」・Terminal.app に合わせる: ⌥←→ は単語の移動（`ESC b`・`ESC f`。xterm.js の既定の `ESC[1;3D` は zsh・bash・claude が単語の移動として受け取らない）、⌘←→ は行の頭と末尾（`^A`・`^E`）、⌘⌫ は行の頭まで消す（`^U`）。⌃←→ は xterm.js の既定（`ESC[1;5D`）のまま（macOS が Space の切り替えに使うことが多い）。
 - URL はクリックで既定のブラウザで開く。
 
 ## 切り替え（柱 1）
