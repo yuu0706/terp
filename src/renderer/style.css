@@ -49,6 +49,22 @@ body {
   display: flex;
 }
 
+/* 全画面のときに窓の後ろへ敷く壁紙。透過していないときは上の面に隠れて見えない。
+   ぼかしは窓のぼかしと同じ半径。縁がぼけて透けないよう少し大きく敷く */
+#wallpaper {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background: center / cover no-repeat;
+  filter: blur(var(--window-blur, 0px));
+  transform: scale(1.06);
+}
+
+#wallpaper[hidden] {
+  display: none;
+}
+
 /* ---- 左の一覧 ---- */
 #sidebar {
   width: var(--sidebar-width);

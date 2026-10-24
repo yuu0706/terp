@@ -18,6 +18,7 @@ const files = require('./files');
 const snapshot = require('./snapshot');
 const tabs = require('./tabs');
 const notify = require('./notify');
+const wallpaper = require('./wallpaper');
 const agentreply = require('./agentreply');
 const { PtyClient } = require('./ptyclient');
 
@@ -440,6 +441,13 @@ function createWindow() {
     closeRequest = { id, timer: setTimeout(() => finishClose(true), 2000) };
     toWindow('window:close-request', id);
   });
+  // 全画面の Space には壁紙も他の窓も無いため、透過していても灰色の板になる。壁紙を画面に敷いて透けて見せる
+  win.on('enter-full-screen', () => {
+    wallpaper.wallpaperDataUrl(win.getBounds())
+      .then((url) => toWindow('fullscreen:wallpaper', url))
+      .catch(() => {});
+  });
+  win.on('leave-full-screen', () => toWindow('fullscreen:wallpaper', null));
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
   win.once('ready-to-show', () => {
     setBlur(win, initial.window.blur);

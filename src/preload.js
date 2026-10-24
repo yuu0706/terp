@@ -28,6 +28,7 @@ contextBridge.exposeInMainWorld('terp', {
   setMeta: (id, meta) => ipcRenderer.send('pty:meta', id, meta),
   shutdownHost: () => ipcRenderer.invoke('pty:shutdown-host'),
   onHostStale: (fn) => ipcRenderer.on('host-stale', () => fn()),
+  onWallpaper: (fn) => ipcRenderer.on('fullscreen:wallpaper', (_e, url) => fn(url)),
   write: (id, data) => ipcRenderer.send('pty:write', id, data),
   resize: (id, cols, rows) => ipcRenderer.send('pty:resize', id, cols, rows),
   kill: (id) => ipcRenderer.send('pty:kill', id),

@@ -102,6 +102,8 @@ function applyConfig(c) {
   for (const [key, value] of Object.entries(c.chrome)) root.setProperty(`--color-${key}`, value);
   root.setProperty('--surface-term', withAlpha(c.chrome['term-bg'], c.window.opacity));
   root.setProperty('--surface-sidebar', withAlpha(c.chrome.bg, c.window.opacity));
+  root.setProperty('--window-blur', `${c.window.blur}px`);
+  showWallpaper();
   root.setProperty('--font-mono', c.font.family);
   for (const [key, value] of Object.entries(c.terminal)) root.setProperty(`--history-${key}`, value);
   configError.textContent = c.error || '';
@@ -1890,6 +1892,20 @@ terp.onData((id, data) => {
 
 terp.onExit((id) => removeSession(id));
 terp.onConfig(applyConfig);
+// 全画面のときだけ、窓の後ろに壁紙を敷く（本体の wallpaper.js）。透過していないときは出さない
+const wallpaperEl = document.createElement('div');
+wallpaperEl.id = 'wallpaper';
+wallpaperEl.hidden = true;
+document.body.prepend(wallpaperEl);
+let wallpaperUrl = null;
+function showWallpaper() {
+  wallpaperEl.style.backgroundImage = wallpaperUrl ? `url("${wallpaperUrl}")` : '';
+  wallpaperEl.hidden = !wallpaperUrl || config.window.opacity >= 1;
+}
+terp.onWallpaper((url) => {
+  wallpaperUrl = url;
+  showWallpaper();
+});
 terp.onNotification((id) => {
   if (sessions.has(id)) activateKey(termKey(id));
 });

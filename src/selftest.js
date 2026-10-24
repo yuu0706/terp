@@ -1419,6 +1419,35 @@ async function runGitTest({ win, js, check, outDir }) {
 }
 
 // TERP_SELFTEST_HISTORY は一時リポジトリだけにコミットし、履歴の閲覧を確かめる
+// TERP_SELFTEST_WALLPAPER は、全画面に入ったときの壁紙を窓の後ろに敷くことを確かめる。
+// 本物の全画面は Space を切り替えて利用者の画面を動かすため、全画面に入ったときと同じ合図を送って確かめる
+async function runWallpaperTest({ win, js, check, outDir }) {
+  const wait = async (code) => {
+    for (let i = 0; i < 100; i++) {
+      if (await js(code)) return true;
+      await sleep(50);
+    }
+    return false;
+  };
+  const visible = "(() => { const el = document.getElementById('wallpaper'); return !el.hidden && getComputedStyle(el).backgroundImage.startsWith('url(\"data:image/jpeg'); })()";
+  await js(`window.terp.updateConfig({ backgroundOpacity: 0.6, backgroundBlur: 10 })`);
+  await wait('window.__terp.config.window.opacity === 0.6');
+  const url = await require('./wallpaper').wallpaperDataUrl(win.getBounds());
+  check('いまの壁紙を JPEG にして読める', url.startsWith('data:image/jpeg;base64,') && url.length > 1000);
+  win.webContents.send('fullscreen:wallpaper', url);
+  check('全画面に入ると壁紙を後ろに敷く', await wait(visible));
+  check('壁紙に窓と同じぼかしを掛ける', await js("getComputedStyle(document.getElementById('wallpaper')).filter === 'blur(10px)'"));
+  await sleep(700);
+  fs.writeFileSync(path.join(outDir, 'wallpaper.png'), (await win.webContents.capturePage()).toPNG());
+  await js(`window.terp.updateConfig({ backgroundOpacity: null })`);
+  check('不透明にすると壁紙を出さない', await wait("document.getElementById('wallpaper').hidden"));
+  await js(`window.terp.updateConfig({ backgroundOpacity: 0.6 })`);
+  check('透過に戻すと壁紙を出し直す', await wait(visible));
+  win.webContents.send('fullscreen:wallpaper', null);
+  check('全画面を出ると壁紙を外す', await wait("document.getElementById('wallpaper').hidden"));
+  await js(`window.terp.updateConfig({ backgroundOpacity: null, backgroundBlur: null })`);
+}
+
 async function runHistoryTest({ win, js, check, outDir }) {
   const { execFileSync } = require('child_process');
   const sh = (args, cwd) => execFileSync('git', ['-c', 'core.hooksPath=/dev/null', '-c', 'commit.gpgSign=false', ...args], { cwd, encoding: 'utf8' }).trim();
@@ -1936,6 +1965,13 @@ exports.run = (win) => {
       // 1 と 2 は常駐のプロセスを残したまま終わる（開き直しを確かめるため）
       if (process.env.TERP_SELFTEST_PERSIST === '3') await finish();
       else app.quit();
+      return;
+    }
+
+    if (process.env.TERP_SELFTEST_WALLPAPER) {
+      await runWallpaperTest({ win, js, check, outDir });
+      fs.writeFileSync(path.join(outDir, 'result.txt'), log.join('\n') + '\n');
+      await finish();
       return;
     }
 
