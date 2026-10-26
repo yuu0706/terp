@@ -2241,9 +2241,26 @@ button.subagent:hover,
   overflow: hidden;
 }
 
-.pane__close {
+.pane__lock {
   flex: none;
   margin-left: auto;
+  visibility: hidden;
+}
+
+/* 固定していない枠の錠は、見出しにマウスを載せたときとキーボードで選んだときだけ出す */
+.pane__title:hover .pane__lock,
+.pane__lock:focus-visible,
+.pane[data-locked='true'] .pane__lock {
+  visibility: visible;
+}
+
+.pane[data-locked='true'] .pane__lock { color: var(--color-accent); }
+
+/* 開いた錠。固定すると掛け金を下ろす */
+.pane:not([data-locked='true']) .pane__lock-shackle { transform: translate(3px, -2px); }
+
+.pane__close {
+  flex: none;
   background: transparent;
 }
 

@@ -447,6 +447,7 @@ function buildMenu() {
         { label: '右の枠', accelerator: 'CmdOrCtrl+Alt+Right', click: send('pane-right') },
         { label: '上の枠', accelerator: 'CmdOrCtrl+Alt+Up', click: send('pane-up') },
         { label: '下の枠', accelerator: 'CmdOrCtrl+Alt+Down', click: send('pane-down') },
+        { label: '今の枠を固定', click: send('toggle-lock') },
         { type: 'separator' },
         ...selectItems,
       ],

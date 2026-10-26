@@ -1776,6 +1776,50 @@ async function runShortcutsTest({ win, js, check, outDir }) {
   fs.rmSync(dir, { recursive: true, force: true });
 }
 
+// TERP_SELFTEST_LOCK は、枠の固定（VS Code のグループのロック）を確かめる。固定した枠はタブを切り替えても中身が変わらない
+async function runLockTest({ win, js, check, outDir }) {
+  const menu = async (label) => {
+    const { Menu } = require('electron');
+    Menu.getApplicationMenu().items.flatMap((top) => top.submenu.items).find((entry) => entry.label === label).click();
+    await sleep(400);
+  };
+  const panes = () => js(`window.__terp.layout() && (() => { const list = []; const walk = (n) => n.type === 'pane' ? list.push(n) : n.children.forEach(walk); walk(window.__terp.layout()); return list; })()`);
+  await sleep(1500);
+  const t1 = await js('window.__terp.activeId');
+  const t2 = await js('window.__terp.open()');
+  const t3 = await js('window.__terp.open()');
+  await js(`window.__terp.activateKey('t:${t1}')`);
+  await menu('右に分割');
+  await sleep(600);
+  await js(`window.__terp.activateKey('t:${t1}')`);
+  const left = (await panes()).find((p) => p.key === `t:${t1}`).id;
+  await js(`document.querySelector('.pane[data-pane-id="${left}"] .pane__lock').click()`);
+  await sleep(200);
+  const locked = await js(`({ data: document.querySelector('.pane[data-pane-id="${left}"]').dataset.locked,
+    pressed: document.querySelector('.pane[data-pane-id="${left}"] .pane__lock').getAttribute('aria-pressed') })`);
+  check('錠のボタンで枠を固定できる', (await panes()).find((p) => p.id === left).locked === true && locked.data === 'true' && locked.pressed === 'true', JSON.stringify(locked));
+  await js(`window.__terp.activateKey('t:${t2}')`);
+  await sleep(300);
+  let list = await panes();
+  check('固定した枠でタブを切り替えると、中身は変わらず隣の枠に出る',
+    list.find((p) => p.id === left).key === `t:${t1}` && list.find((p) => p.id !== left).key === `t:${t2}`, JSON.stringify(list));
+  check('タブを出した枠に移る', (await js('window.__terp.activePaneId')) !== left);
+  await sleep(300);
+  fs.writeFileSync(path.join(outDir, 'pane-lock.png'), (await win.webContents.capturePage()).toPNG());
+  await menu('今の枠を固定');
+  await js(`window.__terp.activateKey('t:${t3}')`);
+  await sleep(400);
+  list = await panes();
+  check('全部の枠が固定なら、枠を足して出す', list.length === 3 && list.some((p) => p.key === `t:${t1}`) && list.some((p) => p.key === `t:${t2}`) && list.some((p) => p.key === `t:${t3}` && !p.locked), JSON.stringify(list));
+  check('すでに表示しているタブを選ぶと、その枠に移るだけ', await js(`(window.__terp.activateKey('t:${t1}'), window.__terp.activePaneId === ${JSON.stringify(left)})`));
+  await sleep(600);
+  const saved = JSON.parse(fs.readFileSync(path.join(require('./config').CONFIG_DIR, 'tabs.json'), 'utf8'));
+  check('固定が tabs.json に残る', JSON.stringify(saved.layout).split('"locked":true').length - 1 === 2);
+  await js(`document.querySelector('.pane[data-pane-id="${left}"] .pane__lock').click()`);
+  await sleep(200);
+  check('もう一度押すと固定が外れる', !(await panes()).find((p) => p.id === left).locked);
+}
+
 // TERP_SELFTEST_KEYS は、行の編集のキー（⌥←→・⌘←→・⌘⌫）と Shift+Enter が zsh で効くことを確かめる
 async function runKeysTest({ win, js, check }) {
   const id = await js('window.__terp.activeId');
@@ -2653,6 +2697,12 @@ exports.run = (win) => {
     }
     if (process.env.TERP_SELFTEST_SHORTCUTS) {
       await runShortcutsTest({ win, js, check, outDir });
+      fs.writeFileSync(path.join(outDir, 'result.txt'), log.join('\n') + '\n');
+      await finish();
+      return;
+    }
+    if (process.env.TERP_SELFTEST_LOCK) {
+      await runLockTest({ win, js, check, outDir });
       fs.writeFileSync(path.join(outDir, 'result.txt'), log.join('\n') + '\n');
       await finish();
       return;

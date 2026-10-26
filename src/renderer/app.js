@@ -10,7 +10,7 @@ import { initFilesPanel, refreshFiles, setFilesVisible, markActiveFile } from '.
 import { renderFileView, applyEditorConfig } from './fileview.js';
 import { createPathLinkProvider } from './pathlinks.js';
 import { initSettings, openSettings, applySettingsConfig, agentIcon } from './settings.js';
-import { createPane, paneList, splitPane, closePane, replacePane, restoreLayout, createPaneView, makeTabDraggable, paneTitle, MAX_PANES } from './panes.js';
+import { createPane, paneList, splitPane, closePane, replacePane, setPaneLocked, openPaneFor, restoreLayout, createPaneView, makeTabDraggable, paneTitle, MAX_PANES } from './panes.js';
 import { terminalPaths, pathDropTarget, pathsFromTransfer } from './droppaths.js';
 import { withAlpha, favoriteText } from './favcolor.js';
 import { STAR_ICON, favoriteLabel, createMenu, createWorkspaceUI } from './workspaceui.js';
@@ -86,6 +86,7 @@ const panes = createPaneView(paneHost, {
   canDropPaths: (id) => Boolean(dropTargetOf(id)),
   onDropPaths: (dataTransfer, id, event) => dropPaths(id, pathsFromTransfer(dataTransfer, terp.pathForFile), event),
   onResize: (next) => { layout = next; syncPanes(); saveTabs(); },
+  onLock: (id) => togglePaneLock(id),
 });
 // 途中の状態で控えを上書きすると、まだ開き直していないファイルが消える
 let restoringTabs = true;
@@ -1631,7 +1632,17 @@ function activateKey(key, focus = true) {
   if (workspace && workspace !== activeWorkspace) switchWorkspace(workspace);
   const existing = paneList(layout).find((p) => p.key === key);
   if (existing) activePaneId = existing.id;
-  else layout = replacePane(layout, activePaneId, key);
+  else {
+    // 今の枠が固定なら、固定していない枠に出す。全部固定なら右に枠を足す（枠が上限なら今の枠に出す）
+    const target = openPaneFor(layout, activePaneId);
+    if (target) {
+      activePaneId = target;
+      layout = replacePane(layout, target, key);
+    } else if (paneList(layout).length < MAX_PANES) {
+      layout = splitPane(layout, activePaneId, key, 'right');
+      activePaneId = paneList(layout).find((p) => p.key === key).id;
+    } else layout = replacePane(layout, activePaneId, key);
+  }
   activeKey = key;
   recent = [key, ...recent.filter((k) => k !== key)];
   target.lastActive = Date.now();
@@ -1653,6 +1664,14 @@ function activateKey(key, focus = true) {
   refreshFiles(false);
   markActiveFile();
   renderAll();
+  saveTabs();
+}
+
+function togglePaneLock(id = activePaneId) {
+  const pane = paneList(layout).find((p) => p.id === id);
+  if (!pane) return;
+  layout = setPaneLocked(layout, id, !pane.locked);
+  syncPanes();
   saveTabs();
 }
 
@@ -2478,6 +2497,9 @@ terp.onMenu((action, arg) => {
       break;
     case 'reopen':
       reopenClosed();
+      break;
+    case 'toggle-lock':
+      togglePaneLock();
       break;
     case 'save':
       if (activeKey?.startsWith('f:')) fileViews.get(activeKey.slice(2))?.view?.save();

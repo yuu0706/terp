@@ -50,6 +50,22 @@ export function closePane(tree, id) {
   return remove(tree) || createPane(null, tree.id || id);
 }
 
+// 固定した枠（VS Code のグループのロック）は、タブを切り替えても中身を差し替えない
+export function setPaneLocked(tree, id, locked) {
+  return mapPane(tree, id, (pane) => {
+    const { locked: _drop, ...rest } = pane;
+    return locked ? { ...rest, locked: true } : rest;
+  });
+}
+
+// タブを開く枠を選ぶ。今の枠が固定なら、固定していない枠のうち並びの先のもの。全部固定なら null
+export function openPaneFor(tree, activeId) {
+  const list = paneList(tree);
+  const active = list.find((p) => p.id === activeId);
+  if (active && !active.locked) return active.id;
+  return list.find((p) => !p.locked)?.id ?? null;
+}
+
 export function replacePane(tree, id, key) {
   if (!paneList(tree).some((p) => p.id === id)) return tree;
   const source = paneList(tree).find((p) => p.key === key && p.id !== id);
@@ -105,7 +121,8 @@ export function restoreLayout(value, keys, { transient = false } = {}) {
       let id = typeof node.id === 'string' && node.id ? node.id : `pane-${count}`;
       while (ids.has(id)) id += '-restored';
       ids.add(id);
-      return createPane(node.key, id);
+      const pane = createPane(node.key, id);
+      return node.locked === true ? { ...pane, locked: true } : pane;
     }
     if (node.type !== 'split' || !['row', 'column'].includes(node.dir) || !Array.isArray(node.children)) return null;
     const kept = node.children.slice(0, MAX_PANES).map((child, i) => ({ node: read(child, depth + 1), size: node.sizes?.[i] })).filter((c) => c.node);
@@ -137,7 +154,7 @@ function minimumSize(tree, dir, gutter) {
   return tree.dir === dir ? values.reduce((a, b) => a + b, 0) + gutter * (values.length - 1) : Math.max(...values);
 }
 
-export function createPaneView(host, { onActivate, onClose, onDrop, onResize, canDropPaths, onDropPaths, onRename }) {
+export function createPaneView(host, { onActivate, onClose, onDrop, onResize, canDropPaths, onDropPaths, onRename, onLock }) {
   let tree;
   let signature;
   const elements = new Map();
@@ -170,10 +187,15 @@ export function createPaneView(host, { onActivate, onClose, onDrop, onResize, ca
       close.title = '枠を閉じる';
       close.innerHTML = '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>';
       close.addEventListener('click', (e) => { e.stopPropagation(); onClose(node.id); });
+      const lock = document.createElement('button');
+      lock.type = 'button';
+      lock.className = 'pane__lock icon-btn';
+      lock.innerHTML = '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2" /><path class="pane__lock-shackle" d="M8 11V7a4 4 0 0 1 8 0v4" /></svg>';
+      lock.addEventListener('click', (e) => { e.stopPropagation(); onLock?.(node.id); });
       const title = document.createElement('header');
       title.className = 'pane__title';
       title.innerHTML = '<span class="session__dot" hidden></span><span class="pane__name"></span><span class="pane__detail"></span>';
-      title.append(close);
+      title.append(lock, close);
       title.addEventListener('dblclick', (event) => {
         if (!event.target.closest('button, input')) onRename?.(node.id, title.querySelector('.pane__name'));
       });
@@ -279,6 +301,12 @@ export function createPaneView(host, { onActivate, onClose, onDrop, onResize, ca
         if (!panes.some((p) => p.id === id)) { el.remove(); elements.delete(id); continue; }
         el.dataset.active = String(id === activeId);
         el.querySelector('.pane__close').hidden = panes.length === 1;
+        const locked = Boolean(panes.find((p) => p.id === id)?.locked);
+        const lock = el.querySelector('.pane__lock');
+        el.dataset.locked = String(locked);
+        lock.setAttribute('aria-pressed', String(locked));
+        lock.title = locked ? '枠の固定を外す' : '枠を固定（タブを切り替えても中身を変えない）';
+        lock.setAttribute('aria-label', locked ? '枠の固定を外す' : '枠を固定');
       }
       host.dataset.split = String(panes.length > 1);
       host.firstElementChild.style.minWidth = `${minimumSize(tree, 'row', gutterSize())}px`;
