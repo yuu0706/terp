@@ -13,6 +13,7 @@ import { createPane, paneList, splitPane, closePane, replacePane, restoreLayout,
 import { terminalPaths, pathDropTarget, pathsFromTransfer } from './droppaths.js';
 import { withAlpha, favoriteText } from './favcolor.js';
 import { STAR_ICON, favoriteLabel, createMenu, createWorkspaceUI } from './workspaceui.js';
+import { createOverview } from './overview.js';
 
 const terp = window.terp;
 // 枠の外でも Finder のファイルで窓が遷移しないよう、既定の動作を止める。
@@ -94,6 +95,17 @@ let focusForTest = null;
 // 背景は奥の面（body の --surface-term）1枚で塗る。端末側でも塗ると、透過のときに2枚重なって濃くなる
 function terminalTheme(c) {
   return { ...c.terminal, background: 'rgba(0, 0, 0, 0)' };
+}
+
+function bufferText(id, { visible = false } = {}) {
+  const s = sessions.get(id);
+  if (!s) return '';
+  const buf = s.term.buffer.active;
+  const start = visible ? buf.viewportY : 0;
+  const end = visible ? Math.min(buf.length, start + s.term.rows) : buf.length;
+  const lines = [];
+  for (let i = start; i < end; i++) lines.push(buf.getLine(i).translateToString(true));
+  return lines.join('\n').replace(/\n+$/, '');
 }
 
 // 設定（色・フォント・透過）を、開いている端末・エディタ・枠に反映する
@@ -586,6 +598,39 @@ const workspaceUI = createWorkspaceUI({
       await refreshProjects();
     }
   },
+});
+
+const overview = createOverview({
+  host: workspaceUI.button.parentElement,
+  snapshot: () => {
+    const ordered = [...workspaces.filter((w) => w.id === activeWorkspace), ...workspaces.filter((w) => w.id !== activeWorkspace)];
+    const list = allSessionsInListOrder();
+    return {
+      workspaces: ordered,
+      activeId,
+      items: ordered.flatMap((w) => list.filter((s) => s.workspace === w.id)).map((s) => {
+        const work = workOf(s);
+        const repo = projects.find((p) => p.path === work?.repo && p.workspace === s.workspace);
+        return { id: s.id, workspace: s.workspace, name: displayName(s), favorite: s.favorite,
+          repoPath: repo?.path || null, repoName: repo?.name || '', branch: work?.branch || '',
+          cwd: s.cwd, workPath: work?.path || '', current: s.workspace === activeWorkspace && terminalVisible(s) };
+      }),
+    };
+  },
+  preview: (id) => bufferText(id, { visible: true }).split('\n').slice(-8).join('\n'),
+  renderStatus: (tile, item) => {
+    const s = sessions.get(item.id);
+    renderStatus(tile, s, stateOf(s));
+  },
+  star: STAR_ICON,
+  activate,
+  restoreFocus: () => {
+    const view = viewOf(activeKey);
+    if (view?.term) view.term.focus();
+    else if (view?.view?.editor) view.view.editor.focus();
+    else view?.el.querySelector('.fileview__body, .subagent-view__body, .commit-view__body')?.focus({ preventScroll: true });
+  },
+  beforeOpen: () => { rowMenu.close(); workspaceUI.menu.close(); closeTabMenu(); },
 });
 
 function moveWorkspaceMenu(current, run) {
@@ -2257,6 +2302,11 @@ terp.onInfo((info) => {
 });
 
 terp.onMenu((action, arg) => {
+  if (action === 'overview') { overview.toggle(); return; }
+  if (overview.open) {
+    if (action === 'select-all') overview.selectAll();
+    return;
+  }
   // ファイルのタブを表示している間は、端末向けの操作（消去・すべて選択）を端末に向けない
   const s = activeKey?.startsWith('t:') ? sessions.get(activeId) : null;
   switch (action) {
@@ -2438,12 +2488,7 @@ window.__terp = {
   openWorkDialog,
   openRemoveDialog,
   workOf: (id) => workOf(sessions.get(id))?.path || null,
-  bufferText(id) {
-    const buf = sessions.get(id).term.buffer.active;
-    const lines = [];
-    for (let i = 0; i < buf.length; i++) lines.push(buf.getLine(i).translateToString(true));
-    return lines.join('\n').replace(/\n+$/, '');
-  },
+  bufferText,
 };
 
 applyConfig(config);

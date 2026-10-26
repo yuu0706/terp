@@ -1972,6 +1972,138 @@ async function runWorkspaceTest({ js, check, outDir }) {
   }
 }
 
+// TERP_SELFTEST_OVERVIEW は、一時フォルダの端末で一覧・検索・所属をまたぐ移動を確かめる。
+async function runOverviewTest({ win, js, check, outDir }) {
+  const { CONFIG_DIR } = require('./config');
+  if (!process.env.TERP_CONFIG_DIR || path.resolve(CONFIG_DIR) === path.join(os.homedir(), '.config/terp')) throw new Error('全体の一覧の自己診断には一時フォルダの TERP_CONFIG_DIR が必要');
+  const { execFileSync } = require('child_process');
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'terp-overview-')));
+  const wait = async (condition) => {
+    for (let i = 0; i < 200; i++) { if (await condition()) return; await sleep(50); }
+    throw new Error('全体の一覧の自己診断で応答を待ち切れなかった');
+  };
+  const menu = require('electron').Menu.getApplicationMenu().items.find((item) => item.label === '移動');
+  const item = menu?.submenu.items.find((entry) => entry.label === '全体の一覧');
+  if (!item) throw new Error('全体の一覧のメニューが無い');
+  const opened = () => js('document.getElementById("overview").open');
+  const selected = () => js('Number(document.querySelector(".overview__tile[aria-selected=true]")?.dataset.id)');
+  const tileIds = () => js('[...document.querySelectorAll(".overview__tile")].map((tile) => Number(tile.dataset.id))');
+  const press = async (key) => {
+    win.webContents.sendInputEvent({ type: 'keyDown', keyCode: key });
+    win.webContents.sendInputEvent({ type: 'keyUp', keyCode: key });
+    await sleep(50);
+  };
+  const query = async (value) => {
+    await js('document.getElementById("overview-query").focus(); document.getElementById("overview-query").select()');
+    if (value) await win.webContents.insertText(value);
+    else await press('Backspace');
+  };
+  const openMenu = async () => { item.click(); await wait(opened); };
+  const escape = async () => { await press('Escape'); await wait(async () => !(await opened())); };
+  try {
+    const repo = path.join(dir, 'overview-repo');
+    const loose = path.join(dir, 'loose-location');
+    fs.mkdirSync(repo);
+    fs.mkdirSync(loose);
+    execFileSync('git', ['init', '-q', '-b', 'overview-branch'], { cwd: repo });
+    const first = await js('window.__terp.activeWorkspace');
+    await js(`window.__terp.addProject(${JSON.stringify(repo)})`);
+    const a = await js(`window.__terp.open(${JSON.stringify(repo)})`);
+    const b = await js(`window.__terp.open(${JSON.stringify(loose)})`);
+    const second = await js('window.__terp.createWorkspace("一覧の別の作業")');
+    const c = await js(`window.__terp.open(${JSON.stringify(loose)})`);
+    for (const [id, mark] of [[a, 'A'], [b, 'B'], [c, 'C']]) {
+      await js(`window.__terp.rename(${id}, ${JSON.stringify(`一覧の確認 ${mark}`)})`);
+      await js(`window.terp.write(${id}, ${JSON.stringify(`printf 'OVERVIEW-%s\\n' '${mark}'\r`)})`);
+      await wait(() => js(`window.__terp.bufferText(${id}).includes(${JSON.stringify(`OVERVIEW-${mark}`)})`));
+    }
+    const fake = path.join(dir, 'claude');
+    const node = execFileSync('/bin/zsh', ['-lc', 'command -v node'], { encoding: 'utf8' }).trim();
+    fs.copyFileSync(node, fake);
+    fs.chmodSync(fake, 0o755);
+    const script = path.join(dir, 'waiting.js');
+    fs.writeFileSync(script, "process.stdout.write('overview-agent-ready\\nOVERVIEW-C\\n'); require('readline').createInterface({ input: process.stdin }).on('line', () => process.stdout.write('\\x1b]9;Claude needs your permission to use Bash\\x07'));\n");
+    const quote = (value) => "'" + value.replace(/'/g, "'\\''") + "'";
+    await js(`window.terp.write(${c}, ${JSON.stringify(`${quote(fake)} ${quote(script)}\r`)})`);
+    await wait(() => js(`window.__terp.sessions.get(${c}).program === 'claude' && window.__terp.bufferText(${c}).includes('overview-agent-ready')`));
+    await js(`window.__terp.switchWorkspace(${JSON.stringify(first)}); window.__terp.activate(${a}); window.__terp.toggleSessionFavorite(${a})`);
+    check('メニューに ⌘M が割り当てられている', item.accelerator === 'CmdOrCtrl+M');
+    check('一覧のボタンに ⌘M が見える', await js('document.getElementById("overview-open").textContent.includes("⌘M")'));
+    await openMenu();
+    check('端末に焦点があるときもメニューで開ける', await opened());
+    check('開くと検索欄に焦点がある', await js('document.activeElement.id === "overview-query"'));
+    check('全所属の端末が重複せずに出る', await js('JSON.stringify([...document.querySelectorAll(".overview__tile")].map((tile) => Number(tile.dataset.id)).sort((a, b) => a - b)) === JSON.stringify([...window.__terp.sessions.keys()].sort((a, b) => a - b))'));
+    check('表示中のターミナルが選ばれ、枠と星が付く', (await selected()) === a && await js(`document.querySelector('.overview__tile[data-id="${a}"]').getAttribute('aria-current') === 'true' && !document.querySelector('.overview__tile[data-id="${a}"] .overview__star').hidden`));
+    check('表示中の所属を先頭にして所属ごとにまとめる', await js(`(() => {
+      const groups = [...document.querySelectorAll('.overview__workspace')];
+      return groups[0].dataset.workspace === ${JSON.stringify(first)} && groups.some((el) => el.dataset.workspace === ${JSON.stringify(second.id)})
+        && [...document.querySelectorAll('.overview__tile')].every((el) => el.closest('.overview__workspace').dataset.workspace === window.__terp.sessions.get(Number(el.dataset.id)).workspace);
+    })()`));
+    check('リポジトリとその他のターミナルを分ける', await js(`document.querySelector('.overview__tile[data-id="${a}"]').closest('.overview__repo').dataset.repo === ${JSON.stringify(repo)} && document.querySelector('.overview__tile[data-id="${b}"]').closest('.overview__repo').dataset.repo === ''`));
+    check('全所属の縮小画面に出力の末尾が出る', await js(`[[${a}, 'A'], [${b}, 'B'], [${c}, 'C']].every(([id, mark]) => document.querySelector('.overview__tile[data-id="' + id + '"] .overview__preview').textContent.includes('OVERVIEW-' + mark))`));
+    await win.webContents.capturePage().then((img) => fs.writeFileSync(path.join(outDir, 'overview.png'), img.toPNG()));
+    await escape();
+    check('Esc で閉じる', !(await opened()));
+    await js('document.getElementById("overview-open").click()');
+    await wait(opened);
+    check('ボタンで開く', await opened());
+    await escape();
+    check('ボタンで開いた一覧も Esc で閉じる', !(await opened()));
+    await openMenu();
+    item.click();
+    await wait(async () => !(await opened()));
+    check('もう一度 ⌘M のメニューで閉じる', !(await opened()));
+
+    await openMenu();
+    await query('一覧の確認');
+    check('名前で絞り込む', JSON.stringify((await tileIds()).sort((x, y) => x - y)) === JSON.stringify([a, b, c].sort((x, y) => x - y)));
+    const initial = await selected();
+    await press('Down');
+    check('検索欄から矢印キーで選びを動かす', (await selected()) !== initial);
+    for (let i = 0; i < 5 && (await selected()) !== c; i++) await press('Down');
+    check('見た目の下方向へ進むと別の所属の端末を選べる', (await selected()) === c);
+    await press('Return');
+    await wait(async () => !(await opened()) && await js(`window.__terp.activeId === ${c}`));
+    check('Enter で閉じて別のワークスペースへ移る', (await js('window.__terp.activeWorkspace')) === second.id);
+    await openMenu();
+    check('切り替えた所属が先頭になり、移った端末を選ぶ', (await selected()) === c && await js(`document.querySelector('.overview__workspace').dataset.workspace === ${JSON.stringify(second.id)}`));
+    await query('確認 c');
+    check('英字の大小を区別せず絞り込む', JSON.stringify(await tileIds()) === JSON.stringify([c]));
+    await query('OVERVIEW-REPO');
+    check('リポジトリ名で絞り込む', JSON.stringify(await tileIds()) === JSON.stringify([a]));
+    await query('overview-branch');
+    check('ブランチ名で絞り込む', JSON.stringify(await tileIds()) === JSON.stringify([a]));
+    await query('loose-location');
+    check('作業場所で絞り込む', JSON.stringify((await tileIds()).sort((x, y) => x - y)) === JSON.stringify([b, c].sort((x, y) => x - y)));
+    await query('一致しない端末名');
+    check('一致しないと空の文を出す', (await tileIds()).length === 0 && await js('!document.querySelector(".overview__empty").hidden && document.querySelector(".overview__empty").textContent === "合うターミナルはない"'));
+    await press('Return');
+    check('一致しないと Enter で移動しない', await opened());
+    await query('');
+    await js(`document.querySelector('.overview__tile[data-id="${a}"]').click()`);
+    await wait(async () => !(await opened()));
+    check('クリックでも所属をまたいで移る', await js(`window.__terp.activeId === ${a} && window.__terp.activeWorkspace === ${JSON.stringify(first)}`));
+
+    await openMenu();
+    await js(`window.__terp.sessions.get(${c}).term.input('permission\\r', true)`);
+    await wait(() => js(`document.querySelector('.overview__tile[data-id="${c}"]').dataset.agentState === 'waiting'`));
+    check('裏の許可待ちが定期更新で印に反映される', await js(`document.querySelector('.overview__tile[data-id="${c}"] .session__dot').textContent === '!' && document.querySelector('.overview__tile[data-id="${c}"] .session__dot').getAttribute('aria-label') === '許可待ち'`));
+    check('定期更新で選びと入力の焦点を失わない', (await selected()) === a && await js('document.activeElement.id === "overview-query"'));
+    await escape();
+    await js('Promise.all([...window.__terp.sessions.keys()].map((id) => window.terp.kill(id)))');
+    await wait(() => js('window.__terp.sessions.size === 0'));
+    await openMenu();
+    check('端末が無いときの文を出す', await js('!document.querySelector(".overview__empty").hidden && document.querySelector(".overview__empty").textContent === "ターミナルはない"'));
+    await js('document.querySelector(".overview__list").click()');
+    check('背景を押すと閉じる', !(await opened()));
+  } finally {
+    await js('document.getElementById("overview").dispatchEvent(new Event("cancel", { cancelable: true }))');
+    await js('Promise.all([...window.__terp.sessions.keys()].map((id) => window.terp.kill(id)))');
+    await sleep(300);
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 // TERP_SELFTEST_WORK を付けると、一時フォルダに git のリポジトリを作り、作業（worktree）の
 // 追加・作成・振り分け・削除を確かめる。TERP_CONFIG_DIR に一時フォルダを指定すること
 async function runWorkTest({ win, js, check, outDir }) {
@@ -2354,6 +2486,13 @@ exports.run = (win) => {
       await runAgentsTest({ win, js, check, outDir });
       fs.writeFileSync(path.join(outDir, 'result.txt'), log.join('\n') + '\n');
       await win.webContents.capturePage().then((img) => fs.writeFileSync(path.join(outDir, 'agents.png'), img.toPNG()));
+      await finish();
+      return;
+    }
+
+    if (process.env.TERP_SELFTEST_OVERVIEW) {
+      await runOverviewTest({ win, js, check, outDir });
+      fs.writeFileSync(path.join(outDir, 'result.txt'), log.join('\n') + '\n');
       await finish();
       return;
     }

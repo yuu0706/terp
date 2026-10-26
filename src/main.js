@@ -430,6 +430,7 @@ function buildMenu() {
     {
       label: '移動',
       submenu: [
+        { label: '全体の一覧', accelerator: 'CmdOrCtrl+M', click: send('overview') },
         // ⌃Tab は端末が先に受け取るため、画面側で処理し、メニューには表示だけする
         { label: '直前のタブ', accelerator: 'Ctrl+Tab', registerAccelerator: false, click: send('recent') },
         { label: '前のタブ', accelerator: 'CmdOrCtrl+Shift+[', click: send('prev') },
