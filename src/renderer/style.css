@@ -373,19 +373,19 @@ body {
   opacity: 0.6;
 }
 
-:is(.session, .overview__tile)[data-state='busy'] .session__dot {
+:is(.session, .overview__tile, .pane__title)[data-state='busy'] .session__dot {
   background: var(--color-busy);
   border-color: var(--color-busy);
   opacity: 1;
 }
 
-:is(.session, .overview__tile)[data-state='unread'] .session__dot {
+:is(.session, .overview__tile, .pane__title)[data-state='unread'] .session__dot {
   background: var(--color-accent);
   border-color: var(--color-accent);
   opacity: 1;
 }
 
-:is(.session, .overview__tile)[data-state='notify'] .session__dot {
+:is(.session, .overview__tile, .pane__title)[data-state='notify'] .session__dot {
   background: var(--color-warning);
   border-color: var(--color-warning);
   opacity: 1;
@@ -793,8 +793,8 @@ button.subagent:hover,
   opacity: 1;
 }
 
-/* エージェントの印は一覧・タブ・作業の行で共通にする。 */
-:is(.session, .tab, .work__status, .overview__tile)[data-agent-state] .session__dot {
+/* エージェントの印は一覧・タブ・作業の行・枠の帯で共通にする。 */
+:is(.session, .tab, .work__status, .overview__tile, .pane__title)[data-agent-state] .session__dot {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -809,21 +809,21 @@ button.subagent:hover,
   line-height: 1;
 }
 
-:is(.session, .tab, .work__status, .overview__tile)[data-agent-state='working'] .session__dot {
+:is(.session, .tab, .work__status, .overview__tile, .pane__title)[data-agent-state='working'] .session__dot {
   border-color: var(--color-accent);
   border-right-color: transparent;
   opacity: 1;
   animation: agent-spin 1s linear infinite;
 }
 
-:is(.session, .tab, .work__status, .overview__tile)[data-agent-state='waiting'] .session__dot {
+:is(.session, .tab, .work__status, .overview__tile, .pane__title)[data-agent-state='waiting'] .session__dot {
   background: var(--history-yellow);
   border-color: var(--history-yellow);
   color: var(--color-bg);
   opacity: 1;
 }
 
-:is(.session, .tab, .work__status, .overview__tile)[data-agent-state='done'] .session__dot {
+:is(.session, .tab, .work__status, .overview__tile, .pane__title)[data-agent-state='done'] .session__dot {
   background: var(--history-green);
   border-color: var(--history-green);
   opacity: 1;
@@ -853,7 +853,7 @@ button.subagent:hover,
 @keyframes agent-spin { to { transform: rotate(360deg); } }
 @keyframes agent-pulse { 50% { opacity: 0.4; } }
 @media (prefers-reduced-motion: reduce) {
-  :is(.session, .tab, .work__status, .overview__tile)[data-agent-state='working'] .session__dot {
+  :is(.session, .tab, .work__status, .overview__tile, .pane__title)[data-agent-state='working'] .session__dot {
     animation: agent-pulse 2s ease-in-out infinite;
   }
 }
@@ -2153,6 +2153,8 @@ button.subagent:hover,
 
 .pane {
   position: relative;
+  display: flex;
+  flex-direction: column;
   width: 100%;
   height: 100%;
   min-width: 0;
@@ -2170,12 +2172,59 @@ button.subagent:hover,
   outline-offset: -1px;
 }
 
+.pane__title {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: var(--control-h);
+  padding: 0 var(--space-2);
+  border-bottom: 1px solid var(--color-border);
+  font-size: var(--text-sm);
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.panes[data-split='true'] .pane[data-active='true'] .pane__title {
+  border-bottom-color: var(--color-accent);
+}
+
+.pane__title .session__dot { flex: none; }
+.pane__title .session__dot[hidden] { display: none; }
+
+.pane__name,
+.pane__detail {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 名前を先に収め、補助の文字から縮める。固定の字数では切らない。 */
+.pane__name { flex: 0 1 auto; }
+.pane__detail {
+  flex: 1 1 0;
+  color: var(--color-text-muted);
+}
+
+.pane__title .pane__rename {
+  flex: 1;
+  font-size: var(--text-sm);
+  background: transparent;
+  border-radius: var(--radius);
+}
+
+.pane__body {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
 .pane__close {
-  position: absolute;
-  top: var(--space-1);
-  right: var(--space-1);
-  z-index: 1;
-  background: var(--color-bg);
+  flex: none;
+  margin-left: auto;
+  background: transparent;
 }
 
 .pane__close[hidden] { display: none; }
@@ -2191,7 +2240,7 @@ button.subagent:hover,
 .pane-gutter:hover,
 .panes[data-resizing] .pane-gutter { background: var(--color-accent); }
 .panes[data-resizing] { user-select: none; }
-.panes[data-resizing] .pane > :not(.pane__close) { pointer-events: none; }
+.panes[data-resizing] .pane__body { pointer-events: none; }
 
 .pane[data-drop]::after {
   content: '';

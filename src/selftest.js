@@ -950,6 +950,136 @@ async function runSplitTest({ win, js, check, outDir }) {
   check('右の枠のメニューで隣へ移る', (await js('window.__terp.activePaneId')) === right.id);
 }
 
+// TERP_SELFTEST_PANETITLE は、帯の更新・改名・分割・ファイル・端末の収まりを確かめる。
+async function runPaneTitleTest({ js, check }) {
+  if (!process.env.TERP_CONFIG_DIR) throw new Error('題名の帯の自己診断には一時フォルダの TERP_CONFIG_DIR が必要');
+  const { execFileSync } = require('child_process');
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'terp-pane-title-')));
+  const repo = path.join(dir, 'title-repo');
+  fs.mkdirSync(path.join(repo, 'src'), { recursive: true });
+  execFileSync('git', ['init', '-q', '-b', 'pane-title'], { cwd: repo });
+  const file = path.join(repo, 'src', 'sample.js');
+  fs.writeFileSync(file, 'const value = 1;\n');
+  const fake = path.join(dir, 'claude');
+  const node = execFileSync('/bin/zsh', ['-lc', 'command -v node'], { encoding: 'utf8' }).trim();
+  fs.copyFileSync(node, fake);
+  fs.chmodSync(fake, 0o755);
+  const script = path.join(dir, 'title-agent.js');
+  fs.writeFileSync(script, `require('child_process').execSync('stty -echo', { stdio: 'inherit' });
+const out = (text) => process.stdout.write(text);
+out('pane-title-ready\\n');
+require('readline').createInterface({ input: process.stdin }).on('line', (command) => {
+  if (command.startsWith('title ')) out('\\x1b]2;✳ ' + command.slice(6) + '\\x07');
+  if (command === 'work') out('\\x1b]2;⠂ 状態の確認\\x07');
+  if (command === 'permission') out('\\x1b]9;permission required\\x07');
+});
+`);
+  const quote = (value) => "'" + value.replace(/'/g, "'\\''") + "'";
+  const wait = async (condition) => {
+    for (let i = 0; i < 200; i++) { if (await condition()) return true; await sleep(50); }
+    throw new Error('題名の帯の自己診断で応答を待ち切れなかった');
+  };
+  const header = (id) => `window.__terp.sessions.get(${id}).el.closest('.pane').querySelector('.pane__title')`;
+  const input = (id, command) => js(`window.__terp.sessions.get(${id}).term.input(${JSON.stringify(command + '\r')}, true)`);
+  const name = (id) => js(`${header(id)}.querySelector('.pane__name')?.textContent`);
+  const leaves = () => js(`(() => {
+    const visit = (n) => n.type === 'pane' ? [n] : n.children.flatMap(visit);
+    return visit(window.__terp.layout());
+  })()`);
+  const rename = async (id, value, key = 'Enter') => {
+    await js(`${header(id)}.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))`);
+    await js(`(() => {
+      const field = ${header(id)}.querySelector('input');
+      field.value = ${JSON.stringify(value)};
+    })()`);
+    await sleep(650);
+    check('定期更新中も名前の入力を保つ', await js(`${header(id)}.querySelector('input')?.value === ${JSON.stringify(value)}`));
+    await js(`${header(id)}.querySelector('input').dispatchEvent(new KeyboardEvent('keydown', { key: ${JSON.stringify(key)}, bubbles: true }))`);
+  };
+  await js(`Promise.all(window.__terp.tabOrder.map((key) => window.__terp.closeKey(key)))`);
+  await wait(() => js('window.__terp.sessions.size === 0'));
+  const added = await js(`window.__terp.addProject(${JSON.stringify(repo)})`);
+  if (!added.ok) throw new Error(added.error);
+  const first = await js(`window.__terp.open(${JSON.stringify(repo)})`);
+  await wait(() => js(`window.__terp.bufferText(${first}).length > 0`));
+  await js(`window.terp.write(${first}, ${JSON.stringify(quote(fake) + ' ' + quote(script) + '\r')})`);
+  await wait(() => js(`window.__terp.sessions.get(${first}).program === 'claude' && window.__terp.bufferText(${first}).includes('pane-title-ready')`));
+  const longTitle = '枠の上端で長い会話の題名を最後まで確認し、端末とファイルを並べて作業するための表示と名前の変更の検証';
+  await input(first, 'title ' + longTitle);
+  await wait(async () => await name(first) === longTitle);
+  check('OSC 2 の長い題名を字数で切らず帯と title に出す', await js(`${header(first)}.querySelector('.pane__name').textContent === ${JSON.stringify(longTitle)} && ${header(first)}.title.includes(${JSON.stringify(longTitle)})`));
+  check('名前の省略は帯の実際の幅だけで決める', await js(`(() => {
+    const h = ${header(first)}, n = h.querySelector('.pane__name'), style = getComputedStyle(n);
+    return style.textOverflow === 'ellipsis' && style.whiteSpace === 'nowrap' && style.maxWidth === 'none'
+      && n.textContent === ${JSON.stringify(longTitle)} && n.getBoundingClientRect().width <= h.getBoundingClientRect().width;
+  })()`));
+  check('帯にプログラムとリポジトリとブランチ、説明にフルパスを出す', await js(`${header(first)}.querySelector('.pane__detail').textContent === 'claude · title-repo / pane-title' && ${header(first)}.title.includes('claude') && ${header(first)}.title.includes(${JSON.stringify(repo)})`));
+  await input(first, 'work');
+  await wait(() => js(`${header(first)}.dataset.agentState === 'working'`));
+  check('帯と一覧で状態の属性・印の見た目・読み上げ名を揃える', await js(`(() => {
+    const s = window.__terp.sessions.get(${first}), h = ${header(first)};
+    const a = h.querySelector('.session__dot'), b = s.li.querySelector('.session__dot');
+    return h.dataset.state === s.li.dataset.state && h.dataset.agentState === s.li.dataset.agentState
+      && a.getAttribute('aria-label') === b.getAttribute('aria-label')
+      && getComputedStyle(a).animationName === getComputedStyle(b).animationName
+      && getComputedStyle(a).borderTopColor === getComputedStyle(b).borderTopColor;
+  })()`));
+  await input(first, 'permission');
+  await wait(() => js(`${header(first)}.dataset.agentState === 'waiting'`));
+  check('状態の変化で許可待ちの印を更新する', await js(`${header(first)}.dataset.state === 'notify' && ${header(first)}.querySelector('.session__dot').textContent === '!'`));
+  await input(first, 'title ' + longTitle);
+  await wait(async () => await name(first) === longTitle);
+  await rename(first, '帯で変更した名前');
+  check('帯の改名を帯・タブ・一覧に反映する', await js(`${header(first)}.querySelector('.pane__name').textContent === '帯で変更した名前' && document.querySelector('.tab[data-key="t:${first}"] .tab__name').textContent === '帯で変更した名前' && window.__terp.sessions.get(${first}).li.querySelector('.session__name').textContent === '帯で変更した名前'`));
+  await rename(first, '取り消す名前', 'Escape');
+  check('Esc は改名を取り消す', await name(first) === '帯で変更した名前');
+  await rename(first, '');
+  check('空の名前は自動の題名へ戻す', await name(first) === longTitle && await js(`window.__terp.sessions.get(${first}).customName === null`));
+  const second = await js(`window.__terp.open(${JSON.stringify(repo)})`);
+  await js(`window.__terp.rename(${second}, '右の端末'); window.__terp.activate(${first})`);
+  const target = (await leaves())[0].id;
+  await js(`window.__terp.dropTab('t:${second}', ${JSON.stringify(target)}, 'right')`);
+  await wait(() => js(`document.querySelectorAll('#panes .pane__title').length === 2`));
+  check('左右の枠がそれぞれの名前を出す', await name(first) === longTitle && await name(second) === '右の端末');
+  check('分割中の操作中の帯の線を強調色に揃える', await js(`(() => {
+    const p = document.querySelector('.pane[data-active="true"]');
+    return getComputedStyle(p.querySelector('.pane__title')).borderBottomColor === getComputedStyle(p).outlineColor;
+  })()`));
+  check('× は帯の中に収まり文字と重ならず押せる', await js(`[...document.querySelectorAll('#panes .pane__title')].every((h) => {
+    const b = h.querySelector('.pane__close'), r = b.getBoundingClientRect(), t = h.getBoundingClientRect();
+    return !b.hidden && r.top >= t.top && r.bottom <= t.bottom && r.right <= t.right
+      && h.querySelector('.pane__name').getBoundingClientRect().right <= r.left
+      && document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)?.closest('button') === b;
+  })`));
+  await js(`new Promise((resolve) => {
+    const s = window.__terp.sessions.get(${first});
+    s.term.write('\\x1b[2J\\x1b[H\\x1b[' + s.term.rows + ';1H最終行の確認', resolve);
+  })`);
+  check('帯の下で fit し、端末の最終行まで本文の内側に収まる', await js(`(() => {
+    const s = window.__terp.sessions.get(${first}), p = s.el.closest('.pane');
+    const h = p.querySelector('.pane__title').getBoundingClientRect(), body = p.querySelector('.pane__body').getBoundingClientRect();
+    const r = s.el.querySelector('.xterm-screen').getBoundingClientRect(), box = p.getBoundingClientRect();
+    const fit = s.fit.proposeDimensions();
+    return body.top >= h.bottom && r.top >= body.top && r.bottom <= body.bottom + 1 && body.bottom <= box.bottom + 1
+      && s.term.rows === fit.rows && s.term.cols === fit.cols
+      && window.__terp.bufferText(${first}, { visible: true }).includes('最終行の確認');
+  })()`));
+  await js(`window.__terp.openFile(${JSON.stringify(file)})`);
+  await wait(() => js(`Boolean(window.__terp.editorOf(${JSON.stringify(file)}))`));
+  const fileHeader = `document.querySelector('.pane[data-active="true"] .pane__title')`;
+  check('ファイルの帯に名前と相対パスを出し、端末の状態を残さない', await js(`${fileHeader}.querySelector('.pane__name').textContent === 'sample.js' && ${fileHeader}.querySelector('.pane__detail').textContent === 'src/sample.js' && !${fileHeader}.hasAttribute('data-state') && ${fileHeader}.querySelector('.session__dot').hidden`));
+  await js(`${fileHeader}.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))`);
+  check('ファイルの帯では改名しない', await js(`!${fileHeader}.querySelector('input')`));
+  await js(`window.__terp.editorOf(${JSON.stringify(file)}).getModel().setValue('const value = 2;\\n')`);
+  await wait(() => js(`${fileHeader}.querySelector('.pane__name').textContent === 'sample.js ●'`));
+  check('未保存の印をタブと帯に揃える', await js(`document.querySelector('.tab[data-key="' + CSS.escape(${JSON.stringify('f:' + file)}) + '"] .tab__name').textContent === 'sample.js ●'`));
+  await js(`window.__terp.editorOf(${JSON.stringify(file)}).getModel().setValue('const value = 1;\\n')`);
+  await wait(() => js(`${fileHeader}.querySelector('.pane__name').textContent === 'sample.js'`));
+  await js(`document.querySelector('.pane[data-active="true"] .pane__close').click()`);
+  check('× で枠だけ閉じ、タブを残す', (await leaves()).length === 1 && await js(`window.__terp.tabOrder.includes(${JSON.stringify('f:' + file)})`));
+  check('1枠でも帯を保ち、× を隠す', await js(`document.querySelectorAll('#panes .pane__title').length === 1 && document.querySelector('.pane__close').hidden`));
+}
+
 // TERP_SELFTEST_DROPPATHS は、パスの入力・閲覧枠の除外・既存の分割との切り替えを確かめる。
 async function runDropPathsTest({ js, check, outDir }) {
   const { execFileSync } = require('child_process');
@@ -2463,6 +2593,13 @@ exports.run = (win) => {
 
     if (process.env.TERP_SELFTEST_DROPPATHS === '1') {
       await runDropPathsTest({ js, check, outDir });
+      fs.writeFileSync(path.join(outDir, 'result.txt'), log.join('\n') + '\n');
+      await finish();
+      return;
+    }
+
+    if (process.env.TERP_SELFTEST_PANETITLE) {
+      await runPaneTitleTest({ js, check, outDir });
       fs.writeFileSync(path.join(outDir, 'result.txt'), log.join('\n') + '\n');
       await finish();
       return;

@@ -9,7 +9,7 @@ import { initFilesPanel, refreshFiles, setFilesVisible, markActiveFile } from '.
 import { renderFileView, applyEditorConfig } from './fileview.js';
 import { createPathLinkProvider } from './pathlinks.js';
 import { initSettings, openSettings, applySettingsConfig, agentIcon } from './settings.js';
-import { createPane, paneList, splitPane, closePane, replacePane, restoreLayout, createPaneView, makeTabDraggable, MAX_PANES } from './panes.js';
+import { createPane, paneList, splitPane, closePane, replacePane, restoreLayout, createPaneView, makeTabDraggable, paneTitle, MAX_PANES } from './panes.js';
 import { terminalPaths, pathDropTarget, pathsFromTransfer } from './droppaths.js';
 import { withAlpha, favoriteText } from './favcolor.js';
 import { STAR_ICON, favoriteLabel, createMenu, createWorkspaceUI } from './workspaceui.js';
@@ -75,6 +75,10 @@ const viewStore = document.getElementById('view-store');
 const panes = createPaneView(paneHost, {
   onActivate: activatePane,
   onClose: closeWorkspacePane,
+  onRename: (id, name) => {
+    const key = paneList(layout).find((p) => p.id === id)?.key;
+    if (key?.startsWith('t:') && name) startRename(sessions.get(Number(key.slice(2))), name);
+  },
   onDrop: dropTabInPane,
   canDropPaths: (id) => Boolean(dropTargetOf(id)),
   onDropPaths: (dataTransfer, id, event) => dropPaths(id, pathsFromTransfer(dataTransfer, terp.pathForFile), event),
@@ -364,6 +368,7 @@ function renderAll() {
   renderWorkspaceStatuses();
   updateDockBadge();
   renderTabs(visible);
+  renderPaneTitles();
   empty.hidden = Boolean(activeKey);
 }
 
@@ -416,6 +421,35 @@ function renderTabs(visible) {
     }
   }
   tabsEl.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+}
+
+function renderPaneTitles() {
+  for (const pane of paneList(layout)) {
+    const header = panes.element(pane.id)?.querySelector('.pane__title');
+    if (!header) continue;
+    const key = pane.key;
+    const view = viewOf(key);
+    const terminal = Boolean(view && key.startsWith('t:'));
+    const file = Boolean(view && key.startsWith('f:'));
+    const text = paneTitle({
+      kind: terminal ? 'terminal' : file ? 'file' : 'record',
+      name: view ? tabLabel(key) : '',
+      program: terminal ? view.program : '',
+      cwd: terminal ? view.cwd : '', home: terp.home,
+      work: terminal ? workOf(view) : file ? workOfPath(key.slice(2), workspaceOfKey(key)) : null,
+      path: file ? key.slice(2) : '', dirty: file && view.view?.dirty,
+    });
+    header.title = text.title;
+    const name = header.querySelector('.pane__name');
+    if (name) name.textContent = text.name;
+    header.querySelector('.pane__detail').textContent = text.detail;
+    header.querySelector('.session__dot').hidden = !terminal;
+    if (terminal) renderStatus(header, view, stateOf(view));
+    else {
+      delete header.dataset.state;
+      delete header.dataset.agentState;
+    }
+  }
 }
 
 // ---- 作業（worktree） ----
@@ -1470,11 +1504,11 @@ function createItem(s) {
   return li;
 }
 
-function startRename(s) {
-  const name = s.li.querySelector('.session__name');
+function startRename(s, name = s.li.querySelector('.session__name')) {
   if (!name) return;
   const input = document.createElement('input');
-  input.className = 'session__rename';
+  input.className = name.classList.contains('pane__name') ? 'session__rename pane__rename' : 'session__rename';
+  const nameClass = name.className;
   input.value = displayName(s);
   input.setAttribute('aria-label', '名前');
   name.replaceWith(input);
@@ -1489,12 +1523,13 @@ function startRename(s) {
       terp.setMeta(s.id, { customName: s.customName });
     }
     const span = document.createElement('span');
-    span.className = 'session__name';
+    span.className = nameClass;
     input.replaceWith(span);
-    renderItem(s);
+    renderAll();
     s.term.focus();
   };
   input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); }
     if (e.key === 'Enter') finish(true);
     if (e.key === 'Escape') finish(false);
   });
@@ -1554,7 +1589,7 @@ function syncPanes() {
   for (const pane of paneList(layout)) {
     const view = viewOf(pane.key);
     if (!view) continue;
-    const el = panes.element(pane.id);
+    const el = panes.body(pane.id);
     if (view.el.parentElement !== el) el.appendChild(view.el);
     view.el.hidden = false;
     if (pane.key.startsWith('t:')) {
@@ -1562,8 +1597,9 @@ function syncPanes() {
       view.fit.fit();
     } else view.view?.editor?.layout();
   }
+  renderPaneTitles();
   const activePane = paneList(layout).find((p) => p.id === activePaneId);
-  if (activePane && !activePane.key) panes.element(activePane.id).appendChild(empty);
+  if (activePane && !activePane.key) panes.body(activePane.id).appendChild(empty);
   else if (empty.parentElement !== viewStore) viewStore.appendChild(empty);
   empty.hidden = Boolean(activeKey);
 }

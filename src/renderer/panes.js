@@ -5,6 +5,20 @@ export const MAX_PANES = 6;
 export const MIN_PANE_SIZE = 120;
 export const TAB_DRAG_TYPE = 'text/x-terp-tab';
 
+// 帯の文字は DOM と切り離し、名前の優先順は呼び出し側の displayName に任せる。
+export function paneTitle({ kind, name = '', program = '', cwd = '', home = '', work = null, path = '', dirty = false }) {
+  const short = (value) => home && (value === home || value.startsWith(home + '/')) ? '~' + value.slice(home.length) : value;
+  if (kind === 'terminal') {
+    const place = work ? `${work.repo.split('/').pop()} / ${work.branch || `（ブランチなし）${work.head}`}` : short(cwd);
+    return { name, detail: [program, place].filter(Boolean).join(' · '), title: [name, program, cwd].filter(Boolean).join('\n') };
+  }
+  if (kind === 'file') {
+    const relative = work && path.startsWith(work.path + '/') ? path.slice(work.path.length + 1) : short(path);
+    return { name: name + (dirty ? ' ●' : ''), detail: relative, title: [name + (dirty ? ' ●' : ''), path].filter(Boolean).join('\n') };
+  }
+  return { name, detail: '', title: name };
+}
+
 export function paneList(tree) {
   return !tree ? [] : tree.type === 'pane' ? [tree] : tree.children.flatMap(paneList);
 }
@@ -123,7 +137,7 @@ function minimumSize(tree, dir, gutter) {
   return tree.dir === dir ? values.reduce((a, b) => a + b, 0) + gutter * (values.length - 1) : Math.max(...values);
 }
 
-export function createPaneView(host, { onActivate, onClose, onDrop, onResize, canDropPaths, onDropPaths }) {
+export function createPaneView(host, { onActivate, onClose, onDrop, onResize, canDropPaths, onDropPaths, onRename }) {
   let tree;
   let signature;
   const elements = new Map();
@@ -156,7 +170,16 @@ export function createPaneView(host, { onActivate, onClose, onDrop, onResize, ca
       close.title = '枠を閉じる';
       close.innerHTML = '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>';
       close.addEventListener('click', (e) => { e.stopPropagation(); onClose(node.id); });
-      el.append(close);
+      const title = document.createElement('header');
+      title.className = 'pane__title';
+      title.innerHTML = '<span class="session__dot" hidden></span><span class="pane__name"></span><span class="pane__detail"></span>';
+      title.append(close);
+      title.addEventListener('dblclick', (event) => {
+        if (!event.target.closest('button, input')) onRename?.(node.id, title.querySelector('.pane__name'));
+      });
+      const body = document.createElement('div');
+      body.className = 'pane__body';
+      el.append(title, body);
       el.addEventListener('pointerdown', (e) => { if (!e.target.closest('.pane__close')) onActivate(node.id, false); }, true);
       el.addEventListener('focusin', () => onActivate(node.id, false));
       elements.set(node.id, el);
@@ -263,5 +286,6 @@ export function createPaneView(host, { onActivate, onClose, onDrop, onResize, ca
       setSizes(tree, host.firstElementChild);
     },
     element: (id) => elements.get(id),
+    body: (id) => elements.get(id)?.querySelector('.pane__body'),
   };
 }
