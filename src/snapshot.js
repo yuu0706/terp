@@ -1,5 +1,5 @@
 // 常駐のプロセスごと消えたとき（Mac の再起動など）に開き直すための控え（~/.config/terp/sessions.json）。
-// 作業場所・名前・claude の会話の ID だけを残す。画面の中身は残らない
+// 作業場所・名前・所属・お気に入り・claude の会話の ID を残す。画面の中身は残らない
 const fs = require('fs');
 const os = require('os');
 const path = require('path');

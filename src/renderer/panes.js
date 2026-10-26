@@ -77,7 +77,7 @@ export function resizeSplit(tree, path, index, delta, extent, minimums = []) {
 }
 
 // 壊れた控え・重複・消えたタブはここで落とし、1つの子だけ残った分割は畳む。
-export function restoreLayout(value, keys) {
+export function restoreLayout(value, keys, { transient = false } = {}) {
   const allowed = new Set(keys);
   const seen = new Set();
   const ids = new Set();
@@ -85,7 +85,7 @@ export function restoreLayout(value, keys) {
   const read = (node, depth = 0) => {
     if (!node || depth > 20 || count >= MAX_PANES) return null;
     if (node.type === 'pane') {
-      if (typeof node.key !== 'string' || node.key.startsWith('s:') || !allowed.has(node.key) || seen.has(node.key)) return null;
+      if (typeof node.key !== 'string' || (!transient && node.key.startsWith('s:')) || !allowed.has(node.key) || seen.has(node.key)) return null;
       seen.add(node.key);
       count++;
       let id = typeof node.id === 'string' && node.id ? node.id : `pane-${count}`;

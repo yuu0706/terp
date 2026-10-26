@@ -2543,3 +2543,106 @@ button.subagent:hover,
     padding: var(--space-3);
   }
 }
+
+/* ワークスペースはスクロールする一覧の外に置く。 */
+.workspace-picker {
+  flex: none;
+  padding: var(--space-1) var(--space-2) var(--space-2);
+}
+
+.workspace-picker__button {
+  width: 100%;
+  height: var(--control-h-lg);
+  text-align: left;
+}
+
+.workspace-picker__button .menu__label {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.workspace-picker__error {
+  margin: var(--space-2) 0 0;
+}
+
+.workspace-menu {
+  position: fixed;
+  inset: auto;
+  margin: 0;
+  width: var(--sidebar-width);
+  max-width: calc(100vw - var(--space-2) * 2);
+  max-height: calc(100vh - var(--space-2) * 2);
+  overflow: auto;
+  color: var(--color-text);
+}
+
+.workspace-menu .menu__item {
+  height: auto;
+  min-height: var(--control-h);
+  flex-wrap: wrap;
+  padding-block: var(--space-2);
+}
+
+.workspace-menu .menu__label {
+  overflow-wrap: anywhere;
+}
+
+.workspace-menu [aria-checked='true'] .menu__label {
+  font-weight: 700;
+}
+
+.workspace-menu__reason {
+  width: 100%;
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+.workspace-menu button:disabled {
+  color: var(--color-text-muted);
+  cursor: default;
+}
+
+.session__favorite {
+  grid-column: 3;
+  grid-row: 2;
+  margin-right: calc(var(--icon-sm) + var(--space-2));
+  visibility: hidden;
+}
+
+.session:hover .session__favorite,
+.session:focus-within .session__favorite,
+.project__head:focus-within .favorite,
+.favorite[aria-pressed='true'] {
+  visibility: visible;
+}
+
+.favorite[aria-pressed='true'] .icon {
+  fill: currentColor;
+}
+
+/* 不透明度は一覧と同じ設定値。選択は面の色に頼らず左端の線でも示す。 */
+.session[data-favorite='true'],
+.project__head[data-favorite='true'] {
+  background: var(--surface-favorite);
+  color: var(--favorite-text);
+}
+
+.session[data-favorite='true'][aria-current='true'] {
+  box-shadow: inset var(--space-1) 0 var(--favorite-text);
+}
+
+.session[data-favorite='true'][aria-current='true'] .session__name {
+  font-weight: 700;
+}
+
+.session[data-favorite='true'] :is(.session__sub, .session__key, .session__bypass, .session__close, .session__favorite),
+.project__head[data-favorite='true'] .icon-btn {
+  color: var(--favorite-text);
+}
+
+.session[data-favorite='true'] .session__bypass {
+  background: transparent;
+  outline: 1px solid currentColor;
+}

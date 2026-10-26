@@ -8,6 +8,7 @@ const config = require('./config');
 const ghostty = require('./ghostty');
 const { setBlur } = require('./blur');
 const projects = require('./projects');
+const { sessionWorkspace } = require('./workspaces');
 const gitops = require('./git');
 const gitpanel = require('./gitpanel');
 const history = require('./history');
@@ -103,7 +104,7 @@ client.on('disconnect', () => {
   known.clear();
 });
 
-async function createPty({ cols, rows, cwd }) {
+async function createPty({ cols, rows, cwd, workspace }) {
   await ensureClient();
   const startCwd = cwd && fs.existsSync(cwd) ? cwd : os.homedir();
   const created = await client.request({
@@ -114,6 +115,9 @@ async function createPty({ cols, rows, cwd }) {
     env: shellEnv(),
     shell: process.env.SHELL || '/bin/zsh',
   });
+  const state = projects.load();
+  workspace = state.workspaces.some((w) => w.id === workspace) ? workspace : state.activeWorkspace;
+  client.send({ t: 'meta', id: created.id, meta: { workspace } });
   known.set(created.id, { cwd: startCwd, pid: created.pid, program: '' });
   return { id: created.id, cwd: startCwd };
 }
@@ -122,14 +126,31 @@ async function createPty({ cols, rows, cwd }) {
 async function restoreInfo() {
   await ensureClient();
   const existing = await client.request({ t: 'list' });
-  for (const e of existing) known.set(e.id, { cwd: e.cwd, pid: e.pid, program: '' });
-  return { existing, snapshot: existing.length === 0 ? snapshot.load() : [] };
+  const cwds = await readCwds(existing.map((e) => e.pid));
+  for (const e of existing) {
+    e.cwd = cwds.get(e.pid) || e.cwd;
+    known.set(e.id, { cwd: e.cwd, pid: e.pid, program: '' });
+  }
+  const state = { ...projects.load(), projects: await projects.list() };
+  for (const e of existing) {
+    const workspace = sessionWorkspace({ cwd: e.cwd, workspace: e.meta?.workspace }, state);
+    e.meta = { ...e.meta, workspace };
+    client.send({ t: 'meta', id: e.id, meta: { workspace } });
+  }
+  return { existing, snapshot: existing.length === 0 ? snapshot.load().map((s) => ({ ...s, workspace: sessionWorkspace(s, state) })) : [] };
 }
 
 // 書いている最中に呼ばれたら、その書き込みの終わりを待つ
 let saving = null;
+let saveAgain = false;
 function saveSnapshot() {
-  if (!saving) saving = writeSnapshot().finally(() => (saving = null));
+  if (saving) { saveAgain = true; return saving; }
+  saving = (async () => {
+    do {
+      saveAgain = false;
+      await writeSnapshot();
+    } while (saveAgain);
+  })().finally(() => (saving = null));
   return saving;
 }
 
@@ -143,7 +164,10 @@ async function writeSnapshot() {
     agentreply.rememberSessions(sessions);
     snapshot.save(
       list.map((e) => ({
+        id: e.id,
         cwd: known.get(e.id)?.cwd || e.cwd,
+        workspace: e.meta.workspace || null,
+        favorite: Boolean(e.meta.favorite),
         customName: e.meta.customName || null,
         claudeSession: sessions.get(e.pid) || null,
       })),
@@ -160,28 +184,35 @@ function programName(name) {
   return /^\d+\.\d+\.\d+$/.test(base) ? 'claude' : base;
 }
 
-// 各シェルの作業場所と、前面で動いているプログラム名をまとめて拾う
+function readCwds(pids) {
+  if (!pids.length) return Promise.resolve(new Map());
+  return new Promise((resolve) => {
+    // Finder から起動すると PATH が細いため、絶対パスで呼ぶ。
+    execFile('/usr/sbin/lsof', ['-a', '-d', 'cwd', '-Fn', '-p', pids.join(',')], { timeout: 5000 }, (_err, stdout = '') => {
+      const result = new Map();
+      let pid = null;
+      for (const line of stdout.split('\n')) {
+        if (line[0] === 'p') pid = Number(line.slice(1));
+        else if (line[0] === 'n' && pid) result.set(pid, line.slice(1));
+      }
+      resolve(result);
+    });
+  });
+}
+
+// 各シェルの作業場所と前面のプログラム名をまとめて拾う。
 async function pollInfo() {
   if (!win || win.isDestroyed() || known.size === 0 || !client.socket || client.socket.destroyed) return;
   const procs = await client.request({ t: 'info' }).catch(() => []);
   if (procs.length === 0) return;
-  // Finder から起動すると PATH が細いため、絶対パスで呼ぶ
-  execFile('/usr/sbin/lsof', ['-a', '-d', 'cwd', '-Fn', '-p', procs.map((p) => p.pid).join(',')], (_err, stdout = '') => {
-    const cwdByPid = new Map();
-    let pid = null;
-    for (const line of stdout.split('\n')) {
-      if (line[0] === 'p') pid = Number(line.slice(1));
-      else if (line[0] === 'n' && pid) cwdByPid.set(pid, line.slice(1));
-    }
-    const info = procs.map((p) => {
-      const entry = known.get(p.id) || { cwd: '', pid: p.pid };
-      entry.cwd = cwdByPid.get(p.pid) || entry.cwd;
-      entry.program = programName(p.program);
-      known.set(p.id, entry);
-      return { id: p.id, cwd: entry.cwd, program: entry.program };
-    });
-    toWindow('pty:info', info);
+  const cwdByPid = await readCwds(procs.map((p) => p.pid));
+  const info = procs.filter((p) => known.has(p.id)).map((p) => {
+    const entry = known.get(p.id);
+    entry.cwd = cwdByPid.get(p.pid) || entry.cwd;
+    entry.program = programName(p.program);
+    return { id: p.id, cwd: entry.cwd, program: entry.program };
   });
+  toWindow('pty:info', info);
 }
 
 ipcMain.on('home', (event) => {
@@ -243,10 +274,25 @@ ipcMain.handle('notify:test', safe(() => notify.show({ title: 'terp', body: '通
 ipcMain.handle('tabs:load', safe(() => tabs.load()));
 ipcMain.handle('tabs:save', safe((_e, state) => tabs.save(state)));
 ipcMain.handle('projects:list', safe(() => projects.list()));
+ipcMain.handle('projects:update', safe((_e, repo, patch) => projects.update(repo, patch)));
+ipcMain.handle('workspaces:list', safe(() => {
+  const { workspaces, activeWorkspace } = projects.load();
+  return { workspaces, activeWorkspace };
+}));
+ipcMain.handle('workspaces:create', safe((_e, name) => projects.createWorkspace(name)));
+ipcMain.handle('workspaces:rename', safe((_e, id, name) => projects.renameWorkspace(id, name)));
+ipcMain.handle('workspaces:activate', safe((_e, id) => projects.activateWorkspace(id)));
+ipcMain.handle('workspaces:remove', safe(async (_e, id) => {
+  await ensureClient();
+  const list = await client.request({ t: 'list' });
+  const state = { ...projects.load(), projects: await projects.list() };
+  const occupied = list.some((e) => sessionWorkspace({ cwd: e.cwd, workspace: e.meta?.workspace }, state) === id);
+  projects.removeWorkspace(id, occupied);
+}));
 // dir を渡さないときはフォルダを選ぶ画面を出す
 ipcMain.handle(
   'projects:add',
-  safe(async (event, dir) => {
+  safe(async (event, dir, workspace) => {
     if (!dir) {
       const result = await dialog.showOpenDialog(BrowserWindow.fromWebContents(event.sender), {
         title: 'リポジトリを追加',
@@ -256,7 +302,7 @@ ipcMain.handle(
       if (result.canceled || !result.filePaths[0]) return null;
       dir = result.filePaths[0];
     }
-    return projects.add(dir);
+    return projects.add(dir, workspace);
   }),
 );
 ipcMain.handle('projects:remove', safe((_e, repo) => projects.remove(repo)));
@@ -314,7 +360,7 @@ ipcMain.on('pty:kill', (_e, id) => {
 // 名前などは常駐のプロセスに預け、開き直したときに戻す
 ipcMain.on('pty:meta', (_e, id, meta) => {
   client.send({ t: 'meta', id, meta });
-  if ('customName' in meta) saveSnapshot();
+  if (['customName', 'workspace', 'favorite'].some((key) => key in meta)) saveSnapshot();
 });
 // 自己診断で、Mac の再起動に当たる状態（常駐のプロセスごと消える）を作る
 ipcMain.handle('pty:shutdown-host', async () => {
@@ -360,6 +406,17 @@ function buildMenu() {
         { label: '保存', accelerator: 'CmdOrCtrl+S', click: send('save') },
         { type: 'separator' },
         { label: '画面を消去', accelerator: 'CmdOrCtrl+K', click: send('clear') },
+      ],
+    },
+    {
+      label: 'ワークスペース',
+      submenu: [
+        ...Array.from({ length: 9 }, (_, i) => ({
+          label: `ワークスペース ${i + 1}`, accelerator: `Ctrl+Command+${i + 1}`, click: send('workspace-index', i),
+        })),
+        { type: 'separator' },
+        { label: '次のワークスペース', accelerator: 'Ctrl+Command+]', click: send('workspace-next') },
+        { label: '前のワークスペース', accelerator: 'Ctrl+Command+[', click: send('workspace-prev') },
       ],
     },
     {

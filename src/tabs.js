@@ -21,15 +21,18 @@ function load() {
       order: Array.isArray(data?.order) ? data.order.filter((key) => typeof key === 'string') : [],
       active: typeof data?.active === 'string' ? data.active : null,
       layout: data?.layout || null,
+      workspaces: data?.workspaces && typeof data.workspaces === 'object' && !Array.isArray(data.workspaces)
+        ? Object.fromEntries(Object.entries(data.workspaces).filter(([, state]) => state && typeof state === 'object' && !Array.isArray(state))) : null,
+      fileWorkspaces: data?.fileWorkspaces && typeof data.fileWorkspaces === 'object' ? data.fileWorkspaces : {},
     };
   } catch {
     return { files: [], order: [], active: null, layout: null };
   }
 }
 
-function save({ files, order, active, layout }) {
+function save({ files, order, active, layout, workspaces, fileWorkspaces }) {
   fs.mkdirSync(CONFIG_DIR, { recursive: true });
-  const body = JSON.stringify({ files, order, active, layout }, null, 2) + '\n';
+  const body = JSON.stringify({ files, order, active, layout, workspaces, fileWorkspaces }, null, 2) + '\n';
   // 書きかけのファイルを読まれないよう、別名で書いてから置き換える
   const tmp = `${TABS_PATH}.tmp`;
   fs.writeFileSync(tmp, body);

@@ -11,6 +11,8 @@ import { createPathLinkProvider } from './pathlinks.js';
 import { initSettings, openSettings, applySettingsConfig, agentIcon } from './settings.js';
 import { createPane, paneList, splitPane, closePane, replacePane, restoreLayout, createPaneView, makeTabDraggable, MAX_PANES } from './panes.js';
 import { terminalPaths, pathDropTarget, pathsFromTransfer } from './droppaths.js';
+import { withAlpha, favoriteText } from './favcolor.js';
+import { STAR_ICON, favoriteLabel, createMenu, createWorkspaceUI } from './workspaceui.js';
 
 const terp = window.terp;
 // 枠の外でも Finder のファイルで窓が遷移しないよう、既定の動作を止める。
@@ -55,6 +57,12 @@ let subagents = {};
 let subagentsRefresh = null;
 // projects.json のリポジトリと、その worktree。git から読み直す（refreshProjects）
 let projects = [];
+let workspaces = [{ id: 'default', name: '既定' }];
+let activeWorkspace = 'default';
+const workspaceStates = new Map();
+const restoredKeys = new Map();
+let projectRevision = 0;
+let projectRefreshSerial = 0;
 // タブは開いた順に並べる。キーは端末が 't:<番号>'、ファイルが 'f:<パス>'、サブの記録が 's:<パス>'、コミットが 'c:<worktree>@<ハッシュ>'。
 // Orca と同じく、上のタブには表示中のタブと同じ作業（worktree）のものだけを出す
 let tabOrder = [];
@@ -83,11 +91,6 @@ const LOOSE = '(loose)';
 let config = await terp.getConfig();
 let focusForTest = null;
 
-function withAlpha(hex, alpha) {
-  const n = parseInt(hex.slice(1), 16);
-  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
-}
-
 // 背景は奥の面（body の --surface-term）1枚で塗る。端末側でも塗ると、透過のときに2枚重なって濃くなる
 function terminalTheme(c) {
   return { ...c.terminal, background: 'rgba(0, 0, 0, 0)' };
@@ -102,6 +105,8 @@ function applyConfig(c) {
   for (const [key, value] of Object.entries(c.chrome)) root.setProperty(`--color-${key}`, value);
   root.setProperty('--surface-term', withAlpha(c.chrome['term-bg'], c.window.opacity));
   root.setProperty('--surface-sidebar', withAlpha(c.chrome.bg, c.window.opacity));
+  root.setProperty('--surface-favorite', withAlpha(c.chrome.accent, c.window.opacity));
+  root.setProperty('--favorite-text', favoriteText(c.chrome.accent, c.chrome.text));
   root.setProperty('--window-blur', `${c.window.blur}px`);
   showWallpaper();
   root.setProperty('--font-mono', c.font.family);
@@ -287,7 +292,7 @@ function groupOf(key) {
 function visibleKeys() {
   if (!activeKey) return [];
   const group = groupOf(activeKey);
-  return tabOrder.filter((k) => groupOf(k) === group);
+  return tabOrder.filter((k) => workspaceOfKey(k) === activeWorkspace && groupOf(k) === group);
 }
 
 // 新しいターミナルやエージェントを開く場所: ファイルのタブならそのフォルダ、ターミナルならその作業場所
@@ -298,13 +303,18 @@ function activeCwd() {
     const view = subagentViews.get(activeKey.slice(2));
     return sessions.get(view?.sessionId)?.cwd || view?.cwd || null;
   }
-  return sessions.get(activeId)?.cwd || null;
+  return sessions.get(activeId)?.workspace === activeWorkspace ? sessions.get(activeId).cwd : null;
 }
 
 function renderItem(s, index = visibleKeys().indexOf(termKey(s.id))) {
   const li = s.li;
   const state = stateOf(s);
   renderStatus(li, s, state);
+  li.dataset.favorite = String(Boolean(s.favorite));
+  const star = li.querySelector('[data-action="favorite"]');
+  star.setAttribute('aria-pressed', String(Boolean(s.favorite)));
+  star.setAttribute('aria-label', favoriteLabel(s.favorite));
+  star.title = favoriteLabel(s.favorite);
   li.setAttribute('aria-current', String(activeKey === termKey(s.id)));
   li.title = [s.title, shortPath(s.cwd)].filter(Boolean).join('\n');
   const nameEl = li.querySelector('.session__name');
@@ -339,6 +349,7 @@ function renderAll() {
     el.querySelector('.work__row').setAttribute('aria-current', String(group === el.dataset.path));
   }
   renderWorkStatuses();
+  renderWorkspaceStatuses();
   updateDockBadge();
   renderTabs(visible);
   empty.hidden = Boolean(activeKey);
@@ -397,21 +408,25 @@ function renderTabs(visible) {
 
 // ---- 作業（worktree） ----
 
-function allWorks() {
-  return projects.flatMap((p) => p.worktrees.map((w) => ({ ...w, repo: p.path })));
+function currentProjects() {
+  return projects.filter((p) => p.workspace === activeWorkspace);
+}
+
+function allWorks(workspace = activeWorkspace) {
+  return projects.filter((p) => !workspace || p.workspace === workspace).flatMap((p) => p.worktrees.map((w) => ({ ...w, repo: p.path })));
 }
 
 // その場所を含む worktree のうち、いちばん深いもの
-function workOfPath(p) {
+function workOfPath(p, workspace = activeWorkspace) {
   let found = null;
-  for (const w of allWorks()) {
+  for (const w of allWorks(workspace)) {
     if ((p === w.path || p?.startsWith(w.path + '/')) && (!found || w.path.length > found.path.length)) found = w;
   }
   return found;
 }
 
 function workOf(s) {
-  return workOfPath(s.cwd);
+  return workOfPath(s.cwd, s.workspace || activeWorkspace);
 }
 
 function workLabel(w) {
@@ -427,23 +442,239 @@ function escapeHtml(text) {
   return String(text).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 }
 
+// ---- ワークスペース ----
+
+function workspaceOfKey(key) {
+  if (!key) return null;
+  if (key.startsWith('s:')) {
+    const view = viewOf(key);
+    return sessions.get(view?.sessionId)?.workspace || view?.workspace || activeWorkspace;
+  }
+  return viewOf(key)?.workspace || null;
+}
+
+function workspaceKeys(id = activeWorkspace) {
+  return tabOrder.filter((key) => workspaceOfKey(key) === id);
+}
+
+function rememberWorkspace() {
+  workspaceStates.set(activeWorkspace, { active: activeKey, layout: structuredClone(layout), activePaneId, activeId });
+}
+
+function showWorkspaceState(id) {
+  const saved = workspaceStates.get(id);
+  const keys = workspaceKeys(id);
+  const fallback = keys.includes(activeKey) ? activeKey : keys.find((key) => key.startsWith('t:')) || null;
+  const wanted = keys.includes(saved?.active) ? saved.active : fallback;
+  layout = saved?.layout ? restoreLayout(saved.layout, keys, { transient: true }) : createPane(wanted);
+  const selected = paneList(layout).find((p) => p.id === saved?.activePaneId && p.key === saved?.active)
+    || paneList(layout).find((p) => p.key === wanted) || paneList(layout)[0];
+  activePaneId = selected.id;
+  activeKey = selected.key;
+  activeId = sessions.get(saved?.activeId)?.workspace === id ? saved.activeId : null;
+  if (!activeKey && wanted) {
+    layout = replacePane(layout, activePaneId, wanted);
+    activeKey = wanted;
+  }
+  syncPanes();
+  renderProjects();
+  if (activeKey) activateKey(activeKey);
+  else {
+    refreshGit(true);
+    refreshHistory();
+    refreshFiles(false);
+    saveTabs();
+  }
+}
+
+async function switchWorkspace(id, persist = true) {
+  if (id === activeWorkspace || !workspaces.some((w) => w.id === id)) return;
+  projectRevision++;
+  rememberWorkspace();
+  activeWorkspace = id;
+  rowMenu.close();
+  workspaceUI.menu.close();
+  showWorkspaceState(id);
+  if (persist) {
+    const res = await terp.activateWorkspace(id);
+    if (!res.ok) { workspaceUI.error(res.error); await refreshProjects(); }
+  }
+}
+
+function repairWorkspaceLayout() {
+  const keys = workspaceKeys();
+  if (paneList(layout).every((p) => !p.key || keys.includes(p.key))) return;
+  rememberWorkspace();
+  showWorkspaceState(activeWorkspace);
+}
+
+function workspaceDeleteReason(id) {
+  if (workspaces.length === 1) return '最後のワークスペースは削除できない';
+  if (projects.some((p) => p.workspace === id) || [...sessions.values()].some((s) => s.workspace === id)) return 'リポジトリかターミナルがあるため削除できない';
+  return '';
+}
+
+async function createWorkspace(name) {
+  const res = await terp.createWorkspace(name);
+  if (!res.ok) throw new Error(res.error);
+  await refreshProjects();
+  await switchWorkspace(res.value.id);
+  return res.value;
+}
+
+async function removeWorkspace(id) {
+  const reason = workspaceDeleteReason(id);
+  if (reason) { workspaceUI.error(reason); return false; }
+  const res = await terp.removeWorkspace(id);
+  if (!res.ok) { workspaceUI.error(res.error); return false; }
+  await refreshProjects();
+  workspaceStates.delete(id);
+  const remainingFiles = [...fileViews.values()].filter((view) => view.workspace === id);
+  for (const view of remainingFiles) view.workspace = activeWorkspace;
+  if (remainingFiles.length) activateKey(fileKey(remainingFiles[0].path));
+  saveTabs();
+  return true;
+}
+
+function statusElement(id) {
+  const span = document.createElement('span');
+  span.className = 'work__status';
+  span.dataset.workspaceStatus = id;
+  span.innerHTML = '<span class="session__dot"></span><span class="work__status-count"></span>';
+  renderWorkspaceStatus(span, id);
+  return span;
+}
+
+function renderWorkspaceStatus(el, id) {
+  const summary = urgentAgentSessions([...sessions.values()].filter((s) => s.workspace === id));
+  el.hidden = !summary.sessions.length;
+  if (el.hidden) return;
+  renderStatus(el, summary.sessions[0], summary.state);
+  el.querySelector('.work__status-count').textContent = summary.sessions.length > 1 ? summary.sessions.length : '';
+  el.setAttribute('aria-label', `${STATE_LABELS[summary.state]} ${summary.sessions.length}件`);
+}
+
+function renderWorkspaceStatuses() {
+  workspaceUI.button.querySelector('.menu__label').textContent = workspaces.find((w) => w.id === activeWorkspace)?.name || '';
+  workspaceUI.button.setAttribute('aria-label', `ワークスペース: ${workspaces.find((w) => w.id === activeWorkspace)?.name || ''}`);
+  // 表示していないワークスペースからの知らせも、閉じた切り替え部品に残す。
+  const summary = urgentAgentSessions([...sessions.values()]);
+  const badge = workspaceUI.button.querySelector('.work__status');
+  badge.hidden = !summary.sessions.length;
+  if (!badge.hidden) {
+    renderStatus(badge, summary.sessions[0], summary.state);
+    badge.querySelector('.work__status-count').textContent = summary.sessions.length > 1 ? summary.sessions.length : '';
+    badge.setAttribute('aria-label', `${STATE_LABELS[summary.state]} ${summary.sessions.length}件`);
+  }
+  for (const el of workspaceUI.menu.el.querySelectorAll('[data-workspace-status]')) renderWorkspaceStatus(el, el.dataset.workspaceStatus);
+}
+
+const rowMenu = createMenu();
+const workspaceUI = createWorkspaceUI({
+  menuItems: () => [
+    ...workspaces.map((w) => ({ id: w.id, label: w.name, checked: w.id === activeWorkspace, status: statusElement(w.id), run: () => switchWorkspace(w.id) })),
+    { separator: true },
+    { label: '新しいワークスペース…', run: () => workspaceUI.edit() },
+    { label: '名前を変更…', run: () => workspaceUI.edit(workspaces.find((w) => w.id === activeWorkspace)) },
+    { label: 'ワークスペースを削除', reason: workspaceDeleteReason(activeWorkspace), run: () => removeWorkspace(activeWorkspace) },
+  ],
+  submitName: async (id, name) => {
+    if (!id) await createWorkspace(name);
+    else {
+      const res = await terp.renameWorkspace(id, name);
+      if (!res.ok) throw new Error(res.error);
+      await refreshProjects();
+    }
+  },
+});
+
+function moveWorkspaceMenu(current, run) {
+  return { label: 'ワークスペースへ移す', children: workspaces.map((w) => ({
+    label: w.name, checked: w.id === current, run: () => run(w.id),
+  })) };
+}
+
+async function moveProjectWorkspace(repo, id) {
+  projectRevision++;
+  const project = projects.find((p) => p.path === repo);
+  const res = await terp.updateProject(repo, { workspace: id });
+  if (!res.ok) { workspaceUI.error(res.error); return; }
+  if (project) {
+    for (const [path, view] of fileViews) {
+      if (project.worktrees.some((w) => path === w.path || path.startsWith(w.path + '/'))) view.workspace = id;
+    }
+  }
+  await refreshProjects();
+  repairWorkspaceLayout();
+  saveTabs();
+}
+
+function moveSessionWorkspace(id, workspace) {
+  const s = sessions.get(id);
+  if (!s || !workspaces.some((w) => w.id === workspace)) return;
+  s.workspace = workspace;
+  for (const view of subagentViews.values()) if (view.sessionId === id) view.workspace = workspace;
+  terp.setMeta(id, { workspace });
+  repairWorkspaceLayout();
+  renderAll();
+  saveTabs();
+}
+
+async function toggleProjectFavorite(repo) {
+  projectRevision++;
+  const project = projects.find((p) => p.path === repo);
+  if (!project) return;
+  const res = await terp.updateProject(repo, { favorite: !project.favorite });
+  if (!res.ok) workspaceUI.error(res.error);
+  else await refreshProjects();
+}
+
+function toggleSessionFavorite(id) {
+  const s = sessions.get(id);
+  if (!s) return;
+  s.favorite = !s.favorite;
+  terp.setMeta(id, { favorite: s.favorite });
+  renderItem(s);
+}
+
+function allSessionsInListOrder() {
+  const result = [];
+  for (const workspace of workspaces) {
+    const list = [...sessions.values()].filter((s) => s.workspace === workspace.id);
+    for (const project of projects.filter((p) => p.workspace === workspace.id)) {
+      for (const work of project.worktrees) result.push(...list.filter((s) => workOf(s)?.path === work.path));
+    }
+    result.push(...list.filter((s) => !workOf(s)));
+  }
+  return result;
+}
+
 // リポジトリと作業の行を描き直す。ターミナルの行（li）は作り直さず、placeSessions で入れ替える
 function renderProjects() {
   // 描き直す前に、ターミナルの行を退避しておく
   for (const s of sessions.values()) looseList.appendChild(s.li);
   projectsEl.innerHTML = '';
-  for (const p of projects) {
+  for (const p of currentProjects()) {
     const section = document.createElement('section');
     section.className = 'project';
     section.dataset.path = p.path;
     section.innerHTML = `
-      <div class="project__head" title="${escapeHtml(shortPath(p.path))}&#10;ドラッグか ⌥↑ / ⌥↓ で並べ替え" draggable="true" tabindex="0">
+      <div class="project__head" data-favorite="${Boolean(p.favorite)}" title="${escapeHtml(shortPath(p.path))}&#10;ドラッグか ⌥↑ / ⌥↓ で並べ替え" draggable="true" tabindex="0">
         <span class="project__name">${escapeHtml(p.name)}</span>
+        <button class="icon-btn icon-btn--hover favorite" type="button" data-action="favorite" aria-pressed="${Boolean(p.favorite)}" aria-label="${favoriteLabel(p.favorite)}" title="${favoriteLabel(p.favorite)}">${STAR_ICON}</button>
         <button class="icon-btn" type="button" data-action="new-work" aria-label="${escapeHtml(p.name)} に新しい作業を作る" title="新しい作業">${PLUS_ICON}</button>
         <button class="icon-btn icon-btn--hover" type="button" data-action="forget" aria-label="${escapeHtml(p.name)} を一覧から外す" title="一覧から外す（ファイルは消さない）">${CLOSE_ICON}</button>
       </div>`;
     section.querySelector('[data-action="new-work"]').addEventListener('click', () => openWorkDialog(p.path));
     setupProjectDrag(section, p.path);
+    section.querySelector('[data-action="favorite"]').addEventListener('click', () => toggleProjectFavorite(p.path));
+    section.querySelector('.project__head').addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      rowMenu.open([
+        { label: favoriteLabel(p.favorite), run: () => toggleProjectFavorite(p.path) },
+        moveWorkspaceMenu(p.workspace, (id) => moveProjectWorkspace(p.path, id)),
+      ], { x: e.clientX, y: e.clientY, target: e.currentTarget });
+    });
     section.querySelector('[data-action="forget"]').addEventListener('click', async () => {
       await terp.removeProject(p.path);
       refreshProjects();
@@ -489,13 +720,18 @@ function renderProjects() {
     }
     projectsEl.appendChild(section);
   }
-  noProjects.hidden = projects.length > 0;
+  noProjects.hidden = currentProjects().length > 0;
   renderAll();
 }
 
 // 各ターミナルの行を、作業場所を含む作業の下へ動かす。どれにも入らないものは「その他」へ
 function placeSessions() {
   for (const s of sessions.values()) {
+    if (s.workspace !== activeWorkspace) {
+      s.li.remove();
+      subagentLists.get(s.id)?.el.remove();
+      continue;
+    }
     const w = workOf(s);
     const target = (w && projectsEl.querySelector(`.work[data-path="${CSS.escape(w.path)}"] .session-list`)) || looseList;
     // 名前の編集中に動かすと入力欄の選択が外れるため、動かす必要があるときだけ動かす
@@ -549,7 +785,7 @@ function updateDockBadge() {
 }
 
 function nextAttention() {
-  const list = sessionsInListOrder();
+  const list = allSessionsInListOrder();
   const summary = urgentAgentSessions(list);
   if (!['waiting', 'done'].includes(summary.state)) return;
   const at = list.findIndex((s) => termKey(s.id) === activeKey);
@@ -564,10 +800,12 @@ let draggingProject = null;
 let reordering = false;
 
 async function moveProject(from, toIndex) {
-  const order = projects.map((p) => p.path).filter((p) => p !== from);
+  projectRevision++;
+  const order = currentProjects().map((p) => p.path).filter((p) => p !== from);
   order.splice(Math.max(0, Math.min(toIndex, order.length)), 0, from);
   // 画面を先に並べ替え、記録は後から合わせる（戻ってくるのを待つとちらつくため）
-  projects = order.map((path) => projects.find((p) => p.path === path));
+  const sorted = order.map((path) => projects.find((p) => p.path === path));
+  projects = projects.map((p) => p.workspace === activeWorkspace ? sorted.shift() : p);
   renderProjects();
   reordering = true;
   try {
@@ -613,13 +851,13 @@ function setupProjectDrag(section, path) {
     const after = section.dataset.drop === 'after';
     draggingProject = null;
     clearDropMarks();
-    const rest = projects.map((p) => p.path).filter((p) => p !== from);
+    const rest = currentProjects().map((p) => p.path).filter((p) => p !== from);
     moveProject(from, rest.indexOf(path) + (after ? 1 : 0));
   });
   head.addEventListener('keydown', (e) => {
     if (!e.altKey || (e.key !== 'ArrowUp' && e.key !== 'ArrowDown')) return;
     e.preventDefault();
-    const index = projects.findIndex((p) => p.path === path);
+    const index = currentProjects().findIndex((p) => p.path === path);
     moveProject(path, index + (e.key === 'ArrowUp' ? -1 : 1)).then(() =>
       projectsEl.querySelector(`.project[data-path="${CSS.escape(path)}"] .project__head`)?.focus(),
     );
@@ -629,13 +867,17 @@ function setupProjectDrag(section, path) {
 async function refreshProjects() {
   // つかんでいる間に描き直すと、つかんだ行が消えるため待つ
   if (draggingProject || reordering) return;
-  const res = await terp.listProjects();
-  if (!res.ok) return;
+  const serial = ++projectRefreshSerial;
+  const revision = projectRevision;
+  const [res, state] = await Promise.all([terp.listProjects(), terp.listWorkspaces()]);
+  if (!res.ok || !state.ok || draggingProject || reordering || serial !== projectRefreshSerial || revision !== projectRevision) return;
   const next = res.value;
-  // 変わっていなければ描き直さない（ホバー中のボタンがちらつくため）
-  if (JSON.stringify(next) === JSON.stringify(projects)) return;
+  const changed = JSON.stringify(next) !== JSON.stringify(projects) || JSON.stringify(workspaces) !== JSON.stringify(state.value.workspaces);
   projects = next;
-  renderProjects();
+  workspaces = state.value.workspaces;
+  if (state.value.activeWorkspace !== activeWorkspace) await switchWorkspace(state.value.activeWorkspace, false);
+  else if (changed) renderProjects();
+  repairWorkspaceLayout();
 }
 
 // ---- サブエージェントの一覧と記録 ----
@@ -812,7 +1054,7 @@ async function openSubagent(sessionId, agent, show = true) {
   el.className = 'subagent-view';
   el.hidden = true;
   el.innerHTML = '<header class="subagent-view__head"><h2 class="subagent-view__title"></h2><span class="subagent-view__meta"></span></header><p class="subagent-view__notice" role="status">記録を読み込み中</p><div class="subagent-view__body" tabindex="0" aria-label="サブエージェントの記録"></div>';
-  const view = { agent, sessionId, cwd: sessions.get(sessionId)?.cwd, el, notice: el.querySelector('.subagent-view__notice'), offset: undefined, reading: false };
+  const view = { agent, sessionId, workspace: sessions.get(sessionId)?.workspace || activeWorkspace, cwd: sessions.get(sessionId)?.cwd, el, notice: el.querySelector('.subagent-view__notice'), offset: undefined, reading: false };
   subagentViews.set(agent.file, view);
   viewStore.append(el);
   updateSubagentHeading(view);
@@ -824,13 +1066,13 @@ async function openSubagent(sessionId, agent, show = true) {
 
 // 作業を開く: その作業のタブのうち最近見たものへ移る。無ければ新しくターミナルを開く
 function openWork(w) {
-  const inWork = recent.find((key) => groupOf(key) === w.path);
+  const inWork = recent.find((key) => workspaceOfKey(key) === activeWorkspace && groupOf(key) === w.path);
   if (inWork !== undefined) activateKey(inWork);
   else openTerminal({ cwd: w.path });
 }
 
 async function addProject(dir) {
-  const res = await terp.addProject(dir);
+  const res = await terp.addProject(dir, activeWorkspace);
   if (res.ok && res.value) await refreshProjects();
   return res;
 }
@@ -1031,14 +1273,14 @@ function setDialogError(dialog, message) {
 }
 
 function openWorkDialog(repo) {
-  if (projects.length === 0) {
+  if (currentProjects().length === 0) {
     addProject().then((res) => res.ok && res.value && openWorkDialog(res.value));
     return;
   }
   const form = workDialog.querySelector('form');
   const select = form.elements.repo;
-  const current = repo || workOf(sessions.get(activeId) || {})?.repo || projects[0].path;
-  select.innerHTML = projects
+  const current = repo || workOf(sessions.get(activeId) || {})?.repo || currentProjects()[0].path;
+  select.innerHTML = currentProjects()
     .map((p) => `<option value="${escapeHtml(p.path)}"${p.path === current ? ' selected' : ''}>${escapeHtml(p.name)}</option>`)
     .join('');
   const syncBase = () => (form.elements.base.value = projects.find((p) => p.path === select.value)?.base || '');
@@ -1063,6 +1305,7 @@ async function submitWork() {
   const form = workDialog.querySelector('form');
   const submit = form.querySelector('[data-action="submit"]');
   const opts = { repo: form.elements.repo.value, branch: form.elements.branch.value.trim(), base: form.elements.base.value.trim() };
+  const workspace = activeWorkspace;
   if (!opts.branch || !opts.base) {
     setDialogError(workDialog, 'ブランチ名と元にするブランチを入れてください');
     return;
@@ -1078,7 +1321,7 @@ async function submitWork() {
   }
   workDialog.close();
   await refreshProjects();
-  const s = await openTerminal({ cwd: res.value });
+  const s = await openTerminal({ cwd: res.value, workspace });
   // シェルは起動前の入力をためておくため、すぐ送ってよい
   const command = form.elements.command.value;
   markBypass(s, form.elements.command.selectedOptions[0]?.dataset.bypass === 'true');
@@ -1153,16 +1396,29 @@ function createItem(s) {
       <span class="session__bypass" title="ファイルの読み書きやコマンドの実行の確認を飛ばして起動しています" hidden>確認なし</span>
       <span class="session__sub"></span>
     </span>
+    <button class="session__favorite icon-btn favorite" type="button" data-action="favorite" aria-label="お気に入りにする">${STAR_ICON}</button>
     <button class="session__close" type="button" aria-label="閉じる" title="閉じる（⌘W）">
       <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
     </button>`;
   li.addEventListener('click', () => activate(s.id));
+  li.querySelector('[data-action="favorite"]').addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleSessionFavorite(s.id);
+  });
+  li.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    rowMenu.open([
+      { label: favoriteLabel(s.favorite), run: () => toggleSessionFavorite(s.id) },
+      { label: '名前を変更', run: () => startRename(s) },
+      moveWorkspaceMenu(s.workspace, (id) => moveSessionWorkspace(s.id, id)),
+    ], { x: e.clientX, y: e.clientY, target: li });
+  });
   li.querySelector('.session__close').addEventListener('click', (e) => {
     e.stopPropagation();
     closeSession(s.id);
   });
   li.addEventListener('dblclick', (e) => {
-    if (e.target.closest('.session__close')) return;
+    if (e.target.closest('button')) return;
     startRename(s);
   });
   looseList.appendChild(li);
@@ -1283,6 +1539,8 @@ function activatePane(id, focus = true) {
 function activateKey(key, focus = true) {
   const target = viewOf(key);
   if (!target) return;
+  const workspace = workspaceOfKey(key);
+  if (workspace && workspace !== activeWorkspace) switchWorkspace(workspace);
   const existing = paneList(layout).find((p) => p.key === key);
   if (existing) activePaneId = existing.id;
   else layout = replacePane(layout, activePaneId, key);
@@ -1364,7 +1622,7 @@ async function dropTabInPane(key, paneId, side = 'center') {
       }
     }
   }
-  if (!viewOf(key) || !paneList(layout).some((p) => p.id === paneId)) return;
+  if (!viewOf(key) || workspaceOfKey(key) !== activeWorkspace || !paneList(layout).some((p) => p.id === paneId)) return;
   layout = side === 'center' ? replacePane(layout, paneId, key) : splitPane(layout, paneId, key, side);
   activePaneId = paneList(layout).find((p) => p.key === key).id;
   activateKey(key);
@@ -1398,39 +1656,59 @@ function activate(id) {
 
 // ---- タブで開くファイル ----
 
+function savedTabState() {
+  rememberWorkspace();
+  const persistent = (key) => key && !key.startsWith('s:') && !key.startsWith('c:');
+  const order = tabOrder.filter(persistent);
+  const states = Object.fromEntries(workspaces.map(({ id }) => {
+    const state = workspaceStates.get(id) || {};
+    const keys = order.filter((key) => workspaceOfKey(key) === id);
+    return [id, { ...state, active: keys.includes(state.active) ? state.active : null,
+      layout: state.layout ? restoreLayout(state.layout, keys) : null,
+      recent: recent.filter((key) => keys.includes(key)) }];
+  }));
+  const active = persistent(activeKey) ? activeKey : recent.find((key) => persistent(key) && workspaceOfKey(key) === activeWorkspace) || null;
+  return { files: [...fileViews.keys()], order, active, layout: restoreLayout(layout, order), workspaces: states,
+    fileWorkspaces: Object.fromEntries([...fileViews].map(([path, view]) => [path, view.workspace])) };
+}
+
 function saveTabs() {
   if (restoringTabs) return;
   clearTimeout(saveTabsTimer);
-  saveTabsTimer = setTimeout(() => {
-    const persistent = (key) => key && !key.startsWith('s:') && !key.startsWith('c:');
-    const order = tabOrder.filter(persistent);
-    const active = persistent(activeKey) ? activeKey : recent.find(persistent) || null;
-    const savedLayout = restoreLayout(layout, order);
-    terp.saveTabs({ files: [...fileViews.keys()], order, active, layout: savedLayout });
-  }, 250);
+  saveTabsTimer = setTimeout(() => terp.saveTabs(savedTabState()), 250);
 }
 
 async function restoreTabs() {
   const res = await terp.loadTabs().catch(() => ({ ok: false }));
+  const remap = (key) => restoredKeys.get(key) || key;
+  const remapLayout = (node, depth = 0) => !node || typeof node !== 'object' || depth > 20 ? null
+    : node.type === 'pane' ? { ...node, key: remap(node.key) }
+    : { ...node, children: Array.isArray(node.children) ? node.children.map((child) => remapLayout(child, depth + 1)) : [] };
   if (res.ok) {
-    const fallback = activeKey;
-    for (const path of res.value.files) await openFile(path);
+    const data = res.value;
+    const legacyWorkspace = workspaces.find((w) => w.id === 'default')?.id || workspaces[0].id;
+    for (const path of data.files) {
+      const workspace = workspaces.some((w) => w.id === data.fileWorkspaces?.[path]) ? data.fileWorkspaces[path] : legacyWorkspace;
+      await openFile(path, { show: false, workspace });
+    }
     const remaining = new Set(tabOrder);
-    tabOrder = [...res.value.order.filter((key) => remaining.delete(key)), ...remaining];
-    const active = tabOrder.includes(res.value.active) ? res.value.active : fallback;
-    layout = res.value.layout ? restoreLayout(res.value.layout, tabOrder) : createPane(active);
-    activePaneId = (paneList(layout).find((p) => p.key === active) || paneList(layout)[0]).id;
-    activeKey = paneList(layout).find((p) => p.id === activePaneId).key;
-    syncPanes();
-    if (activeKey) activateKey(activeKey);
-    else if (active) activateKey(active);
-    renderAll();
+    tabOrder = [...data.order.map(remap).filter((key) => remaining.delete(key)), ...remaining];
+    workspaceStates.clear();
+    const states = data.workspaces || { [legacyWorkspace]: { active: data.active, layout: data.layout } };
+    for (const { id } of workspaces) {
+      const saved = states[id];
+      if (!saved) continue;
+      workspaceStates.set(id, { ...saved, active: remap(saved.active), layout: remapLayout(saved.layout),
+        activeId: saved.activeId ? Number(remap(termKey(saved.activeId)).slice(2)) : null });
+    }
+    recent = [...new Set(Object.values(states).flatMap((state) => (Array.isArray(state.recent) ? state.recent : []).map(remap)).filter((key) => tabOrder.includes(key)))];
   }
+  showWorkspaceState(activeWorkspace);
   restoringTabs = false;
   saveTabs();
 }
 
-async function openFile(path, { line, column, show = true } = {}) {
+async function openFile(path, { line, column, show = true, workspace = activeWorkspace } = {}) {
   const key = fileKey(path);
   if (fileViews.has(path)) {
     const f = fileViews.get(path);
@@ -1443,13 +1721,13 @@ async function openFile(path, { line, column, show = true } = {}) {
   el.className = 'fileview';
   el.hidden = true;
   viewStore.appendChild(el);
-  const f = { path, el, lastActive: Date.now() };
+  const f = { path, el, workspace, lastActive: Date.now() };
   fileViews.set(path, f);
   // 表示中のタブの隣に開く
   const at = tabOrder.indexOf(activeKey);
   tabOrder.splice(at < 0 ? tabOrder.length : at + 1, 0, key);
   if (show) activateKey(key);
-  f.view = renderFileView(el, path, workOfPath(path)?.path || null, {
+  f.view = renderFileView(el, path, workOfPath(path, workspace)?.path || null, {
     confirm: confirmFile,
     onChange: () => renderTabs(visibleKeys()),
     isActive: () => activeKey === key,
@@ -1553,6 +1831,10 @@ terp.onCloseRequest(async (id) => {
       }
     }
   } finally {
+    if (allow && !restoringTabs) {
+      clearTimeout(saveTabsTimer);
+      await terp.saveTabs(savedTabState()).catch(() => {});
+    }
     terp.replyClose(id, allow);
     closingWindow = false;
   }
@@ -1565,7 +1847,7 @@ function dropTab(key, group = groupOf(key)) {
   const pane = paneList(layout).find((p) => p.key === key);
   if (pane) {
     const displayed = new Set(paneList(layout).map((p) => p.key));
-    const next = recent.find((k) => tabOrder.includes(k) && groupOf(k) === group && !displayed.has(k));
+    const next = recent.find((k) => workspaceOfKey(k) === activeWorkspace && tabOrder.includes(k) && groupOf(k) === group && !displayed.has(k));
     if (next) layout = replacePane(layout, pane.id, next);
     else layout = closePane(layout, pane.id);
   }
@@ -1584,7 +1866,7 @@ function openCommit(top, hash, subject = '') {
   const el = document.createElement('section');
   el.className = 'commit-view';
   el.hidden = true;
-  const view = { top, hash, subject, el };
+  const view = { top, hash, subject, el, workspace: activeWorkspace };
   commitViews.set(key, view);
   viewStore.append(el);
   const at = tabOrder.indexOf(activeKey);
@@ -1699,6 +1981,8 @@ function registerSession(id, { el, term, fit }, extra = {}) {
     program: '',
     title: '',
     customName: null,
+    workspace: activeWorkspace,
+    favorite: false,
     agentTitle: '',
     ...reduceAgentStatus({}, { type: 'reset' }, Date.now()),
     createdAt: Date.now(),
@@ -1751,12 +2035,14 @@ function registerSession(id, { el, term, fit }, extra = {}) {
   return s;
 }
 
-async function openTerminal({ cwd, show = true } = {}) {
+async function openTerminal({ cwd, show = true, workspace = activeWorkspace, favorite = false } = {}) {
   const view = buildTerminal();
-  const { id, cwd: startCwd } = await terp.createPty({ cols: view.term.cols, rows: view.term.rows, cwd });
-  const s = registerSession(id, view, { cwd: startCwd });
+  const { id, cwd: startCwd } = await terp.createPty({ cols: view.term.cols, rows: view.term.rows, cwd, workspace });
+  const s = registerSession(id, view, { cwd: startCwd, workspace, favorite });
+  terp.setMeta(id, { workspace, favorite });
   tabOrder.push(termKey(id));
   if (show) activate(id);
+  else renderAll();
   return s;
 }
 
@@ -1765,6 +2051,8 @@ async function attachTerminal(e) {
   const view = buildTerminal();
   const s = registerSession(e.id, view, {
     cwd: e.cwd,
+    workspace: e.meta.workspace,
+    favorite: Boolean(e.meta.favorite),
     customName: e.meta.customName || null,
     title: e.meta.title || '',
     agentTitle: e.meta.agentTitle || '',
@@ -1795,13 +2083,14 @@ async function restoreSessions() {
   if (existing.length > 0) {
     const restored = [];
     for (const e of existing.sort((a, b) => a.id - b.id)) restored.push(await attachTerminal(e));
-    const last = restored.reduce((a, b) => ((b.lastActive || 0) > (a.lastActive || 0) ? b : a));
-    activate(last.id);
+    const inWorkspace = restored.filter((s) => s.workspace === activeWorkspace);
+    if (inWorkspace.length) activate(inWorkspace.reduce((a, b) => b.lastActive > a.lastActive ? b : a, inWorkspace[0]).id);
     return;
   }
   if (snapshot.length > 0) {
     for (const snap of snapshot) {
-      const s = await openTerminal({ cwd: snap.cwd });
+      const s = await openTerminal({ cwd: snap.cwd, workspace: snap.workspace, favorite: Boolean(snap.favorite), show: false });
+      if (snap.id) restoredKeys.set(termKey(snap.id), termKey(s.id));
       if (snap.customName) {
         s.customName = snap.customName;
         terp.setMeta(s.id, { customName: snap.customName });
@@ -1875,6 +2164,7 @@ function removeSession(id) {
   for (const view of subagentViews.values()) {
     if (view.sessionId !== id) continue;
     view.cwd = s.cwd;
+    view.workspace = s.workspace;
     view.agent = { ...view.agent, running: false };
     updateSubagentHeading(view);
     readSubagentView(view);
@@ -1892,7 +2182,8 @@ function removeSession(id) {
 }
 
 function switchRecent() {
-  if (recent.length > 1) activateKey(recent[1]);
+  const inWorkspace = recent.filter((key) => workspaceOfKey(key) === activeWorkspace);
+  if (inWorkspace.length > 1) activateKey(inWorkspace[1]);
 }
 
 function switchOffset(offset) {
@@ -1959,6 +2250,15 @@ terp.onMenu((action, arg) => {
   // ファイルのタブを表示している間は、端末向けの操作（消去・すべて選択）を端末に向けない
   const s = activeKey?.startsWith('t:') ? sessions.get(activeId) : null;
   switch (action) {
+    case 'workspace-index':
+      if (workspaces[arg]) switchWorkspace(workspaces[arg].id);
+      break;
+    case 'workspace-next':
+    case 'workspace-prev': {
+      const at = workspaces.findIndex((w) => w.id === activeWorkspace);
+      switchWorkspace(workspaces[(at + (action === 'workspace-next' ? 1 : -1) + workspaces.length) % workspaces.length].id);
+      break;
+    }
     case 'next-attention':
       nextAttention();
       break;
@@ -2025,6 +2325,15 @@ terp.onMenu((action, arg) => {
   }
 });
 
+document.addEventListener('keydown', (event) => {
+  if (event.key !== 'Tab' || !event.ctrlKey || event.metaKey || event.target.closest('.xterm')) return;
+  if (document.querySelector('dialog[open]') || event.target.closest('.menu')) return;
+  if (event.target.closest('input, textarea') && !event.target.closest('.fileview')) return;
+  event.preventDefault();
+  event.stopPropagation();
+  switchRecent();
+}, true);
+
 document.getElementById('new-terminal').addEventListener('click', () => newTerminal());
 document.getElementById('files-toggle').addEventListener('click', () => togglePanel('files'));
 document.getElementById('history-toggle').addEventListener('click', () => togglePanel('history'));
@@ -2059,6 +2368,16 @@ setInterval(() => {
 window.__terp = {
   setFocusForTest: (focused) => { focusForTest = focused; },
   sessions,
+  get workspaces() { return workspaces; },
+  get activeWorkspace() { return activeWorkspace; },
+  switchWorkspace,
+  createWorkspace,
+  removeWorkspace,
+  moveProjectWorkspace,
+  moveSessionWorkspace,
+  toggleProjectFavorite,
+  toggleSessionFavorite,
+  workspaceDeleteReason,
   nextAttention,
   stateOf,
   renderAll,
@@ -2132,7 +2451,7 @@ initFilesPanel({
   openFile,
 });
 await refreshProjects();
-noProjects.hidden = projects.length > 0;
+noProjects.hidden = currentProjects().length > 0;
 await refreshAgents();
 // つなぎ直しに失敗しても、ファイルのタブは開き直し、控えの書き込みを止めたままにしない
 try {

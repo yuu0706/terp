@@ -774,7 +774,7 @@ fi
 // 作業ごとのタブの切り替え・右の面の切り替えを確かめる
 async function runFilesTest({ win, js, check, outDir }) {
   const { execFileSync } = require('child_process');
-  const repo = path.join(outDir, 'files-repo');
+  const repo = path.join(fs.realpathSync(outDir), 'files-repo');
   fs.mkdirSync(path.join(repo, 'src'), { recursive: true });
   fs.writeFileSync(path.join(repo, 'src', 'a.js'), 'const answer = 42;\nfunction hello(name) {\n  return `hi ${name}`;\n}\n');
   fs.writeFileSync(path.join(repo, 'README.md'), '# sample\n');
@@ -1752,6 +1752,7 @@ async function runHistoryTest({ win, js, check, outDir }) {
 // 1: 印を付けて終わる / 2: 開き直してもシェルが生きている。常駐のプロセスを止める（Mac の再起動に当たる）/
 // 3: 控えから同じ場所・名前で開き直す
 async function runPersistTest({ js, check, outDir, phase }) {
+  if (!process.env.TERP_CONFIG_DIR || path.resolve(process.env.TERP_CONFIG_DIR) === path.join(os.homedir(), '.config/terp')) throw new Error('保持の自己診断には一時フォルダの TERP_CONFIG_DIR が必要');
   const statePath = path.join(require('./config').CONFIG_DIR, 'selftest-tabs.json');
   const order = () => js('window.__terp.tabOrder');
   const fileKeys = () => js('window.__terp.tabOrder.filter((key) => key.startsWith("f:"))');
@@ -1770,6 +1771,10 @@ async function runPersistTest({ js, check, outDir, phase }) {
     await send(id, 'export TERP_MARK=persist-ok; cd /tmp; echo phase1-output\r');
     check('1回目: 印を付ける', await waitFor(id, /\nphase1-output/));
     await js(`window.__terp.rename(${id}, '保持テスト')`);
+    const workspace = await js("window.__terp.createWorkspace('保持用')");
+    await js(`window.__terp.moveSessionWorkspace(${id}, ${JSON.stringify(workspace.id)})`);
+    await js(`window.__terp.activate(${id})`);
+    await js(`window.__terp.toggleSessionFavorite(${id})`);
     const dir = fs.mkdtempSync(path.join(path.resolve(outDir), 'persist-files-'));
     const files = [path.join(dir, 'first.js'), path.join(dir, 'second.md')];
     fs.writeFileSync(files[0], 'const first = 1;\n');
@@ -1784,7 +1789,7 @@ async function runPersistTest({ js, check, outDir, phase }) {
     const layout = await js('window.__terp.layout()');
     check('1回目: ファイルと端末を2枠で表示する', layout.type === 'split' && layout.children.length === 2);
     check('1回目: 枠の大きさを変える', layout.sizes[0] !== 0.5);
-    fs.writeFileSync(statePath, JSON.stringify({ files, order: await order(), layout }));
+    fs.writeFileSync(statePath, JSON.stringify({ files, order: await order(), layout, workspace: workspace.id }));
     // 作業場所の控えが /tmp になるまで待つ（1.5 秒ごとに拾う）
     await sleep(3500);
     return;
@@ -1795,6 +1800,7 @@ async function runPersistTest({ js, check, outDir, phase }) {
     check('2回目: 開き直してもターミナルが残る', list.length === 1, `枚数 ${list.length}`);
     const id = list[0];
     const name = await js(`window.__terp.sessions.get(${id}).li.querySelector('.session__name').textContent`);
+    check('2回目: ワークスペースとお気に入りが残る', await js(`window.__terp.sessions.get(${id}).workspace === ${JSON.stringify(saved.workspace)} && window.__terp.sessions.get(${id}).favorite && window.__terp.activeWorkspace === ${JSON.stringify(saved.workspace)}`));
     check('2回目: 名前が残る', name === '保持テスト', name);
     check('2回目: 前の出力が画面に戻る', /phase1-output/.test(await buffer(id)));
     const files = await fileKeys();
@@ -1820,8 +1826,139 @@ async function runPersistTest({ js, check, outDir, phase }) {
   const cwd = await js(`window.__terp.sessions.get(${id}).cwd`);
   check('3回目: 同じ作業場所で開く', /\/tmp$/.test(cwd), cwd);
   const name = await js(`window.__terp.sessions.get(${id}).li.querySelector('.session__name').textContent`);
+  check('3回目: 控えからワークスペースとお気に入りが戻る', await js(`window.__terp.sessions.get(${id}).workspace === ${JSON.stringify(saved.workspace)} && window.__terp.sessions.get(${id}).favorite && window.__terp.activeWorkspace === ${JSON.stringify(saved.workspace)}`));
   check('3回目: 名前が戻る', name === '保持テスト', name);
   check('3回目: シェルは新しい（前の変数は無い）', !(await buffer(id)).includes('mark=persist-ok'));
+}
+
+// TERP_CONFIG_DIR の一時フォルダで実行し、利用者のリポジトリと設定には触れない。
+async function runWorkspaceTest({ js, check, outDir }) {
+  const { CONFIG_DIR, CONFIG_PATH } = require('./config');
+  if (!process.env.TERP_CONFIG_DIR || path.resolve(CONFIG_DIR) === path.join(os.homedir(), '.config/terp')) throw new Error('ワークスペースの自己診断には一時フォルダの TERP_CONFIG_DIR が必要');
+  const { execFileSync } = require('child_process');
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'terp-workspace-')));
+  const original = fs.readFileSync(CONFIG_PATH, 'utf8');
+  const wait = async (condition) => {
+    for (let i = 0; i < 200; i++) { if (await condition()) return; await sleep(50); }
+    throw new Error('ワークスペースの自己診断で応答を待ち切れなかった');
+  };
+  const visibleProjects = () => js('[...document.querySelectorAll("#projects .project")].map((el) => el.dataset.path)');
+  const visibleSessions = () => js('[...document.querySelectorAll("#tree .session")].map((el) => Number(el.dataset.id))');
+  const selectMenu = async (accelerator) => {
+    const { Menu } = require('electron');
+    const menu = Menu.getApplicationMenu().items.find((item) => item.label === 'ワークスペース');
+    const item = menu?.submenu.items.find((entry) => entry.accelerator === accelerator);
+    if (!item) throw new Error(`ワークスペースのメニューが無い: ${accelerator}`);
+    item.click();
+    await sleep(200);
+  };
+  try {
+    const repos = ['work-repo', 'personal-repo'].map((name) => path.join(dir, name));
+    for (const repo of repos) {
+      fs.mkdirSync(repo);
+      const git = (args) => execFileSync('git', args, { cwd: repo, encoding: 'utf8' });
+      git(['init', '-q', '-b', 'main']);
+      git(['config', 'user.name', 'test']);
+      git(['config', 'user.email', 'test@example.com']);
+      fs.writeFileSync(path.join(repo, 'README.md'), '# workspace\n');
+      git(['add', '.']);
+      git(['commit', '-q', '-m', 'init']);
+    }
+    fs.writeFileSync(path.join(CONFIG_DIR, 'projects.json'), JSON.stringify({ projects: repos.map((repo) => ({ path: repo })) }));
+    const migrated = require('./projects').load();
+    check('旧形式を読むと既定が1つできる', migrated.workspaces.length === 1 && migrated.workspaces[0].name === '既定');
+    check('旧形式の全リポジトリが既定に属する', migrated.projects.every((p) => p.workspace === migrated.activeWorkspace));
+    await js('window.__terp.refreshProjects()');
+    const first = await js('window.__terp.activeWorkspace');
+    const a = await js(`window.__terp.open(${JSON.stringify(repos[0])})`);
+    await js(`window.terp.write(${a}, 'export TERP_WORKSPACE_MARK=alive; echo workspace-output\\r')`);
+    await wait(() => js(`window.__terp.bufferText(${a}).includes('workspace-output')`));
+    await js(`window.__terp.open(${JSON.stringify(repos[0])})`);
+    await js(`window.__terp.dropTab('t:${a}', window.__terp.layout().id, 'right')`);
+    const firstLayout = await js('window.__terp.layout()');
+    const b = await js(`window.__terp.createWorkspace('個人')`);
+    check('作ったワークスペースは一覧もタブも空', (await visibleProjects()).length === 0 && (await visibleSessions()).length === 0 && (await js('window.__terp.activeKey')) === null && !(await js('document.getElementById("empty").hidden')));
+    const own = await js('window.__terp.open()');
+    await js(`window.__terp.addProject(${JSON.stringify(repos[1])})`);
+    await js(`window.__terp.moveProjectWorkspace(${JSON.stringify(repos[1])}, ${JSON.stringify(b.id)})`);
+    check('表示中のワークスペースの端末とリポジトリだけが出る', JSON.stringify(await visibleProjects()) === JSON.stringify([repos[1]]) && JSON.stringify(await visibleSessions()) === JSON.stringify([own]));
+    await js(`window.__terp.switchWorkspace(${JSON.stringify(first)})`);
+    check('戻すと元の一覧と最後のタブになる', (await visibleProjects()).includes(repos[0]) && !(await visibleSessions()).includes(own) && (await js('window.__terp.activeId')) === a);
+    check('切り替えて戻ると分割の配置も戻る', JSON.stringify(await js('window.__terp.layout()')) === JSON.stringify(firstLayout));
+    await js(`window.terp.write(${a}, 'echo "workspace-mark=$TERP_WORKSPACE_MARK"\\r')`);
+    await wait(() => js(`window.__terp.bufferText(${a}).includes('workspace-mark=alive')`));
+    check('裏のシェルと出力が残る', await js(`window.__terp.bufferText(${a}).includes('workspace-output') && window.__terp.bufferText(${a}).includes('workspace-mark=alive')`));
+    await selectMenu('Ctrl+Command+2');
+    check('⌃⌘2 のメニューで2番目へ移る', (await js('window.__terp.activeWorkspace')) === b.id);
+    await selectMenu('Ctrl+Command+]');
+    check('⌃⌘] のメニューで次へ巡回する', (await js('window.__terp.activeWorkspace')) === first);
+    await js(`window.__terp.moveProjectWorkspace(${JSON.stringify(repos[0])}, ${JSON.stringify(b.id)})`);
+    check('リポジトリを動かすと元の一覧から消える', (await visibleProjects()).length === 0);
+    check('端末の所属は変わらずその他に移る', await js(`window.__terp.sessions.get(${a}).li.closest('#loose') !== null`));
+    await js(`window.__terp.switchWorkspace(${JSON.stringify(b.id)})`);
+    check('移したリポジトリは移動先に出る', (await visibleProjects()).includes(repos[0]));
+    await js(`window.__terp.moveSessionWorkspace(${a}, ${JSON.stringify(b.id)})`);
+    check('移した端末は移動先の作業の下に出る', await js(`window.__terp.sessions.get(${a}).li.closest('.work')?.dataset.path === ${JSON.stringify(repos[0])}`));
+    await js(`window.__terp.switchWorkspace(${JSON.stringify(first)})`);
+    check('移した端末は元の一覧に出ない', !(await visibleSessions()).includes(a));
+    check('中身のあるワークスペースは消せない', !(await js(`window.__terp.removeWorkspace(${JSON.stringify(b.id)})`)));
+    const spare = await js("window.__terp.createWorkspace('空')");
+    check('空のワークスペースを消せる', await js(`window.__terp.removeWorkspace(${JSON.stringify(spare.id)})`));
+
+    await js('window.terp.updateConfig({ notifications: false })');
+    await wait(() => js('window.__terp.config.notifications === false'));
+    const fake = path.join(dir, 'claude');
+    const node = execFileSync('/bin/zsh', ['-lc', 'command -v node'], { encoding: 'utf8' }).trim();
+    fs.copyFileSync(node, fake);
+    fs.chmodSync(fake, 0o755);
+    const script = path.join(dir, 'waiting.js');
+    fs.writeFileSync(script, "process.stdout.write('workspace-agent-ready\\n'); require('readline').createInterface({ input: process.stdin }).on('line', () => process.stdout.write('\\x1b]9;Claude needs your permission to use Bash\\x07'));\n");
+    const quote = (value) => "'" + value.replace(/'/g, "'\\''") + "'";
+    await js(`window.__terp.switchWorkspace(${JSON.stringify(b.id)})`);
+    await js(`window.terp.write(${a}, ${JSON.stringify(`${quote(fake)} ${quote(script)}\r`)})`);
+    await wait(() => js(`window.__terp.sessions.get(${a}).program === 'claude' && window.__terp.bufferText(${a}).includes('workspace-agent-ready')`));
+    await js(`window.__terp.switchWorkspace(${JSON.stringify(first)})`);
+    await js(`window.__terp.sessions.get(${a}).term.input('permission\\r', true)`);
+    await wait(() => js(`window.__terp.stateOf(window.__terp.sessions.get(${a})) === 'waiting'`));
+    await js('window.__terp.renderAll()');
+    check('裏の許可待ちを切り替え部品に出す', await js("document.querySelector('#workspace-switch .work__status').dataset.agentState === 'waiting'"));
+    await js("document.getElementById('workspace-switch').click()");
+    check('一覧のワークスペース名にも許可待ちを出す', await js(`document.querySelector('[data-workspace-status=${JSON.stringify(b.id)}]').dataset.agentState === 'waiting'`));
+    await js('window.__terp.nextAttention()');
+    check('次の要対応は裏のワークスペースへ移る', (await js('window.__terp.activeWorkspace')) === b.id && (await js('window.__terp.activeId')) === a);
+    await js(`window.__terp.toggleProjectFavorite(${JSON.stringify(repos[0])})`);
+    await js(`window.__terp.toggleSessionFavorite(${a})`);
+    await js("window.terp.updateConfig({ accent: '#eeeeee', backgroundOpacity: 0.65 })");
+    await wait(() => js("window.__terp.config.chrome.accent === '#eeeeee' && window.__terp.config.window.opacity === 0.65"));
+    const colors = await js(`(() => {
+      const row = window.__terp.sessions.get(${a}).li;
+      const head = document.querySelector('.project[data-path=${JSON.stringify(repos[0])}] .project__head');
+      const style = getComputedStyle(row), sidebar = getComputedStyle(document.getElementById('sidebar'));
+      return { bg: style.backgroundColor, text: style.color, sub: getComputedStyle(row.querySelector('.session__sub')).color,
+        head: getComputedStyle(head).backgroundColor, sidebar: sidebar.backgroundColor, selected: style.boxShadow };
+    })()`);
+    const rgba = (value) => value.match(/[\d.]+/g).map(Number);
+    const { contrast, luminance } = await import('data:text/javascript;base64,' + fs.readFileSync(path.join(__dirname, 'renderer/favcolor.js')).toString('base64'));
+    const hex = (value) => '#' + rgba(value).slice(0, 3).map((c) => c.toString(16).padStart(2, '0')).join('');
+    check('お気に入りの背景が強調色になる', rgba(colors.bg).slice(0, 3).every((c) => c === 238) && colors.head === colors.bg);
+    check('お気に入りの不透明度が一覧と同じ', rgba(colors.bg)[3] === 0.65 && rgba(colors.sidebar)[3] === 0.65);
+    check('文字は暗くなりコントラスト比4.5以上', contrast('#eeeeee', hex(colors.text)) >= 4.5 && luminance(hex(colors.text)) < luminance('#eeeeee'));
+    check('2行目も同じ色、選択中の線が残る', colors.sub === colors.text && colors.selected !== 'none');
+    await sleep(500);
+    const stored = JSON.parse(fs.readFileSync(path.join(CONFIG_DIR, 'projects.json'), 'utf8'));
+    const tabs = JSON.parse(fs.readFileSync(path.join(CONFIG_DIR, 'tabs.json'), 'utf8'));
+    check('所属とお気に入りが projects.json に残る', stored.workspaces.length === 2 && stored.activeWorkspace === b.id && stored.projects.find((p) => p.path === repos[0]).favorite);
+    check('ワークスペースごとのタブと配置が tabs.json に残る', tabs.workspaces[first] && tabs.workspaces[b.id]?.active === `t:${a}` && tabs.workspaces[b.id]?.layout);
+    await js(`window.__terp.toggleProjectFavorite(${JSON.stringify(repos[0])})`);
+    await js(`window.__terp.toggleSessionFavorite(${a})`);
+    check('外すと背景が戻る', await js(`window.__terp.sessions.get(${a}).li.dataset.favorite === 'false' && document.querySelector('.project[data-path=${JSON.stringify(repos[0])}] .project__head').dataset.favorite === 'false'`));
+    fs.writeFileSync(path.join(outDir, 'workspace-colors.json'), JSON.stringify(colors, null, 2));
+  } finally {
+    fs.writeFileSync(CONFIG_PATH, original);
+    await js('Promise.all([...window.__terp.sessions.keys()].map((id) => window.terp.kill(id)))');
+    await sleep(300);
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 // TERP_SELFTEST_WORK を付けると、一時フォルダに git のリポジトリを作り、作業（worktree）の
@@ -1829,7 +1966,7 @@ async function runPersistTest({ js, check, outDir, phase }) {
 async function runWorkTest({ win, js, check, outDir }) {
   const { execFileSync } = require('child_process');
   const sh = (args, cwd) => execFileSync('git', args, { cwd, encoding: 'utf8' });
-  const repo = path.join(outDir, 'sample-repo');
+  const repo = path.join(fs.realpathSync(outDir), 'sample-repo');
   fs.rmSync(repo, { recursive: true, force: true });
   fs.rmSync(`${repo}.worktrees`, { recursive: true, force: true });
   fs.mkdirSync(repo, { recursive: true });
@@ -2206,6 +2343,13 @@ exports.run = (win) => {
       await runAgentsTest({ win, js, check, outDir });
       fs.writeFileSync(path.join(outDir, 'result.txt'), log.join('\n') + '\n');
       await win.webContents.capturePage().then((img) => fs.writeFileSync(path.join(outDir, 'agents.png'), img.toPNG()));
+      await finish();
+      return;
+    }
+
+    if (process.env.TERP_SELFTEST_WORKSPACE) {
+      await runWorkspaceTest({ js, check, outDir });
+      fs.writeFileSync(path.join(outDir, 'result.txt'), log.join('\n') + '\n');
       await finish();
       return;
     }
