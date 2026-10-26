@@ -448,6 +448,7 @@ function buildMenu() {
     {
       label: '表示',
       submenu: [
+        { label: '左の一覧', accelerator: 'CmdOrCtrl+D', click: send('toggle-sidebar') },
         { label: 'ファイル', accelerator: 'CmdOrCtrl+Shift+E', click: send('toggle-files') },
         { label: '変更の一覧', accelerator: 'CmdOrCtrl+Shift+G', click: send('toggle-git') },
         { label: '履歴', accelerator: 'CmdOrCtrl+Shift+H', click: send('toggle-history') },

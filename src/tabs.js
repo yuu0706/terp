@@ -24,15 +24,16 @@ function load() {
       workspaces: data?.workspaces && typeof data.workspaces === 'object' && !Array.isArray(data.workspaces)
         ? Object.fromEntries(Object.entries(data.workspaces).filter(([, state]) => state && typeof state === 'object' && !Array.isArray(state))) : null,
       fileWorkspaces: data?.fileWorkspaces && typeof data.fileWorkspaces === 'object' ? data.fileWorkspaces : {},
+      sidebarHidden: data?.sidebarHidden === true,
     };
   } catch {
     return { files: [], order: [], active: null, layout: null };
   }
 }
 
-function save({ files, order, active, layout, workspaces, fileWorkspaces }) {
+function save({ files, order, active, layout, workspaces, fileWorkspaces, sidebarHidden }) {
   fs.mkdirSync(CONFIG_DIR, { recursive: true });
-  const body = JSON.stringify({ files, order, active, layout, workspaces, fileWorkspaces }, null, 2) + '\n';
+  const body = JSON.stringify({ files, order, active, layout, workspaces, fileWorkspaces, sidebarHidden: sidebarHidden === true }, null, 2) + '\n';
   // 書きかけのファイルを読まれないよう、別名で書いてから置き換える
   const tmp = `${TABS_PATH}.tmp`;
   fs.writeFileSync(tmp, body);

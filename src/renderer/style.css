@@ -76,6 +76,24 @@ body {
   user-select: none;
 }
 
+/* 左の一覧を隠したら、上の帯の左端に出すボタンを置く。信号機ボタンの分だけ空ける */
+body[data-sidebar='hidden'] #sidebar {
+  display: none;
+}
+
+body[data-sidebar='hidden'] .topbar {
+  padding-left: 80px;
+}
+
+#sidebar-show {
+  flex: none;
+  -webkit-app-region: no-drag;
+}
+
+#sidebar-show[hidden] {
+  display: none;
+}
+
 /* 設定の誤りは、直すまで一覧の下に出し続ける */
 .config-error {
   flex: none;

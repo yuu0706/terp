@@ -1760,7 +1760,7 @@ function savedTabState() {
   }));
   const active = persistent(activeKey) ? activeKey : recent.find((key) => persistent(key) && workspaceOfKey(key) === activeWorkspace) || null;
   return { files: [...fileViews.keys()], order, active, layout: restoreLayout(layout, order), workspaces: states,
-    fileWorkspaces: Object.fromEntries([...fileViews].map(([path, view]) => [path, view.workspace])) };
+    fileWorkspaces: Object.fromEntries([...fileViews].map(([path, view]) => [path, view.workspace])), sidebarHidden };
 }
 
 function saveTabs() {
@@ -1777,6 +1777,7 @@ async function restoreTabs() {
     : { ...node, children: Array.isArray(node.children) ? node.children.map((child) => remapLayout(child, depth + 1)) : [] };
   if (res.ok) {
     const data = res.value;
+    if (data.sidebarHidden) setSidebarHidden(true, { save: false });
     const legacyWorkspace = workspaces.find((w) => w.id === 'default')?.id || workspaces[0].id;
     for (const path of data.files) {
       const workspace = workspaces.some((w) => w.id === data.fileWorkspaces?.[path]) ? data.fileWorkspaces[path] : legacyWorkspace;
@@ -1986,6 +1987,19 @@ function setPanel(tab) {
   // 面の幅のぶん端末の幅が変わるため、表示中の端末を合わせ直させる
   window.dispatchEvent(new Event('resize'));
   if (!tab) sessions.get(activeId)?.term.focus();
+}
+
+// 左の一覧の表示。隠した状態はタブの控え（tabs.json）に残し、開き直しても保つ。
+// localStorage は自己診断の窓と保存先を共有してしまうため使わない
+let sidebarHidden = false;
+function setSidebarHidden(hidden, { save = true } = {}) {
+  sidebarHidden = hidden;
+  document.body.dataset.sidebar = hidden ? 'hidden' : 'shown';
+  document.getElementById('sidebar-show').hidden = !hidden;
+  if (save) saveTabs();
+  // 一覧の幅のぶん端末の幅が変わるため、表示中の端末を合わせ直させる
+  window.dispatchEvent(new Event('resize'));
+  if (hidden && document.getElementById('sidebar').contains(document.activeElement)) viewOf(activeKey)?.term?.focus();
 }
 
 // 上の帯のボタン: 閉じていれば開き、同じ切り替え先が開いていれば閉じる
@@ -2400,6 +2414,9 @@ terp.onMenu((action, arg) => {
     case 'toggle-history':
       togglePanel('history');
       break;
+    case 'toggle-sidebar':
+      setSidebarHidden(!sidebarHidden);
+      break;
     case 'toggle-git':
       togglePanel('git');
       break;
@@ -2433,6 +2450,9 @@ document.addEventListener('keydown', (event) => {
 document.getElementById('new-terminal').addEventListener('click', () => newTerminal());
 document.getElementById('files-toggle').addEventListener('click', () => togglePanel('files'));
 document.getElementById('history-toggle').addEventListener('click', () => togglePanel('history'));
+document.getElementById('sidebar-hide').addEventListener('click', () => setSidebarHidden(true));
+document.getElementById('sidebar-show').addEventListener('click', () => setSidebarHidden(false));
+setSidebarHidden(false, { save: false });
 document.getElementById('panel-tab-history').addEventListener('click', () => setPanel('history'));
 document.getElementById('git-toggle').addEventListener('click', () => togglePanel('git'));
 document.getElementById('panel-tab-files').addEventListener('click', () => setPanel('files'));

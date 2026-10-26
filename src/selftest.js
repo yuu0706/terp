@@ -1665,6 +1665,42 @@ async function runGitTest({ win, js, check, outDir }) {
 // TERP_SELFTEST_HISTORY は一時リポジトリだけにコミットし、履歴の閲覧を確かめる
 // TERP_SELFTEST_WALLPAPER は、全画面に入ったときの壁紙を窓の後ろに敷くことを確かめる。
 // 本物の全画面は Space を切り替えて利用者の画面を動かすため、全画面に入ったときと同じ合図を送って確かめる
+// TERP_SELFTEST_SIDEBAR は、左の一覧を ⌘D とボタンで隠す・出すことと、その状態が tabs.json に残ることを確かめる
+async function runSidebarTest({ win, js, check, outDir }) {
+  const menu = async () => {
+    const { Menu } = require('electron');
+    const view = Menu.getApplicationMenu().items.find((item) => item.label === '表示');
+    view.submenu.items.find((entry) => entry.accelerator === 'CmdOrCtrl+D').click();
+    await sleep(400);
+  };
+  const state = () => js(`(() => {
+    const term = window.__terp.sessions.get(window.__terp.activeId);
+    return { hidden: getComputedStyle(document.getElementById('sidebar')).display === 'none',
+      show: !document.getElementById('sidebar-show').hidden, cols: term.term.cols };
+  })()`);
+  await sleep(1000);
+  const before = await state();
+  check('初めは左の一覧が出ていて、出すボタンは無い', !before.hidden && !before.show);
+  await menu();
+  const hidden = await state();
+  check('⌘D のメニューで左の一覧が隠れ、出すボタンが出る', hidden.hidden && hidden.show);
+  check('隠すと端末の桁が増える', hidden.cols > before.cols, `${before.cols} → ${hidden.cols}`);
+  await sleep(700);
+  fs.writeFileSync(path.join(outDir, 'sidebar-hidden.png'), (await win.webContents.capturePage()).toPNG());
+  await sleep(500);
+  const saved = JSON.parse(fs.readFileSync(path.join(require('./config').CONFIG_DIR, 'tabs.json'), 'utf8'));
+  check('隠した状態が tabs.json に残る', saved.sidebarHidden === true);
+  await js(`document.getElementById('sidebar-show').click()`);
+  await sleep(400);
+  const shown = await state();
+  check('出すボタンで左の一覧が戻り、ボタンは消える', !shown.hidden && !shown.show && shown.cols === before.cols);
+  await js(`document.getElementById('sidebar-hide').click()`);
+  await sleep(400);
+  check('一覧の上のボタンでも隠せる', (await state()).hidden);
+  await menu();
+  check('もう一度 ⌘D で戻る', !(await state()).hidden);
+}
+
 // TERP_SELFTEST_KEYS は、行の編集のキー（⌥←→・⌘←→・⌘⌫）と Shift+Enter が zsh で効くことを確かめる
 async function runKeysTest({ win, js, check }) {
   const id = await js('window.__terp.activeId');
@@ -2534,6 +2570,12 @@ exports.run = (win) => {
       return;
     }
 
+    if (process.env.TERP_SELFTEST_SIDEBAR) {
+      await runSidebarTest({ win, js, check, outDir });
+      fs.writeFileSync(path.join(outDir, 'result.txt'), log.join('\n') + '\n');
+      await finish();
+      return;
+    }
     if (process.env.TERP_SELFTEST_KEYS) {
       await runKeysTest({ win, js, check });
       fs.writeFileSync(path.join(outDir, 'result.txt'), log.join('\n') + '\n');
