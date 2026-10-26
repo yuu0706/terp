@@ -1623,6 +1623,16 @@ async function dropTabInPane(key, paneId, side = 'center') {
     }
   }
   if (!viewOf(key) || workspaceOfKey(key) !== activeWorkspace || !paneList(layout).some((p) => p.id === paneId)) return;
+  // 表示中のタブを自分の枠の端へ落としたら、そのタブを新しい枠へ出し、元の枠には1つ前に見ていたタブを出す。
+  // 1つ前が無ければ同じ場所で新しいターミナルを開く
+  const target = paneList(layout).find((p) => p.id === paneId);
+  if (side !== 'center' && target.key === key && paneList(layout).length < MAX_PANES) {
+    const displayed = new Set(paneList(layout).map((p) => p.key));
+    let previous = recent.find((k) => k !== key && workspaceOfKey(k) === activeWorkspace && tabOrder.includes(k) && groupOf(k) === groupOf(key) && !displayed.has(k));
+    if (!previous) previous = termKey((await openTerminal({ cwd: key.startsWith('t:') ? sessions.get(Number(key.slice(2)))?.cwd : activeCwd(), show: false })).id);
+    if (!paneList(layout).some((p) => p.id === paneId && p.key === key)) return;
+    layout = replacePane(layout, paneId, previous);
+  }
   layout = side === 'center' ? replacePane(layout, paneId, key) : splitPane(layout, paneId, key, side);
   activePaneId = paneList(layout).find((p) => p.key === key).id;
   activateKey(key);

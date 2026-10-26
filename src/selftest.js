@@ -877,6 +877,17 @@ async function runSplitTest({ win, js, check, outDir }) {
   await waitFor(() => js('window.__terp.sessions.size === 0'));
   const first = await js('window.__terp.open(window.terp.home)');
   const second = await js('window.__terp.open(window.terp.home)');
+  // 表示中のタブを自分の枠の端へ落とすと、そのタブが新しい枠へ移り、元の枠は1つ前に見ていたタブになる
+  await js(`window.__terp.activateKey('t:${first}')`);
+  const own = (await leaves())[0].id;
+  await js(`window.__terp.dropTab('t:${first}', ${JSON.stringify(own)}, 'right')`);
+  await sleep(300);
+  const selfSplit = await leaves();
+  check('表示中のタブを自分の枠の端へ落とすと、1つ前のタブと2枠になる',
+    selfSplit.length === 2 && selfSplit[0].key === `t:${second}` && selfSplit[1].key === `t:${first}` && (await js('window.__terp.sessions.size')) === 2,
+    selfSplit.map((p) => p.key).join(','));
+  await js(`window.__terp.dropTab('t:${first}', ${JSON.stringify(selfSplit[0].id)}, 'center')`);
+  await waitFor(async () => (await leaves()).length === 1);
   await js(`window.__terp.activateKey('t:${first}')`);
   const target = (await leaves())[0].id;
   await js(`window.__terp.dropTab('t:${second}', ${JSON.stringify(target)}, 'right')`);
