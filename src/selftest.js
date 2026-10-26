@@ -2110,6 +2110,15 @@ async function runWorkspaceTest({ js, check, outDir }) {
     const { contrast, luminance } = await import('data:text/javascript;base64,' + fs.readFileSync(path.join(__dirname, 'renderer/favcolor.js')).toString('base64'));
     const hex = (value) => '#' + rgba(value).slice(0, 3).map((c) => c.toString(16).padStart(2, '0')).join('');
     check('お気に入りの背景が強調色になる', rgba(colors.bg).slice(0, 3).every((c) => c === 238) && colors.head === colors.bg);
+    // 星と × は同じ行の隣り合う別の場所に置き、押し間違えないようにする
+    const buttons = await js(`(() => {
+      const row = window.__terp.sessions.get(${a}).li;
+      const box = (el) => { const r = el.getBoundingClientRect(); return { left: r.left, right: r.right, top: r.top, bottom: r.bottom }; };
+      return { star: box(row.querySelector('.session__favorite')), close: box(row.querySelector('.session__close')) };
+    })()`);
+    check('お気に入りの星と閉じるの × が重ならない',
+      buttons.star.right <= buttons.close.left && buttons.star.bottom > buttons.close.top && buttons.star.top < buttons.close.bottom,
+      JSON.stringify(buttons));
     check('お気に入りの不透明度が一覧と同じ', rgba(colors.bg)[3] === 0.65 && rgba(colors.sidebar)[3] === 0.65);
     check('文字は暗くなりコントラスト比4.5以上', contrast('#eeeeee', hex(colors.text)) >= 4.5 && luminance(hex(colors.text)) < luminance('#eeeeee'));
     check('2行目も同じ色、選択中の線が残る', colors.sub === colors.text && colors.selected !== 'none');
