@@ -13,6 +13,23 @@ export function tileLabels(item) {
   return { main, meta: meta.join(' · ') };
 }
 
+// 所属の中のまとまり。表示中の端末を先頭に出し、続けてリポジトリ（一覧の並び順）、最後にその他のターミナル。
+// リポジトリが多くても、作業中の端末を探して下まで送らずに済むようにする
+export function overviewGroups(members) {
+  const groups = [];
+  const current = members.filter((item) => item.current);
+  if (current.length) groups.push({ key: 'current', repoPath: null, label: '表示中', items: current });
+  const rest = members.filter((item) => !item.current);
+  const repos = [...new Set(rest.filter((item) => item.repoPath).map((item) => item.repoPath))];
+  for (const repoPath of repos) {
+    const items = rest.filter((item) => item.repoPath === repoPath);
+    groups.push({ key: `repo:${repoPath}`, repoPath, label: items[0].repoName || repoPath, items });
+  }
+  const loose = rest.filter((item) => !item.repoPath);
+  if (loose.length) groups.push({ key: 'loose', repoPath: null, label: 'その他のターミナル', items: loose });
+  return groups;
+}
+
 // 列数は窓幅とまとまりごとに変わるため、描画されたタイルの位置から隣を選ぶ。
 export function overviewNeighbor(rects, id, direction) {
   const current = rects.find((rect) => rect.id === id);
@@ -82,7 +99,7 @@ export function createOverview({ host, snapshot, preview, renderStatus, star, ac
     const { workspaces, items } = snapshot();
     const matches = filterOverview(items, input.value);
     if (!matches.some((item) => item.id === selected)) selected = matches[0]?.id ?? null;
-    const nextSignature = JSON.stringify([workspaces, matches.map((item) => [item.id, item.workspace, item.repoPath, item.repoName])]);
+    const nextSignature = JSON.stringify([workspaces, matches.map((item) => [item.id, item.workspace, item.repoPath, item.repoName, item.current])]);
     if (signature !== nextSignature) {
       const tileHadFocus = document.activeElement?.closest('.overview__tile');
       signature = nextSignature;
@@ -99,15 +116,16 @@ export function createOverview({ host, snapshot, preview, renderStatus, star, ac
         const heading = document.createElement('h2');
         heading.textContent = workspace.name;
         section.append(heading);
-        for (const repoPath of new Set(members.map((item) => item.repoPath))) {
+        for (const { key, repoPath, label, items: groupItems } of overviewGroups(members)) {
           const group = document.createElement('div');
           group.className = 'overview__repo';
+          group.dataset.group = key;
           group.dataset.repo = repoPath || '';
           const repoHeading = document.createElement('h3');
-          repoHeading.textContent = members.find((item) => item.repoPath === repoPath).repoName || 'その他のターミナル';
+          repoHeading.textContent = label;
           const grid = document.createElement('div');
           grid.className = 'overview__grid';
-          for (const item of members.filter((item) => item.repoPath === repoPath)) {
+          for (const item of groupItems) {
             let tile = tiles.get(item.id);
             if (!tile) {
               tile = document.createElement('button');

@@ -2361,7 +2361,11 @@ async function runOverviewTest({ win, js, check, outDir }) {
       return groups[0].dataset.workspace === ${JSON.stringify(first)} && groups.some((el) => el.dataset.workspace === ${JSON.stringify(second.id)})
         && [...document.querySelectorAll('.overview__tile')].every((el) => el.closest('.overview__workspace').dataset.workspace === window.__terp.sessions.get(Number(el.dataset.id)).workspace);
     })()`));
-    check('リポジトリとその他のターミナルを分ける', await js(`document.querySelector('.overview__tile[data-id="${a}"]').closest('.overview__repo').dataset.repo === ${JSON.stringify(repo)} && document.querySelector('.overview__tile[data-id="${b}"]').closest('.overview__repo').dataset.repo === ''`));
+    check('表示中の端末を所属の先頭のまとまりに出す', await js(`(() => {
+      const group = document.querySelector('.overview__tile[data-id="${a}"]').closest('.overview__repo');
+      return group.dataset.group === 'current' && group === document.querySelector('.overview__workspace .overview__repo');
+    })()`));
+    check('表示していない端末はその他のターミナルに出す', await js(`document.querySelector('.overview__tile[data-id="${b}"]').closest('.overview__repo').dataset.group === 'loose'`));
     const labelsC = await js(`({ main: document.querySelector('.overview__tile[data-id="${c}"] .overview__name').textContent,
       meta: document.querySelector('.overview__tile[data-id="${c}"] .overview__meta').textContent })`);
     check('エージェントの端末は、端末の題名（要件）を見出しにし、名前とプログラムを下に出す',
@@ -2393,6 +2397,7 @@ async function runOverviewTest({ win, js, check, outDir }) {
     await wait(async () => !(await opened()) && await js(`window.__terp.activeId === ${c}`));
     check('Enter で閉じて別のワークスペースへ移る', (await js('window.__terp.activeWorkspace')) === second.id);
     await openMenu();
+    check('表示から外れた端末はリポジトリのまとまりに戻る', await js(`document.querySelector('.overview__tile[data-id="${a}"]').closest('.overview__repo').dataset.repo === ${JSON.stringify(repo)}`));
     check('切り替えた所属が先頭になり、移った端末を選ぶ', (await selected()) === c && await js(`document.querySelector('.overview__workspace').dataset.workspace === ${JSON.stringify(second.id)}`));
     await query('確認 c');
     check('英字の大小を区別せず絞り込む', JSON.stringify(await tileIds()) === JSON.stringify([c]));

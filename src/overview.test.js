@@ -4,7 +4,7 @@ const path = require('node:path');
 
 (async () => {
   const source = fs.readFileSync(path.join(__dirname, 'renderer/overview.js'), 'utf8');
-  const { filterOverview, overviewNeighbor, tileLabels } = await import('data:text/javascript;base64,' + Buffer.from(source).toString('base64'));
+  const { filterOverview, overviewNeighbor, tileLabels, overviewGroups } = await import('data:text/javascript;base64,' + Buffer.from(source).toString('base64'));
   let count = 0;
   const check = (label, actual, expected) => { assert.deepEqual(actual, expected, label); count++; };
   const items = [
@@ -32,6 +32,15 @@ const path = require('node:path');
   check('複数件の結果は入力の順序', ids('i', [items[1], items[0]]), [2, 1]);
   check('元の名前を変更しない', items[0].name, 'API の調査');
   check('要件でも絞れる', ids('ログイン', [{ id: 8, name: 'claude', requirement: 'ログイン画面の不具合を直す' }]), [8]);
+
+  const members = [
+    { id: 1, repoPath: '/b', repoName: 'B' }, { id: 2, repoPath: null }, { id: 3, repoPath: '/a', repoName: 'A', current: true },
+    { id: 4, repoPath: '/a', repoName: 'A' }, { id: 5, repoPath: '/b', repoName: 'B' },
+  ];
+  const groups = (list) => overviewGroups(list).map((g) => [g.label, g.items.map((item) => item.id)]);
+  check('表示中を先頭に、リポジトリは並び順、その他は最後', groups(members), [['表示中', [3]], ['B', [1, 5]], ['A', [4]], ['その他のターミナル', [2]]]);
+  check('表示中が無ければ出さない', groups(members.filter((item) => !item.current)), [['B', [1, 5]], ['A', [4]], ['その他のターミナル', [2]]]);
+  check('表示中だけのリポジトリは見出しを出さない', groups([members[2]]), [['表示中', [3]]]);
 
   check('要件があれば見出しにし、ブランチとプログラムを下に出す',
     tileLabels({ name: 'ログイン画面の不具合を直す', requirement: 'ログイン画面の不具合を直す', branch: 'fix/login', program: 'claude' }),

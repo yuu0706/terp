@@ -28,6 +28,7 @@
   --space-3: 12px;
   --text-sm: 12px;
   --text-md: 14px;
+  --text-lg: 18px;
   --radius: 6px;
   --icon-sm: 16px;
   --term-padding-x: 10px;
@@ -2744,14 +2745,17 @@ button.subagent:hover,
 
 .overview__workspace > h2 {
   padding-bottom: var(--space-2);
+  font-size: var(--text-lg);
   border-bottom: 1px solid var(--color-border);
 }
 
-.overview__repo { margin-top: var(--space-3); }
+.overview__repo { margin-top: calc(var(--space-3) * 2); }
+/* リポジトリ名は一目で見分けるため、補助の文字より大きく濃くする（2026-10-26 利用者の指示） */
 .overview__repo > h3 {
   margin-bottom: var(--space-2);
-  font-size: var(--text-sm);
-  color: var(--color-text-muted);
+  font-size: var(--text-md);
+  font-weight: 600;
+  color: var(--color-text);
 }
 
 .overview__grid {
