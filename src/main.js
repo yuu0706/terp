@@ -400,6 +400,7 @@ function buildMenu() {
       submenu: [
         { label: '新しいターミナル', accelerator: 'CmdOrCtrl+T', click: send('new') },
         { label: '右に分割', accelerator: 'CmdOrCtrl+\\', click: send('split-right') },
+        { label: '閉じたタブを開き直す', accelerator: 'CmdOrCtrl+Shift+T', click: send('reopen') },
         { label: '新しい作業…', accelerator: 'CmdOrCtrl+N', click: send('new-work') },
         { label: 'リポジトリを追加…', click: send('add-project') },
         { label: 'タブを閉じる', accelerator: 'CmdOrCtrl+W', click: send('close') },
@@ -425,6 +426,11 @@ function buildMenu() {
         { role: 'copy', label: 'コピー' },
         { role: 'paste', label: '貼り付け' },
         { label: 'すべて選択', accelerator: 'CmdOrCtrl+A', click: send('select-all') },
+        { type: 'separator' },
+        { label: '検索', accelerator: 'CmdOrCtrl+F', click: send('find') },
+        { label: '次を検索', accelerator: 'CmdOrCtrl+G', click: send('find-next') },
+        // ⇧⌘G は「変更の一覧」が先に使っている。前へは検索欄の ⇧Enter で
+        { label: '前を検索', click: send('find-prev') },
       ],
     },
     {
@@ -448,10 +454,16 @@ function buildMenu() {
     {
       label: '表示',
       submenu: [
-        { label: '左の一覧', accelerator: 'CmdOrCtrl+D', click: send('toggle-sidebar') },
+        { label: '左の一覧', accelerator: 'CmdOrCtrl+B', click: send('toggle-sidebar') },
         { label: 'ファイル', accelerator: 'CmdOrCtrl+Shift+E', click: send('toggle-files') },
         { label: '変更の一覧', accelerator: 'CmdOrCtrl+Shift+G', click: send('toggle-git') },
         { label: '履歴', accelerator: 'CmdOrCtrl+Shift+H', click: send('toggle-history') },
+        { type: 'separator' },
+        { label: '文字を大きく', accelerator: 'CmdOrCtrl+=', click: send('font-bigger') },
+        // ⇧ を押したまま ⌘+ と打っても効くように、隠した項目でも受ける
+        { label: '文字を大きく', accelerator: 'CmdOrCtrl+Plus', visible: false, click: send('font-bigger') },
+        { label: '文字を小さく', accelerator: 'CmdOrCtrl+-', click: send('font-smaller') },
+        { label: '文字を元の大きさに', accelerator: 'CmdOrCtrl+0', click: send('font-reset') },
         { type: 'separator' },
         { role: 'toggleDevTools', label: '開発者ツール' },
         { role: 'togglefullscreen', label: 'フルスクリーン' },

@@ -1665,12 +1665,12 @@ async function runGitTest({ win, js, check, outDir }) {
 // TERP_SELFTEST_HISTORY は一時リポジトリだけにコミットし、履歴の閲覧を確かめる
 // TERP_SELFTEST_WALLPAPER は、全画面に入ったときの壁紙を窓の後ろに敷くことを確かめる。
 // 本物の全画面は Space を切り替えて利用者の画面を動かすため、全画面に入ったときと同じ合図を送って確かめる
-// TERP_SELFTEST_SIDEBAR は、左の一覧を ⌘D とボタンで隠す・出すことと、その状態が tabs.json に残ることを確かめる
+// TERP_SELFTEST_SIDEBAR は、左の一覧を ⌘B とボタンで隠す・出すことと、その状態が tabs.json に残ることを確かめる
 async function runSidebarTest({ win, js, check, outDir }) {
   const menu = async () => {
     const { Menu } = require('electron');
     const view = Menu.getApplicationMenu().items.find((item) => item.label === '表示');
-    view.submenu.items.find((entry) => entry.accelerator === 'CmdOrCtrl+D').click();
+    view.submenu.items.find((entry) => entry.accelerator === 'CmdOrCtrl+B').click();
     await sleep(400);
   };
   const state = () => js(`(() => {
@@ -1683,7 +1683,7 @@ async function runSidebarTest({ win, js, check, outDir }) {
   check('初めは左の一覧が出ていて、出すボタンは無い', !before.hidden && !before.show);
   await menu();
   const hidden = await state();
-  check('⌘D のメニューで左の一覧が隠れ、出すボタンが出る', hidden.hidden && hidden.show);
+  check('⌘B のメニューで左の一覧が隠れ、出すボタンが出る', hidden.hidden && hidden.show);
   check('隠すと端末の桁が増える', hidden.cols > before.cols, `${before.cols} → ${hidden.cols}`);
   await sleep(700);
   fs.writeFileSync(path.join(outDir, 'sidebar-hidden.png'), (await win.webContents.capturePage()).toPNG());
@@ -1698,7 +1698,82 @@ async function runSidebarTest({ win, js, check, outDir }) {
   await sleep(400);
   check('一覧の上のボタンでも隠せる', (await state()).hidden);
   await menu();
-  check('もう一度 ⌘D で戻る', !(await state()).hidden);
+  check('もう一度 ⌘B で戻る', !(await state()).hidden);
+}
+
+// TERP_SELFTEST_SHORTCUTS は、VS Code に倣って足したキー（⌘F・⌘G、⌘= / ⌘- / ⌘0、⇧⌘T）を確かめる
+async function runShortcutsTest({ win, js, check, outDir }) {
+  const menu = async (label) => {
+    const { Menu } = require('electron');
+    const item = Menu.getApplicationMenu().items.flatMap((top) => top.submenu.items).find((entry) => entry.label === label && entry.visible);
+    item.click();
+    await sleep(400);
+  };
+  const waitFor = async (code, tries = 100) => {
+    for (let i = 0; i < tries; i++) {
+      if (await js(code)) return true;
+      await sleep(100);
+    }
+    return false;
+  };
+  await sleep(1500);
+  const id = await js('window.__terp.activeId');
+  await js(`window.terp.write(${id}, 'echo FIND""ME1; echo FIND""ME2\\r')`);
+  await waitFor(`window.__terp.bufferText(${id}).includes('FINDME2\\n')`);
+
+  await menu('検索');
+  const opened = await js(`(() => { const bar = document.getElementById('term-search');
+    return { shown: !bar.hidden, focused: document.activeElement === bar.querySelector('input'),
+      inPane: Boolean(bar.closest('.pane__body')) }; })()`);
+  check('⌘F で検索欄が枠の中に出て、入力欄に文字を打てる', opened.shown && opened.focused && opened.inPane, JSON.stringify(opened));
+  await js(`(() => { const input = document.querySelector('#term-search input'); input.value = 'FINDME'; input.dispatchEvent(new Event('input')); })()`);
+  await sleep(500);
+  const first = await js('window.__terp.termSearch.countText()');
+  check('打った文字の当たりの数と位置が出る', /^\d+\/2$/.test(first), first);
+  await menu('次を検索');
+  const second = await js('window.__terp.termSearch.countText()');
+  check('⌘G で次の当たりへ進む', /^\d+\/2$/.test(second) && second !== first, `${first} → ${second}`);
+  check('当たりの文字が選ばれる', (await js(`window.__terp.sessions.get(${id}).term.getSelection()`)) === 'FINDME');
+  await sleep(300);
+  fs.writeFileSync(path.join(outDir, 'term-search.png'), (await win.webContents.capturePage()).toPNG());
+  await js(`document.querySelector('#term-search input').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))`);
+  await sleep(200);
+  const closed = await js(`({ hidden: document.getElementById('term-search').hidden,
+    termFocused: document.activeElement === window.__terp.sessions.get(${id}).term.textarea })`);
+  check('Esc で検索欄が閉じ、端末に戻る', closed.hidden && closed.termFocused, JSON.stringify(closed));
+
+  const font = () => js(`({ size: window.__terp.sessions.get(${id}).term.options.fontSize, cols: window.__terp.sessions.get(${id}).term.cols })`);
+  const base = await font();
+  await menu('文字を大きく');
+  const bigger = await font();
+  check('⌘= で文字が大きくなり、桁が減る', bigger.size === base.size + 1 && bigger.cols < base.cols, `${base.size}pt ${base.cols}桁 → ${bigger.size}pt ${bigger.cols}桁`);
+  await menu('文字を小さく');
+  await menu('文字を小さく');
+  check('⌘- で文字が小さくなる', (await font()).size === base.size - 1);
+  await sleep(500);
+  const saved = JSON.parse(fs.readFileSync(path.join(require('./config').CONFIG_DIR, 'tabs.json'), 'utf8'));
+  check('文字の大きさの差が tabs.json に残る', saved.fontDelta === -1, String(saved.fontDelta));
+  await menu('新しいターミナル');
+  check('後から開いた端末も同じ大きさになる', (await js('window.__terp.sessions.get(window.__terp.activeId).term.options.fontSize')) === base.size - 1);
+  await menu('文字を元の大きさに');
+  check('⌘0 で設定の大きさに戻る', (await font()).size === base.size);
+
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(require('os').tmpdir(), 'terp-reopen-')));
+  const second2 = await js('window.__terp.activeId');
+  await js(`(() => { const s = window.__terp.sessions.get(${second2}); s.customName = 'REOPENME'; window.terp.setMeta(s.id, { customName: s.customName }); })()`);
+  await js(`window.terp.write(${second2}, ${JSON.stringify(`cd ${dir}
+`)})`);
+  const moved = await waitFor(`window.__terp.sessions.get(${second2})?.cwd === ${JSON.stringify(dir)}`);
+  check('試しの端末が試しの場所へ移る', moved);
+  await menu('タブを閉じる');
+  await waitFor(`!window.__terp.sessions.has(${second2})`);
+  check('閉じた端末を覚える', (await js('window.__terp.closedTabs[0]?.name')) === 'REOPENME');
+  await menu('閉じたタブを開き直す');
+  const reopened = await waitFor(`(() => { const s = window.__terp.sessions.get(window.__terp.activeId);
+    return s && s.id !== ${second2} && s.customName === 'REOPENME' && s.cwd === ${JSON.stringify(dir)}; })()`, 50);
+  check('⇧⌘T で同じ名前・同じ場所の端末が開き、前に出る', reopened);
+  check('開き直したものは覚えから消える', (await js('window.__terp.closedTabs.length')) === 0);
+  fs.rmSync(dir, { recursive: true, force: true });
 }
 
 // TERP_SELFTEST_KEYS は、行の編集のキー（⌥←→・⌘←→・⌘⌫）と Shift+Enter が zsh で効くことを確かめる
@@ -2572,6 +2647,12 @@ exports.run = (win) => {
 
     if (process.env.TERP_SELFTEST_SIDEBAR) {
       await runSidebarTest({ win, js, check, outDir });
+      fs.writeFileSync(path.join(outDir, 'result.txt'), log.join('\n') + '\n');
+      await finish();
+      return;
+    }
+    if (process.env.TERP_SELFTEST_SHORTCUTS) {
+      await runShortcutsTest({ win, js, check, outDir });
       fs.writeFileSync(path.join(outDir, 'result.txt'), log.join('\n') + '\n');
       await finish();
       return;

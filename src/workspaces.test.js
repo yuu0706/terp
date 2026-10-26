@@ -90,7 +90,7 @@ async function run() {
     equal(projects.load().workspaces[1].name, '私用');
     projects.reorder(['/repo', '/repo', '/unknown']);
     equal(projects.load().projects.map((p) => p.path), ['/second', '/repo']);
-    const saved = { files: [], order: ['t:1'], active: 't:1', layout: null, workspaces: { [b.id]: { active: 't:1', layout: null } }, fileWorkspaces: {} };
+    const saved = { files: [], order: ['t:1'], active: 't:1', layout: null, workspaces: { [b.id]: { active: 't:1', layout: null } }, fileWorkspaces: {}, sidebarHidden: true, fontDelta: -2 };
     tabs.save(saved);
     equal(tabs.load(), saved);
     const sessions = [{ id: 1, cwd: '/tmp', workspace: b.id, favorite: true }];

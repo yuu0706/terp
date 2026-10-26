@@ -3,6 +3,7 @@ import { FitAddon } from '../../node_modules/@xterm/addon-fit/lib/addon-fit.mjs'
 import { WebglAddon } from '../../node_modules/@xterm/addon-webgl/lib/addon-webgl.mjs';
 import { Unicode11Addon } from '../../node_modules/@xterm/addon-unicode11/lib/addon-unicode11.mjs';
 import { WebLinksAddon } from '../../node_modules/@xterm/addon-web-links/lib/addon-web-links.mjs';
+import { SearchAddon } from '../../node_modules/@xterm/addon-search/lib/addon-search.mjs';
 import { initHistoryPanel, setHistoryVisible, refreshHistory, filterFileHistory, renderCommitView } from './historypanel.js';
 import { initGitPanel, refresh as refreshGit, setGitVisible } from './gitpanel.js';
 import { initFilesPanel, refreshFiles, setFilesVisible, markActiveFile } from './filespanel.js';
@@ -14,6 +15,7 @@ import { terminalPaths, pathDropTarget, pathsFromTransfer } from './droppaths.js
 import { withAlpha, favoriteText } from './favcolor.js';
 import { STAR_ICON, favoriteLabel, createMenu, createWorkspaceUI } from './workspaceui.js';
 import { createOverview } from './overview.js';
+import { createTermSearch } from './termsearch.js';
 
 const terp = window.terp;
 // 枠の外でも Finder のファイルで窓が遷移しないよう、既定の動作を止める。
@@ -72,6 +74,7 @@ let layout = createPane();
 let activePaneId = layout.id;
 const paneHost = document.getElementById('panes');
 const viewStore = document.getElementById('view-store');
+const termSearch = createTermSearch();
 const panes = createPaneView(paneHost, {
   onActivate: activatePane,
   onClose: closeWorkspacePane,
@@ -138,7 +141,7 @@ function applyConfig(c) {
   for (const s of sessions.values()) {
     s.term.options.theme = terminalTheme(c);
     s.term.options.fontFamily = c.font.family;
-    s.term.options.fontSize = c.font.size;
+    s.term.options.fontSize = termFontSize();
     s.term.options.minimumContrastRatio = c.minimumContrast;
     s.term.options.cursorStyle = c.cursorStyle;
     s.term.options.cursorBlink = c.cursorBlink;
@@ -1438,7 +1441,7 @@ async function submitRemove() {
   for (const path of [...fileViews.keys()]) {
     if (workOfPath(path)?.path === w.path && !(await closeFile(path))) return;
   }
-  for (const s of [...sessions.values()]) if (workOf(s)?.path === w.path) closeSession(s.id);
+  for (const s of [...sessions.values()]) if (workOf(s)?.path === w.path) closeSession(s.id, { remember: false });
   const res = await terp.removeWork({ repo: w.repo, dir: w.path });
   if (!res.ok) {
     setDialogError(removeDialog, res.error);
@@ -1598,6 +1601,10 @@ function syncPanes() {
     } else view.view?.editor?.layout();
   }
   renderPaneTitles();
+  if (termSearch.target) {
+    const pane = paneList(layout).find((p) => p.key === termKey(termSearch.target.id));
+    termSearch.follow(pane ? panes.body(pane.id) : null);
+  }
   const activePane = paneList(layout).find((p) => p.id === activePaneId);
   if (activePane && !activePane.key) panes.body(activePane.id).appendChild(empty);
   else if (empty.parentElement !== viewStore) viewStore.appendChild(empty);
@@ -1760,7 +1767,7 @@ function savedTabState() {
   }));
   const active = persistent(activeKey) ? activeKey : recent.find((key) => persistent(key) && workspaceOfKey(key) === activeWorkspace) || null;
   return { files: [...fileViews.keys()], order, active, layout: restoreLayout(layout, order), workspaces: states,
-    fileWorkspaces: Object.fromEntries([...fileViews].map(([path, view]) => [path, view.workspace])), sidebarHidden };
+    fileWorkspaces: Object.fromEntries([...fileViews].map(([path, view]) => [path, view.workspace])), sidebarHidden, fontDelta };
 }
 
 function saveTabs() {
@@ -1778,6 +1785,7 @@ async function restoreTabs() {
   if (res.ok) {
     const data = res.value;
     if (data.sidebarHidden) setSidebarHidden(true, { save: false });
+    if (data.fontDelta) setFontDelta(data.fontDelta, { save: false });
     const legacyWorkspace = workspaces.find((w) => w.id === 'default')?.id || workspaces[0].id;
     for (const path of data.files) {
       const workspace = workspaces.some((w) => w.id === data.fileWorkspaces?.[path]) ? data.fileWorkspaces[path] : legacyWorkspace;
@@ -1866,6 +1874,7 @@ async function closeFileView(f) {
     });
     if (answer === 'cancel' || (answer === 'accept' && !(await f.view.save()))) return false;
   }
+  rememberClosed({ kind: 'file', path: f.path, workspace: f.workspace });
   f.view.dispose();
   f.el.remove();
   dropTab(fileKey(f.path));
@@ -2054,7 +2063,7 @@ function buildTerminal() {
     allowProposedApi: true,
     allowTransparency: true,
     fontFamily: config.font.family,
-    fontSize: config.font.size,
+    fontSize: termFontSize(),
     minimumContrastRatio: config.minimumContrast,
     cursorStyle: config.cursorStyle,
     cursorBlink: config.cursorBlink,
@@ -2068,19 +2077,22 @@ function buildTerminal() {
   term.loadAddon(new Unicode11Addon());
   term.unicode.activeVersion = '11';
   term.loadAddon(new WebLinksAddon((_event, url) => terp.openExternal(url)));
+  const search = new SearchAddon();
+  term.loadAddon(search);
   term.open(el);
   // 寸法を測れるよう、一度表示してから測る
   el.hidden = false;
   fit.fit();
   el.hidden = true;
-  return { el, term, fit };
+  return { el, term, fit, search };
 }
 
-function registerSession(id, { el, term, fit }, extra = {}) {
+function registerSession(id, { el, term, fit, search }, extra = {}) {
   const s = {
     id,
     term,
     fit,
+    search,
     el,
     cwd: '',
     program: '',
@@ -2256,8 +2268,66 @@ function markNotify(s, kind, message = '') {
   renderAll();
 }
 
-function closeSession(id) {
+// remember を外すのは、作業（worktree）を消して端末も閉じるときだけ。開き直しても場所が無い
+function closeSession(id, { remember = true } = {}) {
+  const s = sessions.get(id);
+  if (s && remember) rememberClosed({ kind: 'terminal', cwd: s.cwd, workspace: s.workspace, name: s.customName, favorite: s.favorite });
   terp.kill(id);
+}
+
+// ⇧⌘T で開き直すため、閉じたタブを新しい順に覚える。端末は同じ場所で新しいシェルを開く（中で動いていたものは戻らない）
+const MAX_CLOSED = 20;
+let closedTabs = [];
+function rememberClosed(entry) {
+  closedTabs = [entry, ...closedTabs].slice(0, MAX_CLOSED);
+}
+
+async function reopenClosed() {
+  const entry = closedTabs.shift();
+  if (!entry) return;
+  const workspace = workspaces.some((w) => w.id === entry.workspace) ? entry.workspace : activeWorkspace;
+  if (entry.kind === 'file') {
+    await openFile(entry.path, { workspace });
+    return;
+  }
+  const s = await openTerminal({ cwd: entry.cwd, workspace, favorite: entry.favorite });
+  if (entry.name) {
+    s.customName = entry.name;
+    terp.setMeta(s.id, { customName: s.customName });
+    renderAll();
+  }
+}
+
+// ⌘= / ⌘- / ⌘0。設定の文字の大きさからの差として持ち、tabs.json に残す
+const MIN_FONT_SIZE = 6;
+const MAX_FONT_SIZE = 40;
+let fontDelta = 0;
+function termFontSize() {
+  return Math.min(MAX_FONT_SIZE, Math.max(MIN_FONT_SIZE, config.font.size + fontDelta));
+}
+
+function setFontDelta(delta, { save = true } = {}) {
+  const size = Math.min(MAX_FONT_SIZE, Math.max(MIN_FONT_SIZE, config.font.size + delta));
+  fontDelta = size - config.font.size;
+  for (const s of sessions.values()) {
+    s.term.options.fontSize = size;
+    if (!s.el.hidden) s.fit.fit();
+  }
+  if (save) saveTabs();
+}
+
+function openTermSearch(direction) {
+  const s = activeKey?.startsWith('t:') ? sessions.get(activeId) : null;
+  if (!s) {
+    // ファイルのタブでは、エディターの検索を使う
+    const editor = activeKey?.startsWith('f:') && fileViews.get(activeKey.slice(2))?.view?.editor;
+    const action = direction === 'next' ? 'editor.action.nextMatchFindAction' : direction === 'prev' ? 'editor.action.previousMatchFindAction' : 'actions.find';
+    editor?.getAction(action)?.run();
+    return;
+  }
+  const host = panes.body(activePaneId);
+  if (direction) termSearch.step(s, direction, host);
+  else termSearch.open(s, host);
 }
 
 function removeSession(id) {
@@ -2277,6 +2347,7 @@ function removeSession(id) {
   subagentLists.get(id)?.el.remove();
   subagentLists.delete(id);
   delete subagents[id];
+  if (termSearch.target === s) termSearch.close({ focus: false });
   detachWebgl(s);
   s.term.dispose();
   s.el.remove();
@@ -2387,6 +2458,27 @@ terp.onMenu((action, arg) => {
     case 'close':
       closeKey(activeKey);
       break;
+    case 'find':
+      openTermSearch();
+      break;
+    case 'find-next':
+      openTermSearch('next');
+      break;
+    case 'find-prev':
+      openTermSearch('prev');
+      break;
+    case 'font-bigger':
+      setFontDelta(fontDelta + 1);
+      break;
+    case 'font-smaller':
+      setFontDelta(fontDelta - 1);
+      break;
+    case 'font-reset':
+      setFontDelta(0);
+      break;
+    case 'reopen':
+      reopenClosed();
+      break;
     case 'save':
       if (activeKey?.startsWith('f:')) fileViews.get(activeKey.slice(2))?.view?.save();
       break;
@@ -2486,6 +2578,9 @@ window.__terp = {
   sessions,
   get workspaces() { return workspaces; },
   get activeWorkspace() { return activeWorkspace; },
+  termSearch,
+  get closedTabs() { return closedTabs; },
+  termFontSize,
   switchWorkspace,
   createWorkspace,
   removeWorkspace,

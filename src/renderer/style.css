@@ -2892,3 +2892,34 @@ button.subagent:hover,
   background: transparent;
   outline: 1px solid currentColor;
 }
+
+/* 端末の中の検索（⌘F）。表示している枠の右上に重ねる */
+.term-search {
+  position: absolute;
+  top: var(--space-2);
+  right: calc(var(--space-2) + 14px);
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-bg);
+  box-shadow: 0 4px 12px rgb(0 0 0 / 0.3);
+}
+
+.term-search[hidden] { display: none; }
+
+.term-search__input {
+  width: 200px;
+  height: var(--control-h);
+}
+
+.term-search__count {
+  min-width: 4em;
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
