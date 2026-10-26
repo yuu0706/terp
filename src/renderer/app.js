@@ -1169,7 +1169,7 @@ function agentCommandLine(a, bypass = false) {
   const quote = (value) => "'" + String(value).replace(/'/g, "'\\''") + "'";
   const env = Object.entries(a.env || {}).filter(([key]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(key));
   const prefix = env.length ? ['env', ...env.map(([key, value]) => `${key}=${quote(value)}`)] : [];
-  const file = a.configuredPath || a.command;
+  const file = a.configuredPath || a.alias || a.command;
   const command = /^[\w@%+=:,./-]+$/.test(file) ? file : quote(file);
   return [...prefix, command, a.args, bypass ? a.bypassArgs : ''].filter(Boolean).join(' ');
 }
@@ -2514,6 +2514,9 @@ window.__terp = {
   refreshAgents,
   get agents() {
     return agentList;
+  },
+  get registry() {
+    return agentRegistry;
   },
   rename(id, name) {
     const s = sessions.get(id);

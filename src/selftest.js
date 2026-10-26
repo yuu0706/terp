@@ -11,7 +11,7 @@ function prepareAgentFakes(outDir) {
   const dir = path.join(outDir, 'agent-fakes');
   fs.mkdirSync(dir, { recursive: true });
   const quote = (value) => "'" + value.replace(/'/g, "'\\''") + "'";
-  for (const name of ['claude', 'codex', 'cursor-agent', 'registry-extra']) {
+  for (const name of ['claude', 'codex', 'cursor-agent', 'registry-extra', 'cr', 'acli', 'kimi']) {
     const file = path.join(dir, name);
     fs.writeFileSync(file, `#!/bin/sh
 printf '%s\\n' '${name} '"$*" >> ${quote(path.join(dir, 'calls'))}
@@ -33,6 +33,9 @@ async function runAgentRegistryTest({ win, js, check, outDir }) {
   const original = fs.readFileSync(CONFIG_PATH, 'utf8');
   const previousFake = process.env.TERP_AGENT_STATUS_FAKE;
   const dir = prepareAgentFakes(outDir);
+  const env = await require('./git').loginEnv();
+  const previousPath = env.PATH;
+  env.PATH = dir;
   const fake = path.join(dir, 'registry-extra');
   const row = (name) => `document.querySelector('.agent-registry__row[data-command="${name}"]')`;
   const wait = async (fn) => {
@@ -59,7 +62,9 @@ async function runAgentRegistryTest({ win, js, check, outDir }) {
       { command: 'claude', path: path.join(dir, 'claude') },
       { command: 'codex', path: path.join(dir, 'codex') },
       { command: 'cursor-agent', path: path.join(dir, 'cursor-agent') },
-      ...require('./agents').KNOWN_AGENTS.filter((a) => !['claude', 'codex', 'cursor-agent'].includes(a.command))
+      ...['coderabbit', 'acli', 'kimi'].map((command) => ({ command, env: { PATH: dir } })),
+      { command: 'openclaw' },
+      ...require('./agents').KNOWN_AGENTS.filter((a) => !['claude', 'codex', 'cursor-agent', 'coderabbit', 'acli', 'kimi', 'openclaw'].includes(a.command))
         .map((a) => ({ command: a.command, path: path.join(dir, 'missing', a.command) })),
     ];
     initial.mainAgent = 'claude';
@@ -68,8 +73,27 @@ async function runAgentRegistryTest({ win, js, check, outDir }) {
     await sleep(400);
     await js('window.__terp.refreshAgents()');
     await js("window.__terp.openSettings('agents')");
-    check('登録一覧に未導入も出る', await js(`document.querySelectorAll('.agent-registry__row').length === 12 && ${row('aider')}.textContent.includes('未連携')`));
+    const addedCommands = ['coderabbit', 'codebuddy', 'openclaude', 'qodercli', 'qoderclicn', 'agy', 'traecli', 'kiro-cli', 'kimi', 'vibe', 'devin', 'dsh-tui', 'muse', 'grok', 'hermes', 'cline', 'kilo', 'command-code', 'zcode', 'mimo', 'opencode2', 'cn', 'acli', 'auggie', 'autohand', 'ante', 'pi', 'omp', 'prime-agent', 'codebuff', 'freebuff', 'jcode', 'openclaw'];
+    check('登録一覧に既存12種と追加33種が出る', require('./agents').KNOWN_AGENTS.length === 45 && await js(`document.querySelectorAll('.agent-registry__row').length === 45 && ${JSON.stringify(addedCommands)}.every((command) => document.querySelector('.agent-registry__row[data-command="' + command + '"]')) && ${row('aider')}.textContent.includes('未連携')`));
+    const linked = `document.querySelector('[data-agent-group="linked"]')`;
+    const unlinked = `document.querySelector('[data-agent-group="unlinked"]')`;
+    check('見出しに連携中6件と未連携39件が出る', await js(`${linked}.querySelector('summary').textContent === '連携中 6' && ${unlinked}.querySelector('summary').textContent === '未連携 39'`));
+    check('導入の有無で行が分かれる', await js(`${row('claude')}.closest('details') === ${linked} && ${row('coderabbit')}.closest('details') === ${linked} && ${row('aider')}.closest('details') === ${unlinked}`));
+    check('連携中は開き未連携は初め畳まれる', await js(`${linked}.open && !${unlinked}.open`));
+    await click(`${unlinked}.querySelector('summary')`);
+    check('未連携の見出しを押すと開く', await js(`${unlinked}.open`));
+    check('各区画は設定の配列順に並ぶ', await js(`(() => { const registry = window.__terp.registry; return [true, false].every((found) => { const group = document.querySelector('[data-agent-group="' + (found ? 'linked' : 'unlinked') + '"]'); return [...group.querySelectorAll('.agent-registry__row')].map((row) => row.dataset.command).join() === registry.filter((agent) => agent.found === found).map((agent) => agent.command).join(); }); })()`));
+    check('別名だけでCodeRabbitが連携中になる', await js(`window.__terp.registry.find((a) => a.command === 'coderabbit').alias === 'cr' && ${row('coderabbit')}.textContent.includes('連携中')`));
+    check('Kimiは画像でCodeRabbitは既存の代替アイコンを出す', await js(`${row('kimi')}.querySelector('img').getAttribute('src').endsWith('kimi.svg') && Boolean(${row('coderabbit')}.querySelector('svg.icon')) && !${row('coderabbit')}.querySelector('.agent-icon')`));
     check('偽 CLI の版とログイン済みが出る', await wait(() => js(`${row('claude')}.textContent.includes('claude 1.2.3') && ${row('claude')}.textContent.includes('済み（claude.ai）') && ${row('codex')}.textContent.includes('codex 1.2.3') && ${row('codex')}.textContent.includes('済み（ChatGPT）')`)));
+    const launch = async (command, call, altKey = false) => {
+      const before = fs.readFileSync(path.join(dir, 'calls'), 'utf8').length;
+      await js(`document.querySelector('#agents [data-command="${command}"]').dispatchEvent(new MouseEvent('click', { altKey: ${altKey}, bubbles: true }))`);
+      return wait(async () => fs.readFileSync(path.join(dir, 'calls'), 'utf8').slice(before).split('\n').includes(call));
+    };
+    check('CodeRabbitを別名crの行で起動する', await launch('coderabbit', 'cr ') && await js(`window.__terp.bufferText(window.__terp.activeId).includes(" cr")`));
+    check('Rovo Devの既定の引数と確認なしの引数を渡す', await launch('acli', 'acli rovodev run --yolo'));
+    check('確認ありではRovo Devの既定の引数だけ渡す', await launch('acli', 'acli rovodev run', true));
     await win.webContents.capturePage().then((img) => fs.writeFileSync(path.join(outDir, 'registry.png'), img.toPNG()));
     await click(`${row('codex')}.querySelector('.agent-registry__open')`);
     await win.webContents.capturePage().then((img) => fs.writeFileSync(path.join(outDir, 'registry-open.png'), img.toPNG()));
@@ -103,7 +127,7 @@ async function runAgentRegistryTest({ win, js, check, outDir }) {
     await sleep(400);
     check('並べ替えを設定へ保存する', JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8')).agents.at(-2).command === 'registry-extra');
     // ボタンのある Codex と順を入れ替え、未導入の行を挟む場合も確認する
-    for (let i = 0; i < 10; i++) {
+    for (let i = 0; i < require('./agents').KNOWN_AGENTS.length - 2; i++) {
       await click(`${row('registry-extra')}.querySelector('[data-action="up"]')`);
       await sleep(250);
     }
@@ -115,9 +139,12 @@ async function runAgentRegistryTest({ win, js, check, outDir }) {
     check('単色アイコンを mask で出す', await js(`document.querySelector('#agents [data-command="cursor-agent"] .agent-icon--mask').style.maskImage.includes('cursor-agent.svg')`));
     const calls = () => fs.readFileSync(path.join(dir, 'calls'), 'utf8').split('\n').filter(Boolean).length;
     const beforeRefresh = calls();
+    fs.copyFileSync(path.join(dir, 'registry-extra'), path.join(dir, 'openclaw'));
     await click("document.getElementById('agents-recheck')");
     check('確かめ直すと CLI が再実行される', await wait(async () => calls() > beforeRefresh));
     await wait(() => js(`!document.getElementById('agents-recheck').disabled`));
+    check('再確認で見つかった行が連携中へ移る', await js(`${row('openclaw')}.closest('details') === ${linked} && ${linked}.querySelector('summary').textContent === '連携中 8' && ${unlinked}.querySelector('summary').textContent === '未連携 38'`));
+    check('再描画と再確認で未連携の開閉を保つ', await js(`${unlinked}.open`));
     const afterRefresh = calls();
     await click(`${row('registry-extra')}.querySelector('.agent-registry__open')`);
     await sleep(200);
@@ -128,6 +155,7 @@ async function runAgentRegistryTest({ win, js, check, outDir }) {
     check('削除するとボタンから消える', await wait(async () => !(await commands()).includes('registry-extra')));
     await js(`document.getElementById('settings-close').click()`);
   } finally {
+    env.PATH = previousPath;
     fs.writeFileSync(CONFIG_PATH, original);
     if (previousFake === undefined) delete process.env.TERP_AGENT_STATUS_FAKE;
     else process.env.TERP_AGENT_STATUS_FAKE = previousFake;

@@ -183,6 +183,8 @@ export async function openSettings(sectionId) {
     registryStatuses = null;
     registryChecking = false;
     expandedAgents.clear();
+    collapsedRegistryGroups.clear();
+    collapsedRegistryGroups.add('unlinked');
   }
   overlay.hidden = false;
   renderNav();
@@ -477,6 +479,7 @@ let registrySession = 0;
 let registrySaveQueue = Promise.resolve();
 const registryCommits = new Set();
 const expandedAgents = new Set();
+const collapsedRegistryGroups = new Set(['unlinked']);
 const LOGIN_LABELS = { in: '済み', out: '未', unknown: '確かめられない', unsupported: '確かめる方法が無い' };
 
 function flushRegistry() {
@@ -599,6 +602,23 @@ function updateRegistryStatuses() {
       ? `連携中${state?.version ? ` · ${state.version}` : ''}` : '未連携';
     row.querySelector('.agent-registry__login').textContent = `ログイン: ${registryChecking ? '確かめ中…' : LOGIN_LABELS[state?.login || (['claude', 'codex'].includes(agent.command.split('/').pop()) ? 'unknown' : 'unsupported')]}${!registryChecking && state?.method ? `（${state.method}）` : ''}`;
   }
+  updateRegistryGroups();
+}
+
+function updateRegistryGroups() {
+  const rows = new Map([...content.querySelectorAll('.agent-registry__row')].map((row) => [row.dataset.command, row]));
+  for (const [key, label, found] of [['linked', '連携中', true], ['unlinked', '未連携', false]]) {
+    const group = content.querySelector(`[data-agent-group="${key}"]`);
+    if (!group) continue;
+    const host = group.querySelector('.agent-registry__rows');
+    const agents = ctx.registry().filter((agent) => agent.found === found);
+    agents.forEach((agent, index) => {
+      const row = rows.get(agent.command);
+      // 再確認では行を作り直さず、入力中の値と詳細の開閉を保つ
+      if (row && host.children[index] !== row) host.insertBefore(row, host.children[index] || null);
+    });
+    group.querySelector('summary').textContent = `${label} ${agents.length}`;
+  }
 }
 
 async function recheckRegistry() {
@@ -683,7 +703,7 @@ function renderRegistryRows() {
   const host = document.getElementById('agent-registry-rows');
   if (!host) return;
   flushRegistry();
-  host.textContent = '';
+  for (const rows of host.querySelectorAll('.agent-registry__rows')) rows.textContent = '';
   const agents = ctx.registry();
   agents.forEach((agent, index) => {
     const raw = (values.agents || []).find((a) => a.command === agent.command) || {};
@@ -740,7 +760,7 @@ function renderRegistryRows() {
     for (const [key, label, placeholder] of [
       ['label', '表示名', agent.defaults.label || agent.command],
       ['path', 'コマンドの場所', '空なら PATH から探す'],
-      ['args', 'いつも付ける引数', ''],
+      ['args', 'いつも付ける引数', agent.defaults.args],
       ['bypassArgs', '確認を飛ばす引数', agent.defaults.bypassArgs],
     ]) {
       detail.append(registryText(label, raw[key], placeholder, (value) => patchAgent(agent.command, key, value.trim() || undefined), key));
@@ -764,7 +784,7 @@ function renderRegistryRows() {
       changeRegistry((list) => list.filter((a) => a.command !== agent.command));
     }, agent.known ? 'reset' : 'remove'));
     row.append(head, detail);
-    host.append(row);
+    host.querySelector(`[data-agent-group="${agent.found ? 'linked' : 'unlinked'}"] .agent-registry__rows`).append(row);
   });
   updateRegistryStatuses();
 }
@@ -778,6 +798,18 @@ async function createAgentRegistry() {
   heading.append(element('h3', 'settings__label', '登録したエージェント'), refresh);
   const rows = element('div');
   rows.id = 'agent-registry-rows';
+  for (const [key, label] of [['linked', '連携中'], ['unlinked', '未連携']]) {
+    const group = element('details', 'agent-registry__group');
+    group.dataset.agentGroup = key;
+    group.open = !collapsedRegistryGroups.has(key);
+    group.append(element('summary', 'agent-registry__summary', `${label} 0`), element('div', 'agent-registry__rows'));
+    group.addEventListener('toggle', () => {
+      if (!group.isConnected) return;
+      if (group.open) collapsedRegistryGroups.delete(key);
+      else collapsedRegistryGroups.add(key);
+    });
+    rows.append(group);
+  }
   const add = element('details', 'agent-registry__add');
   add.append(element('summary', '', '＋ エージェントを足す'));
   const command = registryText('コマンドの名前か絶対パス', '', '', () => {}, 'new-command');

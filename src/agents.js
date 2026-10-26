@@ -4,10 +4,10 @@ const fs = require('fs');
 const path = require('path');
 const { loginEnv } = require('./git');
 
-// よく使われるもの。設定ファイルの agents に書いた値を重ね、書いた順を優先する。
+// 設定ファイルの agents に書いた値を重ね、書いた順を優先する。
 // bypassArgs は、ファイルの読み書きやコマンドの実行の確認を飛ばして起動する引数。
-// Orca の agentDefaultArgs と同じものにしている（2026-10-23 に利用者の Orca の設定で確認）。
-// OpenCode と Goose は Orca にも登録が無いため持たない
+// 一覧と既定の引数は Orca 本体から読み取ったもの（2026-10-26）。CodeRabbit は terp で追加。
+// OpenCode と Goose は確認を飛ばす既定の引数を持たない
 const KNOWN_AGENTS = [
   { command: 'claude', icon: { file: 'claude.svg', mode: 'image' }, label: 'Claude Code', bypassArgs: '--dangerously-skip-permissions' },
   { command: 'codex', icon: { file: 'codex.svg', mode: 'image' }, label: 'Codex', bypassArgs: '--dangerously-bypass-approvals-and-sandbox' },
@@ -21,6 +21,39 @@ const KNOWN_AGENTS = [
   { command: 'goose', icon: { file: 'goose.svg', mode: 'mask' }, label: 'Goose' },
   { command: 'crush', label: 'Crush', bypassArgs: '--yolo' },
   { command: 'droid', label: 'Droid', bypassArgs: '--auto high' },
+  { command: 'coderabbit', label: 'CodeRabbit', aliases: ['cr'] },
+  { command: 'codebuddy', icon: { file: 'codebuddy.svg', mode: 'image' }, label: 'CodeBuddy', aliases: ['cbc'], bypassArgs: '--dangerously-skip-permissions' },
+  { command: 'openclaude', label: 'OpenClaude', bypassArgs: '--dangerously-skip-permissions' },
+  { command: 'qodercli', icon: { file: 'qodercli.svg', mode: 'image' }, label: 'Qoder CLI', aliases: ['qoder'], bypassArgs: '--dangerously-skip-permissions' },
+  { command: 'qoderclicn', icon: { file: 'qodercli.svg', mode: 'image' }, label: 'Qoder CLI China', aliases: ['qodercn'], bypassArgs: '--dangerously-skip-permissions' },
+  { command: 'agy', icon: { file: 'agy.svg', mode: 'image' }, label: 'Antigravity', bypassArgs: '--dangerously-skip-permissions' },
+  { command: 'traecli', icon: { file: 'traecli.svg', mode: 'image' }, label: 'Trae', bypassArgs: '--yolo' },
+  { command: 'kiro-cli', icon: { file: 'kiro-cli.svg', mode: 'image' }, label: 'Kiro', bypassArgs: '--trust-all-tools' },
+  { command: 'kimi', icon: { file: 'kimi.svg', mode: 'image' }, label: 'Kimi', aliases: ['kimi-code'], bypassArgs: '--yolo' },
+  { command: 'vibe', icon: { file: 'vibe.svg', mode: 'image' }, label: 'Mistral Vibe', aliases: ['mistral-vibe'], bypassArgs: '--agent auto-approve' },
+  { command: 'devin', icon: { file: 'devin.svg', mode: 'image' }, label: 'Devin', bypassArgs: '--permission-mode bypass --respect-workspace-trust false' },
+  { command: 'dsh-tui', icon: { file: 'dsh-tui.svg', mode: 'image' }, label: 'DeepSeek Harness', aliases: ['dst'] },
+  { command: 'muse', icon: { file: 'muse.svg', mode: 'image' }, label: 'Muse', bypassArgs: '--yolo' },
+  { command: 'grok', icon: { file: 'grok.svg', mode: 'mask' }, label: 'Grok', bypassArgs: '--permission-mode bypassPermissions' },
+  { command: 'hermes', icon: { file: 'hermes.svg', mode: 'mask' }, label: 'Hermes', bypassArgs: '--yolo' },
+  { command: 'cline', icon: { file: 'cline.svg', mode: 'mask' }, label: 'Cline', bypassArgs: '--auto-approve true' },
+  { command: 'kilo', icon: { file: 'kilo.svg', mode: 'mask' }, label: 'Kilo Code' },
+  { command: 'command-code', icon: { file: 'command-code.svg', mode: 'mask' }, label: 'Command Code', bypassArgs: '--yolo' },
+  { command: 'zcode', icon: { file: 'zcode.svg', mode: 'mask' }, label: 'ZCode', bypassArgs: '--mode yolo' },
+  { command: 'mimo', icon: { file: 'mimo.svg', mode: 'mask' }, label: 'MiMo Code' },
+  { command: 'opencode2', icon: { file: 'opencode.svg', mode: 'mask' }, label: 'OpenCode 2' },
+  { command: 'cn', label: 'Continue', bypassArgs: '--allow "*"' },
+  { command: 'acli', label: 'Rovo Dev', args: 'rovodev run', bypassArgs: '--yolo' },
+  { command: 'auggie', label: 'Auggie' },
+  { command: 'autohand', label: 'Autohand', bypassArgs: '--unrestricted' },
+  { command: 'ante', label: 'Ante', bypassArgs: '--yolo' },
+  { command: 'pi', label: 'Pi' },
+  { command: 'omp', label: 'OMP' },
+  { command: 'prime-agent', label: 'Prime Agent' },
+  { command: 'codebuff', label: 'Codebuff' },
+  { command: 'freebuff', label: 'Freebuff' },
+  { command: 'jcode', label: 'Jcode' },
+  { command: 'openclaw', label: 'OpenClaw' },
 ];
 
 function isExecutable(file) {
@@ -48,16 +81,25 @@ async function detect(extra = []) {
     const defaults = known.get(command) || {};
     const agent = { ...defaults, ...configured.get(command) };
     const override = typeof agent.path === 'string' && agent.path ? agent.path : '';
-    const target = override || command;
-    const where = override || path.isAbsolute(target)
-      ? path.isAbsolute(target) && isExecutable(target) && target
-      : dirs.map((d) => path.join(d, target)).find(isExecutable);
+    const targets = override ? [override] : [command, ...(defaults.aliases || [])];
+    let where;
+    let alias = null;
+    for (const target of targets) {
+      where = override || path.isAbsolute(target)
+        ? path.isAbsolute(target) && isExecutable(target) && target
+        : dirs.map((d) => path.join(d, target)).find(isExecutable);
+      if (where) {
+        if (!override && target !== command) alias = target;
+        break;
+      }
+    }
     return {
       command,
       label: typeof agent.label === 'string' && agent.label ? agent.label : defaults.label || path.basename(command),
       args: typeof agent.args === 'string' ? agent.args : '',
       bypassArgs: typeof agent.bypassArgs === 'string' ? agent.bypassArgs : '',
       path: where || null,
+      alias,
       configuredPath: override,
       found: Boolean(where),
       hidden: agent.hidden === true,

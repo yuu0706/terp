@@ -2486,6 +2486,18 @@ button.subagent:hover,
   padding: var(--space-2) 0;
 }
 
+.agent-registry__summary {
+  padding: var(--space-2) 0;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  cursor: pointer;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.agent-registry__summary:hover {
+  background: var(--color-bg-hover);
+}
+
 .agent-registry__row {
   border-bottom: 1px solid var(--color-border);
 }
