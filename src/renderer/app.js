@@ -650,6 +650,8 @@ const overview = createOverview({
         const work = workOf(s);
         const repo = projects.find((p) => p.path === work?.repo && p.workspace === s.workspace);
         return { id: s.id, workspace: s.workspace, name: displayName(s), favorite: s.favorite,
+          requirement: isAgent(s) ? s.agentTitle : '', customName: s.customName || '',
+          program: isAgent(s) ? s.program : 'シェル', place: work ? placeInWork(s, work) : shortPath(s.cwd),
           repoPath: repo?.path || null, repoName: repo?.name || '', branch: work?.branch || '',
           cwd: s.cwd, workPath: work?.path || '', current: s.workspace === activeWorkspace && terminalVisible(s) };
       }),

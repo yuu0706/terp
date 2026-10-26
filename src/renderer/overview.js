@@ -1,7 +1,16 @@
 export function filterOverview(items, query) {
   const needle = query.trim().toLowerCase();
-  return items.filter((item) => !needle || [item.name, item.repoName, item.repoPath, item.branch, item.cwd, item.workPath]
+  return items.filter((item) => !needle || [item.requirement, item.name, item.repoName, item.repoPath, item.branch, item.cwd, item.workPath]
     .some((value) => String(value || '').toLowerCase().includes(needle)));
+}
+
+// タイルの見出しは要件（claude などが付ける端末の題名。話が変わるたびに付け替わる）を主にし、
+// 無ければ一覧と同じ名前にする。下の行に、自分で付けた名前・ブランチ（作業外なら場所）・プログラムを並べる
+export function tileLabels(item) {
+  const main = item.requirement || item.name || '';
+  const meta = [...new Set([item.requirement ? item.customName : '', item.branch || item.place, item.program]
+    .filter((part) => part && part !== main))];
+  return { main, meta: meta.join(' · ') };
 }
 
 // 列数は窓幅とまとまりごとに変わるため、描画されたタイルの位置から隣を選ぶ。
@@ -108,7 +117,7 @@ export function createOverview({ host, snapshot, preview, renderStatus, star, ac
               tile.dataset.id = item.id;
               tile.tabIndex = -1;
               tile.setAttribute('role', 'option');
-              tile.innerHTML = '<span class="overview__tile-head"><span class="session__dot"></span><span class="overview__name"></span><span class="overview__star" aria-label="お気に入り"></span></span><span class="overview__preview" aria-hidden="true"></span>';
+              tile.innerHTML = '<span class="overview__tile-head"><span class="session__dot"></span><span class="overview__label"><span class="overview__name"></span><span class="overview__meta"></span></span><span class="overview__star" aria-label="お気に入り"></span></span><span class="overview__preview" aria-hidden="true"></span>';
               tile.querySelector('.overview__star').innerHTML = star;
               tiles.set(item.id, tile);
             }
@@ -126,11 +135,15 @@ export function createOverview({ host, snapshot, preview, renderStatus, star, ac
     }
     for (const item of matches) {
       const tile = tiles.get(item.id);
-      tile.querySelector('.overview__name').textContent = item.name;
+      const labels = tileLabels(item);
+      tile.querySelector('.overview__name').textContent = labels.main;
+      const meta = tile.querySelector('.overview__meta');
+      meta.textContent = labels.meta;
+      meta.hidden = !labels.meta;
       tile.querySelector('.overview__star').hidden = !item.favorite;
       tile.querySelector('.overview__preview').textContent = preview(item.id);
       tile.setAttribute('aria-current', String(item.current));
-      tile.title = [item.name, item.branch, item.cwd].filter(Boolean).join('\n');
+      tile.title = [labels.main, labels.meta, item.cwd].filter(Boolean).join('\n');
       renderStatus(tile, item);
     }
     select(selected);

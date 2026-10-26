@@ -2344,7 +2344,7 @@ async function runOverviewTest({ win, js, check, outDir }) {
     fs.copyFileSync(node, fake);
     fs.chmodSync(fake, 0o755);
     const script = path.join(dir, 'waiting.js');
-    fs.writeFileSync(script, "process.stdout.write('overview-agent-ready\\nOVERVIEW-C\\n'); require('readline').createInterface({ input: process.stdin }).on('line', () => process.stdout.write('\\x1b]9;Claude needs your permission to use Bash\\x07'));\n");
+    fs.writeFileSync(script, "process.stdout.write('\\x1b]0;\u2733 一覧の要件の確認\\x07overview-agent-ready\\nOVERVIEW-C\\n'); require('readline').createInterface({ input: process.stdin }).on('line', () => process.stdout.write('\\x1b]9;Claude needs your permission to use Bash\\x07'));\n");
     const quote = (value) => "'" + value.replace(/'/g, "'\\''") + "'";
     await js(`window.terp.write(${c}, ${JSON.stringify(`${quote(fake)} ${quote(script)}\r`)})`);
     await wait(() => js(`window.__terp.sessions.get(${c}).program === 'claude' && window.__terp.bufferText(${c}).includes('overview-agent-ready')`));
@@ -2362,6 +2362,11 @@ async function runOverviewTest({ win, js, check, outDir }) {
         && [...document.querySelectorAll('.overview__tile')].every((el) => el.closest('.overview__workspace').dataset.workspace === window.__terp.sessions.get(Number(el.dataset.id)).workspace);
     })()`));
     check('リポジトリとその他のターミナルを分ける', await js(`document.querySelector('.overview__tile[data-id="${a}"]').closest('.overview__repo').dataset.repo === ${JSON.stringify(repo)} && document.querySelector('.overview__tile[data-id="${b}"]').closest('.overview__repo').dataset.repo === ''`));
+    const labelsC = await js(`({ main: document.querySelector('.overview__tile[data-id="${c}"] .overview__name').textContent,
+      meta: document.querySelector('.overview__tile[data-id="${c}"] .overview__meta').textContent })`);
+    check('エージェントの端末は、端末の題名（要件）を見出しにし、名前とプログラムを下に出す',
+      labelsC.main === '一覧の要件の確認' && labelsC.meta.includes('一覧の確認 C') && labelsC.meta.endsWith('claude'), JSON.stringify(labelsC));
+    check('リポジトリの端末は下の行にブランチを出す', (await js(`document.querySelector('.overview__tile[data-id="${a}"] .overview__meta').textContent`)).includes('overview-branch'));
     check('全所属の縮小画面に出力の末尾が出る', await js(`[[${a}, 'A'], [${b}, 'B'], [${c}, 'C']].every(([id, mark]) => document.querySelector('.overview__tile[data-id="' + id + '"] .overview__preview').textContent.includes('OVERVIEW-' + mark))`));
     await win.webContents.capturePage().then((img) => fs.writeFileSync(path.join(outDir, 'overview.png'), img.toPNG()));
     await escape();
@@ -2391,6 +2396,8 @@ async function runOverviewTest({ win, js, check, outDir }) {
     check('切り替えた所属が先頭になり、移った端末を選ぶ', (await selected()) === c && await js(`document.querySelector('.overview__workspace').dataset.workspace === ${JSON.stringify(second.id)}`));
     await query('確認 c');
     check('英字の大小を区別せず絞り込む', JSON.stringify(await tileIds()) === JSON.stringify([c]));
+    await query('要件の確認');
+    check('要件で絞り込む', JSON.stringify(await tileIds()) === JSON.stringify([c]));
     await query('OVERVIEW-REPO');
     check('リポジトリ名で絞り込む', JSON.stringify(await tileIds()) === JSON.stringify([a]));
     await query('overview-branch');

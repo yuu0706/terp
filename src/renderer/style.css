@@ -2798,7 +2798,31 @@ button.subagent:hover,
 }
 
 .overview__tile .session__dot { flex: none; }
-.overview__name { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.overview__label {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+
+/* 要件は2行まで出し、超えたら末尾を省く。下の行はブランチなどの補助 */
+.overview__name {
+  display: -webkit-box;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.overview__meta {
+  overflow: hidden;
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.overview__meta[hidden] { display: none; }
 .overview__star { display: inline-flex; color: var(--color-accent); }
 .overview__star[hidden] { display: none; }
 .overview__star .icon { fill: currentColor; }

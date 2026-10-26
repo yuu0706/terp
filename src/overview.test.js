@@ -4,7 +4,7 @@ const path = require('node:path');
 
 (async () => {
   const source = fs.readFileSync(path.join(__dirname, 'renderer/overview.js'), 'utf8');
-  const { filterOverview, overviewNeighbor } = await import('data:text/javascript;base64,' + Buffer.from(source).toString('base64'));
+  const { filterOverview, overviewNeighbor, tileLabels } = await import('data:text/javascript;base64,' + Buffer.from(source).toString('base64'));
   let count = 0;
   const check = (label, actual, expected) => { assert.deepEqual(actual, expected, label); count++; };
   const items = [
@@ -31,6 +31,20 @@ const path = require('node:path');
   check('検索のために正規表現を作らない', ids('[x]', [{ id: 7, name: '確認 [x]' }]), [7]);
   check('複数件の結果は入力の順序', ids('i', [items[1], items[0]]), [2, 1]);
   check('元の名前を変更しない', items[0].name, 'API の調査');
+  check('要件でも絞れる', ids('ログイン', [{ id: 8, name: 'claude', requirement: 'ログイン画面の不具合を直す' }]), [8]);
+
+  check('要件があれば見出しにし、ブランチとプログラムを下に出す',
+    tileLabels({ name: 'ログイン画面の不具合を直す', requirement: 'ログイン画面の不具合を直す', branch: 'fix/login', program: 'claude' }),
+    { main: 'ログイン画面の不具合を直す', meta: 'fix/login · claude' });
+  check('自分で付けた名前は下の行に回す',
+    tileLabels({ name: '調査用', customName: '調査用', requirement: 'API の遅さを調べる', branch: 'main', program: 'codex' }),
+    { main: 'API の遅さを調べる', meta: '調査用 · main · codex' });
+  check('要件が無ければ一覧の名前を見出しにする',
+    tileLabels({ name: 'シェル', requirement: '', branch: 'main', program: 'シェル' }),
+    { main: 'シェル', meta: 'main' });
+  check('作業の外は場所を出す',
+    tileLabels({ name: 'tools', requirement: '', place: '~/tools', program: 'シェル' }),
+    { main: 'tools', meta: '~/tools · シェル' });
 
   const rect = (id, left, top, width = 100) => ({ id, left, top, width, height: 70 });
   const grid = [rect(1, 0, 0), rect(2, 110, 0), rect(3, 220, 0), rect(4, 0, 90), rect(5, 110, 90), rect(6, 0, 300, 210), rect(7, 220, 300, 210)];
