@@ -1496,8 +1496,8 @@ async function runGitTest({ win, js, check, outDir }) {
 // TERP_SELFTEST_HISTORY は一時リポジトリだけにコミットし、履歴の閲覧を確かめる
 // TERP_SELFTEST_WALLPAPER は、全画面に入ったときの壁紙を窓の後ろに敷くことを確かめる。
 // 本物の全画面は Space を切り替えて利用者の画面を動かすため、全画面に入ったときと同じ合図を送って確かめる
-// TERP_SELFTEST_KEYS は、行の編集のキー（⌥←→・⌘←→・⌘⌫）が zsh で効くことを確かめる
-async function runKeysTest({ js, check }) {
+// TERP_SELFTEST_KEYS は、行の編集のキー（⌥←→・⌘←→・⌘⌫）と Shift+Enter が zsh で効くことを確かめる
+async function runKeysTest({ win, js, check }) {
   const id = await js('window.__terp.activeId');
   const key = (k, mods) => js(`window.__terp.sessions.get(${id}).term.textarea.dispatchEvent(new KeyboardEvent('keydown', { key: ${JSON.stringify(k)}, bubbles: true, cancelable: true, ...${JSON.stringify(mods)} }))`);
   const type = (text) => js(`window.terp.write(${id}, ${JSON.stringify(text)})`);
@@ -1526,6 +1526,18 @@ async function runKeysTest({ js, check }) {
   await type('R');
   check('⌃← は xterm の既定のまま（単語の移動に変えない）', !(await line()).endsWith('echo Rq'), await line());
   await type('\x15');
+  // Shift+Enter は本物の押下（keydown の後に keypress も来る）で確かめる。
+  // keypress まで端末に渡ると CR も送ってしまい、改行ではなく実行になる
+  await js(`window.__terp.sessions.get(${id}).term.focus()`);
+  await type('echo SHIFTENTER1');
+  win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Return', modifiers: ['shift'] });
+  win.webContents.sendInputEvent({ type: 'char', keyCode: '\r', modifiers: ['shift'] });
+  win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Return', modifiers: ['shift'] });
+  await type('echo SHIFTENTER2');
+  await sleep(600);
+  const lines = (await js(`window.__terp.bufferText(${id})`)).split('\n').map((l) => l.trim());
+  check('Shift+Enter は実行せず改行を入れる', !lines.includes('SHIFTENTER1') && lines.some((l) => l.endsWith('echo SHIFTENTER2')), lines.slice(-4).join(' | '));
+  await type('\x03');
 }
 
 async function runWallpaperTest({ win, js, check, outDir }) {
@@ -2076,7 +2088,7 @@ exports.run = (win) => {
     }
 
     if (process.env.TERP_SELFTEST_KEYS) {
-      await runKeysTest({ js, check });
+      await runKeysTest({ win, js, check });
       fs.writeFileSync(path.join(outDir, 'result.txt'), log.join('\n') + '\n');
       await finish();
       return;
