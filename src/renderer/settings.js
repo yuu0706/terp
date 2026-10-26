@@ -563,7 +563,7 @@ function updateMainAgentChoices() {
   select.options[0].dataset.null = 'true';
   for (const a of ctx.registry().filter((a) => a.found && !a.hidden)) select.append(new Option(a.label, a.command));
   if (values.mainAgent && ![...select.options].some((o) => o.value === values.mainAgent)) {
-    select.append(new Option(`${values.mainAgent}（見つからない／非表示）`, values.mainAgent));
+    select.append(new Option(`${values.mainAgent}（未連携／非表示）`, values.mainAgent));
   }
   select.value = values.mainAgent || '';
 }
@@ -575,7 +575,12 @@ function updateRegistryHeadings() {
     row.querySelector('.agent-registry__name').textContent = agent.label;
     row.querySelector('.agent-registry__main').hidden = effectiveMainAgent()?.command !== agent.command;
     row.querySelector('[data-action="main"]').disabled = !agent.found || agent.hidden;
-    row.querySelector('.agent-registry__path').textContent = `見つかった場所: ${agent.path || '見つからない'}`;
+    // 未連携は状態の欄で分かるため、場所は見つかったときだけ出す
+    const where = row.querySelector('.agent-registry__path');
+    if (where) {
+      where.textContent = agent.path ? `場所: ${agent.path}` : '';
+      where.hidden = !agent.path;
+    }
   }
   updateRegistryStatuses();
 }
@@ -591,7 +596,7 @@ function updateRegistryStatuses() {
     if (!agent) continue;
     const state = registryStatuses?.find((s) => s.command === agent.command);
     row.querySelector('.agent-registry__installed').textContent = agent.found
-      ? `入っている${state?.version ? ` · ${state.version}` : ''}` : '見つからない';
+      ? `連携中${state?.version ? ` · ${state.version}` : ''}` : '未連携';
     row.querySelector('.agent-registry__login').textContent = `ログイン: ${registryChecking ? '確かめ中…' : LOGIN_LABELS[state?.login || (['claude', 'codex'].includes(agent.command.split('/').pop()) ? 'unknown' : 'unsupported')]}${!registryChecking && state?.method ? `（${state.method}）` : ''}`;
   }
 }
@@ -740,7 +745,9 @@ function renderRegistryRows() {
     ]) {
       detail.append(registryText(label, raw[key], placeholder, (value) => patchAgent(agent.command, key, value.trim() || undefined), key));
     }
-    detail.append(element('p', 'settings__help agent-registry__path', `見つかった場所: ${agent.path || '見つからない'}`));
+    const where = element('p', 'settings__help agent-registry__path', agent.path ? `場所: ${agent.path}` : '');
+    where.hidden = !agent.path;
+    detail.append(where);
     detail.append(agentEnvironmentEditor(agent, raw));
     const actions = element('div', 'settings__inline');
     const setMain = registryAction('メインにする', async () => {

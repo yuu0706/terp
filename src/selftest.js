@@ -68,7 +68,7 @@ async function runAgentRegistryTest({ win, js, check, outDir }) {
     await sleep(400);
     await js('window.__terp.refreshAgents()');
     await js("window.__terp.openSettings('agents')");
-    check('登録一覧に未導入も出る', await js(`document.querySelectorAll('.agent-registry__row').length === 12 && ${row('aider')}.textContent.includes('見つからない')`));
+    check('登録一覧に未導入も出る', await js(`document.querySelectorAll('.agent-registry__row').length === 12 && ${row('aider')}.textContent.includes('未連携')`));
     check('偽 CLI の版とログイン済みが出る', await wait(() => js(`${row('claude')}.textContent.includes('claude 1.2.3') && ${row('claude')}.textContent.includes('済み（claude.ai）') && ${row('codex')}.textContent.includes('codex 1.2.3') && ${row('codex')}.textContent.includes('済み（ChatGPT）')`)));
     await win.webContents.capturePage().then((img) => fs.writeFileSync(path.join(outDir, 'registry.png'), img.toPNG()));
     await click(`${row('codex')}.querySelector('.agent-registry__open')`);
