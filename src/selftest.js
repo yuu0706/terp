@@ -2361,10 +2361,21 @@ async function runOverviewTest({ win, js, check, outDir }) {
       return groups[0].dataset.workspace === ${JSON.stringify(first)} && groups.some((el) => el.dataset.workspace === ${JSON.stringify(second.id)})
         && [...document.querySelectorAll('.overview__tile')].every((el) => el.closest('.overview__workspace').dataset.workspace === window.__terp.sessions.get(Number(el.dataset.id)).workspace);
     })()`));
-    check('表示中の端末を所属の先頭のまとまりに出す', await js(`(() => {
+    check('開いているタブの端末を所属の先頭のまとまりに出す', await js(`(() => {
       const group = document.querySelector('.overview__tile[data-id="${a}"]').closest('.overview__repo');
-      return group.dataset.group === 'current' && group === document.querySelector('.overview__workspace .overview__repo');
+      return group.dataset.group === 'open' && group === document.querySelector('.overview__workspace .overview__repo');
     })()`));
+    const tabLabels = await js(`[...document.querySelectorAll('.overview__tab')].map((el) => el.querySelector('.overview__tab-label').textContent + ':' + el.querySelector('.overview__tab-count').textContent)`);
+    check('上端にすべて・開いているタブ・リポジトリ・その他のタブが並ぶ',
+      JSON.stringify(tabLabels) === JSON.stringify(['すべて:4', '開いているタブ:1', 'overview-repo:1', 'その他のターミナル:3']), JSON.stringify(tabLabels));
+    await js(`document.querySelector('.overview__tab[data-tab="repo:' + ${JSON.stringify(repo)} + '"]').click()`);
+    await sleep(200);
+    check('リポジトリのタブを押すと、そのリポジトリの端末だけを出す', JSON.stringify(await tileIds()) === JSON.stringify([a]));
+    await js(`document.getElementById('overview-query').dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', ctrlKey: true, bubbles: true, cancelable: true }))`);
+    await sleep(200);
+    check('⌃Tab で次のタブへ移る', (await js(`document.querySelector('.overview__tab[aria-selected="true"]').dataset.tab`)) === 'loose' && !(await tileIds()).includes(a));
+    await js(`document.querySelector('.overview__tab[data-tab="all"]').click()`);
+    await sleep(200);
     check('表示していない端末はその他のターミナルに出す', await js(`document.querySelector('.overview__tile[data-id="${b}"]').closest('.overview__repo').dataset.group === 'loose'`));
     const labelsC = await js(`({ main: document.querySelector('.overview__tile[data-id="${c}"] .overview__name').textContent,
       meta: document.querySelector('.overview__tile[data-id="${c}"] .overview__meta').textContent })`);

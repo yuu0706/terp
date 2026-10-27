@@ -4,7 +4,7 @@ const path = require('node:path');
 
 (async () => {
   const source = fs.readFileSync(path.join(__dirname, 'renderer/overview.js'), 'utf8');
-  const { filterOverview, overviewNeighbor, tileLabels, overviewGroups } = await import('data:text/javascript;base64,' + Buffer.from(source).toString('base64'));
+  const { filterOverview, overviewNeighbor, tileLabels, overviewGroups, overviewTabs, overviewTabItems } = await import('data:text/javascript;base64,' + Buffer.from(source).toString('base64'));
   let count = 0;
   const check = (label, actual, expected) => { assert.deepEqual(actual, expected, label); count++; };
   const items = [
@@ -34,13 +34,22 @@ const path = require('node:path');
   check('要件でも絞れる', ids('ログイン', [{ id: 8, name: 'claude', requirement: 'ログイン画面の不具合を直す' }]), [8]);
 
   const members = [
-    { id: 1, repoPath: '/b', repoName: 'B' }, { id: 2, repoPath: null }, { id: 3, repoPath: '/a', repoName: 'A', current: true },
+    { id: 1, repoPath: '/b', repoName: 'B' }, { id: 2, repoPath: null }, { id: 3, repoPath: '/a', repoName: 'A', open: true },
     { id: 4, repoPath: '/a', repoName: 'A' }, { id: 5, repoPath: '/b', repoName: 'B' },
   ];
   const groups = (list) => overviewGroups(list).map((g) => [g.label, g.items.map((item) => item.id)]);
-  check('表示中を先頭に、リポジトリは並び順、その他は最後', groups(members), [['表示中', [3]], ['B', [1, 5]], ['A', [4]], ['その他のターミナル', [2]]]);
-  check('表示中が無ければ出さない', groups(members.filter((item) => !item.current)), [['B', [1, 5]], ['A', [4]], ['その他のターミナル', [2]]]);
-  check('表示中だけのリポジトリは見出しを出さない', groups([members[2]]), [['表示中', [3]]]);
+  check('開いているタブを先頭に、リポジトリは並び順、その他は最後', groups(members), [['開いているタブ', [3]], ['B', [1, 5]], ['A', [4]], ['その他のターミナル', [2]]]);
+  check('開いているタブが無ければ出さない', groups(members.filter((item) => !item.open)), [['B', [1, 5]], ['A', [4]], ['その他のターミナル', [2]]]);
+  check('開いているタブだけのリポジトリは見出しを出さない', groups([members[2]]), [['開いているタブ', [3]]]);
+  const tabs = (list) => overviewTabs(list).map((t) => [t.key, t.label, t.items.map((item) => item.id)]);
+  check('タブはすべて・開いているタブ・リポジトリ・その他の順',
+    tabs(members), [['all', 'すべて', [1, 2, 3, 4, 5]], ['open', '開いているタブ', [3]], ['repo:/b', 'B', [1, 5]], ['repo:/a', 'A', [3, 4]], ['loose', 'その他のターミナル', [2]]]);
+  check('無いまとまりのタブは出さない', tabs([members[0]]), [['all', 'すべて', [1]], ['repo:/b', 'B', [1]]]);
+  const tabGroups = (tab) => groups(overviewTabItems(members, tab));
+  check('リポジトリのタブでは、開いているタブも元のリポジトリに入れる', tabGroups('repo:/a'), [['A', [3, 4]]]);
+  check('開いているタブのタブ', tabGroups('open'), [['開いているタブ', [3]]]);
+  check('その他のタブ', tabGroups('loose'), [['その他のターミナル', [2]]]);
+  check('すべてのタブは元のまま', tabGroups('all'), groups(members));
 
   check('要件があれば見出しにし、ブランチとプログラムを下に出す',
     tileLabels({ name: 'ログイン画面の不具合を直す', requirement: 'ログイン画面の不具合を直す', branch: 'fix/login', program: 'claude' }),

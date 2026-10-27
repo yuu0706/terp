@@ -643,6 +643,7 @@ const overview = createOverview({
   snapshot: () => {
     const ordered = [...workspaces.filter((w) => w.id === activeWorkspace), ...workspaces.filter((w) => w.id !== activeWorkspace)];
     const list = allSessionsInListOrder();
+    const openKeys = new Set(visibleKeys());
     return {
       workspaces: ordered,
       activeId,
@@ -651,6 +652,7 @@ const overview = createOverview({
         const repo = projects.find((p) => p.path === work?.repo && p.workspace === s.workspace);
         return { id: s.id, workspace: s.workspace, name: displayName(s), favorite: s.favorite,
           requirement: isAgent(s) ? s.agentTitle : '', customName: s.customName || '',
+          open: s.workspace === activeWorkspace && openKeys.has(termKey(s.id)),
           program: isAgent(s) ? s.program : 'シェル', place: work ? placeInWork(s, work) : shortPath(s.cwd),
           repoPath: repo?.path || null, repoName: repo?.name || '', branch: work?.branch || '',
           cwd: s.cwd, workPath: work?.path || '', current: s.workspace === activeWorkspace && terminalVisible(s) };

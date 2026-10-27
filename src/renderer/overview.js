@@ -4,6 +4,28 @@ export function filterOverview(items, query) {
     .some((value) => String(value || '').toLowerCase().includes(needle)));
 }
 
+// 一覧の上端のタブ。「すべて」「開いているタブ」、リポジトリ（一覧の並び順）、「その他のターミナル」
+export function overviewTabs(items) {
+  const tabs = [{ key: 'all', label: 'すべて', items }];
+  const open = items.filter((item) => item.open);
+  if (open.length) tabs.push({ key: 'open', label: '開いているタブ', items: open });
+  for (const repoPath of new Set(items.filter((item) => item.repoPath).map((item) => item.repoPath))) {
+    const repoItems = items.filter((item) => item.repoPath === repoPath);
+    tabs.push({ key: `repo:${repoPath}`, label: repoItems[0].repoName || repoPath, items: repoItems });
+  }
+  const loose = items.filter((item) => !item.repoPath);
+  if (loose.length) tabs.push({ key: 'loose', label: 'その他のターミナル', items: loose });
+  return tabs;
+}
+
+// タブで選んだ端末。リポジトリとその他のタブでは、開いているタブも元のまとまりに入れて出す
+export function overviewTabItems(items, tab) {
+  if (tab === 'open') return items.filter((item) => item.open);
+  if (tab === 'loose') return items.filter((item) => !item.repoPath).map((item) => ({ ...item, open: false }));
+  if (tab.startsWith('repo:')) return items.filter((item) => item.repoPath === tab.slice(5)).map((item) => ({ ...item, open: false }));
+  return items;
+}
+
 // タイルの見出しは要件（claude などが付ける端末の題名。話が変わるたびに付け替わる）を主にし、
 // 無ければ一覧と同じ名前にする。下の行に、自分で付けた名前・ブランチ（作業外なら場所）・プログラムを並べる
 export function tileLabels(item) {
@@ -13,13 +35,13 @@ export function tileLabels(item) {
   return { main, meta: meta.join(' · ') };
 }
 
-// 所属の中のまとまり。表示中の端末を先頭に出し、続けてリポジトリ（一覧の並び順）、最後にその他のターミナル。
-// リポジトリが多くても、作業中の端末を探して下まで送らずに済むようにする
+// 所属の中のまとまり。開いているタブ（画面上部のタブの帯に出ている端末）を先頭に出し、
+// 続けてリポジトリ（一覧の並び順）、最後にその他のターミナル。リポジトリが多くても、作業中の端末まで送らずに済む
 export function overviewGroups(members) {
   const groups = [];
-  const current = members.filter((item) => item.current);
-  if (current.length) groups.push({ key: 'current', repoPath: null, label: '表示中', items: current });
-  const rest = members.filter((item) => !item.current);
+  const open = members.filter((item) => item.open);
+  if (open.length) groups.push({ key: 'open', repoPath: null, label: '開いているタブ', items: open });
+  const rest = members.filter((item) => !item.open);
   const repos = [...new Set(rest.filter((item) => item.repoPath).map((item) => item.repoPath))];
   for (const repoPath of repos) {
     const items = rest.filter((item) => item.repoPath === repoPath);
@@ -71,14 +93,19 @@ export function createOverview({ host, snapshot, preview, renderStatus, star, ac
   <div class="overview__search">
     <label for="overview-query">絞り込み</label>
     <input id="overview-query" class="input" type="text" autocomplete="off" spellcheck="false" role="combobox" aria-autocomplete="list" aria-controls="overview-list" aria-expanded="false" />
-    <span class="overview__hint">↑↓←→ で選ぶ · Enter で移る</span>
+    <span class="overview__hint">↑↓←→ で選ぶ · ⌃Tab でタブを切り替え · Enter で移る</span>
   </div>
+  <div class="overview__tabs" role="tablist" aria-label="まとまり"></div>
   <div id="overview-list" class="overview__list" role="listbox" aria-label="全ターミナル"></div>
   <p class="overview__empty" role="status" hidden></p>`;
   document.body.append(dialog);
   const input = dialog.querySelector('input');
   const list = dialog.querySelector('.overview__list');
   const empty = dialog.querySelector('.overview__empty');
+  const tabsEl = dialog.querySelector('.overview__tabs');
+  // 選んだタブは、窓を開いている間は次に一覧を開いたときも保つ
+  let tab = 'all';
+  let tabsSignature = null;
   let selected = null;
   let timer = null;
   let origin = null;
@@ -97,9 +124,12 @@ export function createOverview({ host, snapshot, preview, renderStatus, star, ac
   function render() {
     if (!dialog.open) return;
     const { workspaces, items } = snapshot();
-    const matches = filterOverview(items, input.value);
+    const tabs = overviewTabs(items);
+    if (!tabs.some((t) => t.key === tab)) tab = 'all';
+    renderTabs(tabs);
+    const matches = filterOverview(overviewTabItems(items, tab), input.value);
     if (!matches.some((item) => item.id === selected)) selected = matches[0]?.id ?? null;
-    const nextSignature = JSON.stringify([workspaces, matches.map((item) => [item.id, item.workspace, item.repoPath, item.repoName, item.current])]);
+    const nextSignature = JSON.stringify([workspaces, tab, matches.map((item) => [item.id, item.workspace, item.repoPath, item.repoName, item.open])]);
     if (signature !== nextSignature) {
       const tileHadFocus = document.activeElement?.closest('.overview__tile');
       signature = nextSignature;
@@ -169,6 +199,44 @@ export function createOverview({ host, snapshot, preview, renderStatus, star, ac
     empty.textContent = items.length ? '合うターミナルはない' : 'ターミナルはない';
   }
 
+  // タブの並びが変わったときだけ作り直し、件数（絞り込み後）と選びは毎回更新する
+  function renderTabs(tabs) {
+    const next = JSON.stringify(tabs.map((t) => [t.key, t.label]));
+    if (next !== tabsSignature) {
+      tabsSignature = next;
+      tabsEl.replaceChildren(...tabs.map((t) => {
+        const el = document.createElement('button');
+        el.type = 'button';
+        el.className = 'overview__tab';
+        el.dataset.tab = t.key;
+        el.setAttribute('role', 'tab');
+        el.tabIndex = -1;
+        el.innerHTML = '<span class="overview__tab-label"></span><span class="overview__tab-count"></span>';
+        el.querySelector('.overview__tab-label').textContent = t.label;
+        return el;
+      }));
+    }
+    for (const t of tabs) {
+      const el = tabsEl.querySelector(`[data-tab="${CSS.escape(t.key)}"]`);
+      el.setAttribute('aria-selected', String(t.key === tab));
+      el.querySelector('.overview__tab-count').textContent = String(filterOverview(t.items, input.value).length);
+    }
+  }
+
+  function setTab(key) {
+    if (key === tab) return;
+    tab = key;
+    render();
+    list.scrollTop = 0;
+    tabsEl.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }
+
+  function stepTab(offset) {
+    const keys = [...tabsEl.querySelectorAll('.overview__tab')].map((el) => el.dataset.tab);
+    const at = keys.indexOf(tab);
+    setTab(keys[(at + offset + keys.length) % keys.length]);
+  }
+
   function close(restore = true) {
     if (!dialog.open) return;
     dialog.close();
@@ -207,6 +275,12 @@ export function createOverview({ host, snapshot, preview, renderStatus, star, ac
 
   button.addEventListener('click', toggle);
   input.addEventListener('input', render);
+  tabsEl.addEventListener('click', (event) => {
+    const el = event.target.closest('.overview__tab');
+    if (!el) return;
+    setTab(el.dataset.tab);
+    input.focus();
+  });
   dialog.addEventListener('cancel', (event) => { event.preventDefault(); close(); });
   dialog.addEventListener('click', (event) => {
     const tile = event.target.closest('.overview__tile');
@@ -214,6 +288,12 @@ export function createOverview({ host, snapshot, preview, renderStatus, star, ac
     if (!event.target.closest('input, label, button')) close();
   });
   dialog.addEventListener('keydown', (event) => {
+    if (event.key === 'Tab' && event.ctrlKey && !event.metaKey && !event.altKey) {
+      event.preventDefault();
+      event.stopPropagation();
+      stepTab(event.shiftKey ? -1 : 1);
+      return;
+    }
     if (event.isComposing || event.metaKey || event.ctrlKey || event.altKey) return;
     if (event.key.startsWith('Arrow')) {
       event.preventDefault();
@@ -229,5 +309,5 @@ export function createOverview({ host, snapshot, preview, renderStatus, star, ac
     }
   });
   dialog.querySelector('[data-close]').addEventListener('click', () => close());
-  return { toggle, close, selectAll: () => { input.focus(); input.select(); }, get open() { return dialog.open; } };
+  return { toggle, close, setTab, selectAll: () => { input.focus(); input.select(); }, get open() { return dialog.open; }, get tab() { return tab; } };
 }

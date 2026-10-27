@@ -2732,6 +2732,47 @@ button.subagent:hover,
   color: var(--color-text-muted);
 }
 
+/* まとまりのタブ。多いときは横に送る */
+.overview__tabs {
+  display: flex;
+  flex: none;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-3) 0;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--color-border);
+  scrollbar-width: none;
+}
+
+.overview__tab {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-2);
+  height: var(--control-h);
+  padding: 0 var(--space-3);
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--color-text-muted);
+  font: inherit;
+  cursor: pointer;
+}
+
+.overview__tab:hover { color: var(--color-text); background: var(--color-bg-hover); }
+
+.overview__tab[aria-selected='true'] {
+  border-bottom-color: var(--color-accent);
+  color: var(--color-text);
+  font-weight: 600;
+}
+
+.overview__tab-count {
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+}
+
 .overview__list {
   flex: 1;
   min-height: 0;
