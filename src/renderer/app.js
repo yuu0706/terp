@@ -863,8 +863,12 @@ function renderHiddenRepos() {
 async function setProjectHidden(repo, hidden) {
   projectRevision++;
   const res = await terp.updateProject(repo, { hidden });
-  if (!res.ok) workspaceUI.error(res.error);
-  else await refreshProjects();
+  if (!res.ok) { workspaceUI.error(res.error); return; }
+  // 裏の定期の読み直しと重なると、読み直しが捨てられてメニューのチェックが古いまま描かれるため、先に手元も直す
+  const project = projects.find((p) => p.path === repo);
+  if (project) project.hidden = hidden;
+  await refreshProjects();
+  if (shownProjectsSignature() !== shownSignature) renderProjects();
 }
 
 function repoFilterItems() {
