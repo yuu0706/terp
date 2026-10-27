@@ -1252,6 +1252,54 @@ async function addProject(dir) {
   return res;
 }
 
+// Finder からフォルダを左の一覧へ落とすと、リポジトリとして足す（2026-10-27 利用者の指示。受けるのは左の一覧の中だけ）。
+// リポジトリの中のフォルダを落としたときは、git が返すリポジトリの一番上を足す
+async function addDroppedRepos(paths) {
+  const errors = [];
+  for (const dir of paths) {
+    const stat = await terp.statFile(dir);
+    if (!stat.ok || !stat.value.exists || stat.value.file) {
+      errors.push(`フォルダではないため追加できない: ${dir.split('/').pop()}`);
+      continue;
+    }
+    const res = await addProject(dir);
+    if (!res.ok) errors.push(res.error);
+  }
+  workspaceUI.error(errors.join('\n'));
+}
+
+const sidebarEl = document.getElementById('sidebar');
+// 子の要素を出入りするたびに dragenter と dragleave が来るため、深さで数える
+let sidebarDragDepth = 0;
+const isFinderDrag = (event) => Array.from(event.dataTransfer?.types || []).includes('Files');
+function endSidebarDrag() {
+  sidebarDragDepth = 0;
+  delete sidebarEl.dataset.dropRepo;
+}
+sidebarEl.addEventListener('dragenter', (event) => {
+  if (!isFinderDrag(event)) return;
+  event.preventDefault();
+  sidebarDragDepth++;
+  sidebarEl.dataset.dropRepo = 'true';
+});
+sidebarEl.addEventListener('dragover', (event) => {
+  if (!isFinderDrag(event)) return;
+  event.preventDefault();
+  event.dataTransfer.dropEffect = 'copy';
+});
+sidebarEl.addEventListener('dragleave', (event) => {
+  if (!isFinderDrag(event)) return;
+  sidebarDragDepth = Math.max(0, sidebarDragDepth - 1);
+  if (!sidebarDragDepth) delete sidebarEl.dataset.dropRepo;
+});
+sidebarEl.addEventListener('drop', (event) => {
+  if (!isFinderDrag(event)) return;
+  event.preventDefault();
+  event.stopPropagation();
+  endSidebarDrag();
+  addDroppedRepos(pathsFromTransfer(event.dataTransfer, terp.pathForFile));
+});
+
 // ---- AI エージェントの起動 ----
 
 const agentsEl = document.getElementById('agents');
@@ -2710,6 +2758,7 @@ window.__terp = {
   toggleProjectFavorite,
   toggleSessionFavorite,
   setProjectHidden,
+  addDroppedRepos,
   workspaceDeleteReason,
   nextAttention,
   stateOf,

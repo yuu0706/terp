@@ -1890,6 +1890,63 @@ async function runHideRepoTest({ win, js, check, outDir }) {
   }
 }
 
+// TERP_SELFTEST_DROPREPO は、Finder のフォルダを左の一覧に落としてリポジトリを足せることを確かめる。
+// 合成した File には実パスが無いため、受け取りの見た目はイベントで、足す処理はパスを直接渡して確かめる
+async function runDropRepoTest({ win, js, check, outDir }) {
+  const { execFileSync } = require('child_process');
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'terp-droprepo-')));
+  const repo = path.join(dir, 'drop-repo');
+  fs.mkdirSync(path.join(repo, 'src'), { recursive: true });
+  execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repo });
+  const plain = path.join(dir, 'plain-folder');
+  fs.mkdirSync(plain);
+  const file = path.join(dir, 'note.txt');
+  fs.writeFileSync(file, 'x');
+  const fire = (target, type, kind = 'file') => js(`(() => {
+    const data = new DataTransfer();
+    if (${JSON.stringify(kind)} === 'file') data.items.add(new File(['x'], 'folder'));
+    else data.setData('text/x-terp-tab', 't:1');
+    const event = new DragEvent(${JSON.stringify(type)}, { bubbles: true, cancelable: true, dataTransfer: data });
+    document.querySelector(${JSON.stringify(target)}).dispatchEvent(event);
+    return event.defaultPrevented;
+  })()`);
+  const marked = () => js(`document.getElementById('sidebar').dataset.dropRepo === 'true'`);
+  try {
+    await sleep(1000);
+    await fire('#tree', 'dragenter');
+    const accepted = await fire('#tree', 'dragover');
+    check('Finder のものを左の一覧に載せると、受け取れる印が出る', (await marked()) && accepted);
+    check('印に一言を添える', (await js(`getComputedStyle(document.getElementById('sidebar'), '::after').content`)).includes('リポジトリを追加'));
+    await sleep(200);
+    fs.writeFileSync(path.join(outDir, 'drop-repo.png'), (await win.webContents.capturePage()).toPNG());
+    await fire('#projects', 'dragenter');
+    await fire('#tree', 'dragleave');
+    check('一覧の中の別の場所へ動いても印は消えない', await marked());
+    await fire('#projects', 'dragleave');
+    check('一覧の外へ出ると印が消える', !(await marked()));
+    await fire('#tree', 'dragenter', 'tab');
+    check('タブなど terp の中のドラッグには印を出さない', !(await marked()));
+    await fire('#tree', 'dragenter');
+    await fire('#tree', 'drop');
+    check('落とすと印が消える', !(await marked()));
+    check('端末の枠には印を出さない（受けるのは左の一覧だけ）', !(await js(`(() => {
+      const data = new DataTransfer();
+      data.items.add(new File(['x'], 'folder'));
+      document.querySelector('.pane__body').dispatchEvent(new DragEvent('dragenter', { bubbles: true, cancelable: true, dataTransfer: data }));
+      return document.getElementById('sidebar').dataset.dropRepo === 'true';
+    })()`)));
+
+    await js(`window.__terp.addDroppedRepos([${JSON.stringify(path.join(repo, 'src'))}])`);
+    check('リポジトリの中のフォルダを落とすと、リポジトリの一番上を足す', (await js('window.__terp.projects.map((p) => p.path)')).includes(repo));
+    await js(`window.__terp.addDroppedRepos([${JSON.stringify(plain)}, ${JSON.stringify(file)}])`);
+    const error = await js(`document.querySelector('.workspace-picker__error').textContent`);
+    check('git でないフォルダとファイルは、足さずに理由を出す', error.includes('git のリポジトリではありません') && error.includes('フォルダではないため追加できない: note.txt')
+      && !(await js('window.__terp.projects.some((p) => p.path === ' + JSON.stringify(plain) + ')')), error);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 // TERP_SELFTEST_KEYS は、行の編集のキー（⌥←→・⌘←→・⌘⌫）と Shift+Enter が zsh で効くことを確かめる
 async function runKeysTest({ win, js, check }) {
   const id = await js('window.__terp.activeId');
@@ -2806,6 +2863,12 @@ exports.run = (win) => {
     }
     if (process.env.TERP_SELFTEST_HIDEREPO) {
       await runHideRepoTest({ win, js, check, outDir });
+      fs.writeFileSync(path.join(outDir, 'result.txt'), log.join('\n') + '\n');
+      await finish();
+      return;
+    }
+    if (process.env.TERP_SELFTEST_DROPREPO) {
+      await runDropRepoTest({ win, js, check, outDir });
       fs.writeFileSync(path.join(outDir, 'result.txt'), log.join('\n') + '\n');
       await finish();
       return;

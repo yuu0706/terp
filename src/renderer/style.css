@@ -2907,6 +2907,7 @@ button.subagent:hover,
 
 .workspace-picker__error {
   margin: var(--space-2) 0 0;
+  white-space: pre-line;
 }
 
 .workspace-menu {
@@ -3049,3 +3050,28 @@ button.subagent:hover,
 .hidden-repos__open:hover { background: var(--color-bg-hover); color: var(--color-text); }
 
 .hidden-repos__count { font-variant-numeric: tabular-nums; }
+
+/* Finder のフォルダを左の一覧に落とす間は、受け取れることを強調色の枠と一言で示す。
+   一言は下端のボタンと重ねると字が入れ替わったように見えるため、真ん中に出す */
+#sidebar[data-drop-repo] {
+  position: relative;
+  outline: 2px solid var(--color-accent);
+  outline-offset: -2px;
+}
+
+#sidebar[data-drop-repo]::after {
+  content: 'フォルダを離すとリポジトリを追加';
+  position: absolute;
+  top: 50%;
+  left: var(--space-3);
+  right: var(--space-3);
+  transform: translateY(-50%);
+  padding: var(--space-3) var(--space-2);
+  box-shadow: 0 4px 12px rgb(0 0 0 / 0.3);
+  border-radius: var(--radius);
+  background: var(--gradient-accent);
+  color: var(--color-bg);
+  font-size: var(--text-sm);
+  text-align: center;
+  pointer-events: none;
+}
