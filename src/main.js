@@ -18,6 +18,7 @@ const themegen = require('./themegen');
 const subagents = require('./subagents');
 const files = require('./files');
 const snapshot = require('./snapshot');
+const newrepos = require('./newrepos');
 const tabs = require('./tabs');
 const notify = require('./notify');
 const wallpaper = require('./wallpaper');
@@ -169,6 +170,7 @@ async function writeSnapshot() {
         workspace: e.meta.workspace || null,
         favorite: Boolean(e.meta.favorite),
         customName: e.meta.customName || null,
+        workPath: e.meta.workPath || null,
         claudeSession: sessions.get(e.pid) || null,
       })),
     );
@@ -314,6 +316,7 @@ ipcMain.handle('files:root', safe((_e, dir) => files.root(dir)));
 ipcMain.handle('files:list', safe((_e, dir) => files.list(dir)));
 ipcMain.handle('files:read', safe((_e, file) => files.read(file)));
 ipcMain.handle('files:stat', safe((_e, file) => files.stat(file)));
+ipcMain.handle('repos:find-new', safe((_e, dir, since) => newrepos.findNewRepos(dir, since)));
 ipcMain.handle('files:write', safe((_e, { file, text, mtime, force }) => files.write(file, text, mtime, force)));
 // 既定のアプリで開く・Finder で見せる
 ipcMain.handle('files:open-external', safe((_e, file) => shell.openPath(file)));
@@ -360,7 +363,7 @@ ipcMain.on('pty:kill', (_e, id) => {
 // 名前などは常駐のプロセスに預け、開き直したときに戻す
 ipcMain.on('pty:meta', (_e, id, meta) => {
   client.send({ t: 'meta', id, meta });
-  if (['customName', 'workspace', 'favorite'].some((key) => key in meta)) saveSnapshot();
+  if (['customName', 'workspace', 'favorite', 'workPath'].some((key) => key in meta)) saveSnapshot();
 });
 // 自己診断で、Mac の再起動に当たる状態（常駐のプロセスごと消える）を作る
 ipcMain.handle('pty:shutdown-host', async () => {

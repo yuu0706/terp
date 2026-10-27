@@ -1947,6 +1947,68 @@ async function runDropRepoTest({ win, js, check, outDir }) {
   }
 }
 
+// TERP_SELFTEST_NEWREPO は、その他のターミナルの作業場所に後から git の管理が始まったフォルダを見つけ、
+// 端末をそこへまとめる案内を出すことを確かめる（ルートで claude を立ち上げて新しいプロジェクトを作る使い方）
+async function runNewRepoTest({ win, js, check, outDir }) {
+  const wait = async (code, tries = 80) => {
+    for (let i = 0; i < tries; i++) {
+      if (await js(code)) return true;
+      await sleep(100);
+    }
+    return false;
+  };
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'terp-newrepo-')));
+  fs.mkdirSync(path.join(dir, 'before', '.git'), { recursive: true });
+  try {
+    await sleep(500);
+    const id = await js(`window.__terp.open(${JSON.stringify(dir)})`);
+    await wait(`window.__terp.sessions.get(${id}).cwd === ${JSON.stringify(dir)}`);
+    await sleep(300);
+    await js(`window.terp.write(${id}, 'mkdir fresh-app && git -C fresh-app init -q && echo NEWREPO-DONE\\r')`);
+    await wait(`window.__terp.bufferText(${id}).includes('NEWREPO-DONE\\n')`);
+    await js('window.__terp.scanNewRepos()');
+    const shown = await wait(`!document.getElementById('repo-toast').hidden`, 30);
+    const text = await js(`document.getElementById('repo-toast').innerText`);
+    check('git の管理が始まると、端末をまとめるか尋ねる', shown && text.includes('fresh-app が git の管理を始めました') && text.includes('fresh-app にまとめる') && text.includes('今はしない'), text);
+    check('端末を開く前からあったリポジトリは尋ねない', !text.includes('before') && await js(`window.__terp.repoOffer?.path === ${JSON.stringify(path.join(dir, 'fresh-app'))}`));
+    fs.writeFileSync(path.join(outDir, 'repo-toast.png'), (await win.webContents.capturePage()).toPNG());
+    await js(`document.querySelector('#repo-toast [data-action="accept"]').click()`);
+    const moved = await wait(`window.__terp.workOf(${id}) === ${JSON.stringify(path.join(dir, 'fresh-app'))}`);
+    check('まとめると、リポジトリを登録して端末をその下へ移す', moved && await js(`window.__terp.projects.some((p) => p.path === ${JSON.stringify(path.join(dir, 'fresh-app'))})
+      && Boolean(document.querySelector('.project[data-path="${path.join(dir, 'fresh-app')}"] .session[data-id="${id}"], .project[data-path="${path.join(dir, 'fresh-app')}"] [data-id="${id}"]'))`));
+    check('端末は閉じず、シェルはそのまま続く', await js(`window.__terp.sessions.has(${id}) && window.__terp.sessions.get(${id}).cwd === ${JSON.stringify(dir)}`));
+    check('案内は閉じる', await js(`document.getElementById('repo-toast').hidden`));
+    await sleep(1200);
+    const snap = JSON.parse(fs.readFileSync(path.join(require('./config').CONFIG_DIR, 'sessions.json'), 'utf8'));
+    check('まとめ先が控えに残る', snap.sessions.some((s) => s.id === id && s.workPath === path.join(dir, 'fresh-app')), JSON.stringify(snap.sessions.map((s) => s.workPath)));
+
+    const other = await js(`window.__terp.open(${JSON.stringify(dir)})`);
+    await wait(`window.__terp.sessions.get(${other}).cwd === ${JSON.stringify(dir)}`);
+    await sleep(300);
+    await js(`window.terp.write(${other}, 'mkdir later-app && git -C later-app init -q && echo LATER-DONE\\r')`);
+    await wait(`window.__terp.bufferText(${other}).includes('LATER-DONE\\n')`);
+    await js('window.__terp.scanNewRepos()');
+    await wait(`window.__terp.repoOffer?.path === ${JSON.stringify(path.join(dir, 'later-app'))}`, 60);
+    await js(`document.querySelector('#repo-toast [data-action="dismiss"]').click()`);
+    await js('window.__terp.scanNewRepos()');
+    await sleep(500);
+    const before = await js('window.__terp.projects.length');
+    await js(`window.__terp.openSettings('notifications')`);
+    await sleep(500);
+    await js(`[...document.querySelectorAll('#settings button')].find((el) => el.textContent === '新しいリポジトリの案内を試しに出す')?.click()`);
+    await wait(`!document.getElementById('repo-toast').hidden`, 30);
+    const sampleText = await js(`document.getElementById('repo-toast').innerText`);
+    check('設定の通知から案内を試しに出せる', sampleText.includes('sample-app が git の管理を始めました') && sampleText.includes('試しの案内'), sampleText);
+    await js(`document.querySelector('#repo-toast [data-action="accept"]').click()`);
+    await sleep(500);
+    check('試しの案内は、まとめるを押しても何も登録しない', await js(`document.getElementById('repo-toast').hidden && window.__terp.projects.length === ${before}`));
+    check('今はしないを押すと、登録せず聞き直さない', await js(`document.getElementById('repo-toast').hidden
+      && !window.__terp.projects.some((p) => p.path === ${JSON.stringify(path.join(dir, 'later-app'))}) && window.__terp.workOf(${other}) === null`));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 // TERP_SELFTEST_KEYS は、行の編集のキー（⌥←→・⌘←→・⌘⌫）と Shift+Enter が zsh で効くことを確かめる
 async function runKeysTest({ win, js, check }) {
   const id = await js('window.__terp.activeId');
@@ -2869,6 +2931,12 @@ exports.run = (win) => {
     }
     if (process.env.TERP_SELFTEST_DROPREPO) {
       await runDropRepoTest({ win, js, check, outDir });
+      fs.writeFileSync(path.join(outDir, 'result.txt'), log.join('\n') + '\n');
+      await finish();
+      return;
+    }
+    if (process.env.TERP_SELFTEST_NEWREPO) {
+      await runNewRepoTest({ win, js, check, outDir });
       fs.writeFileSync(path.join(outDir, 'result.txt'), log.join('\n') + '\n');
       await finish();
       return;

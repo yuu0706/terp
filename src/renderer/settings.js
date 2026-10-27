@@ -104,6 +104,15 @@ export const SECTIONS = [
         help: 'macOS の「システム設定 → 通知」で terp の通知を許可していないと出ない',
         run: () => terp.testNotification(),
       },
+      {
+        type: 'action', label: '新しいリポジトリの案内を試しに出す',
+        help: 'その他のターミナルの直下で git の管理が始まったときに出る案内。押しても登録しない',
+        run: (context) => {
+          const res = context.showSampleOffer();
+          if (res.ok) closeSettings();
+          return res;
+        },
+      },
     ],
   },
   {

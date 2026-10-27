@@ -3075,3 +3075,35 @@ button.subagent:hover,
   text-align: center;
   pointer-events: none;
 }
+
+/* 新しいリポジトリの案内。窓の右下に重ね、押すまで残す */
+.repo-toast {
+  position: fixed;
+  right: var(--space-3);
+  bottom: var(--space-3);
+  z-index: 20;
+  width: min(360px, calc(100vw - var(--space-3) * 2));
+  padding: var(--space-3);
+  border: 1px solid var(--color-accent);
+  border-radius: var(--radius);
+  background: var(--color-bg);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.4);
+}
+
+.repo-toast[hidden] { display: none; }
+
+.repo-toast p { margin: 0 0 var(--space-2); }
+
+.repo-toast__title { font-weight: 600; overflow-wrap: anywhere; }
+
+.repo-toast__body {
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+  overflow-wrap: anywhere;
+}
+
+.repo-toast__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}

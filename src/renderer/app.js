@@ -324,7 +324,8 @@ function activeCwd() {
     const view = subagentViews.get(activeKey.slice(2));
     return sessions.get(view?.sessionId)?.cwd || view?.cwd || null;
   }
-  return sessions.get(activeId)?.workspace === activeWorkspace ? sessions.get(activeId).cwd : null;
+  const s = sessions.get(activeId);
+  return s?.workspace === activeWorkspace ? s.workPath || s.cwd : null;
 }
 
 function renderItem(s, index = visibleKeys().indexOf(termKey(s.id))) {
@@ -481,8 +482,9 @@ function workOfPath(p, workspace = activeWorkspace) {
   return found;
 }
 
+// まとめ先（workPath）があれば、シェルの作業場所より優先する。ルートで立ち上げた claude の端末を、後からできたリポジトリへまとめたとき
 function workOf(s) {
-  return workOfPath(s.cwd, s.workspace || activeWorkspace);
+  return workOfPath(s.workPath || s.cwd, s.workspace || activeWorkspace);
 }
 
 function workLabel(w) {
@@ -2259,6 +2261,7 @@ function registerSession(id, { el, term, fit, search }, extra = {}) {
     customName: null,
     workspace: activeWorkspace,
     favorite: false,
+    workPath: null,
     agentTitle: '',
     ...reduceAgentStatus({}, { type: 'reset' }, Date.now()),
     createdAt: Date.now(),
@@ -2330,6 +2333,7 @@ async function attachTerminal(e) {
     workspace: e.meta.workspace,
     favorite: Boolean(e.meta.favorite),
     customName: e.meta.customName || null,
+    workPath: e.meta.workPath || null,
     title: e.meta.title || '',
     agentTitle: e.meta.agentTitle || '',
     lastActive: e.meta.lastActive || 0,
@@ -2370,6 +2374,10 @@ async function restoreSessions() {
       if (snap.customName) {
         s.customName = snap.customName;
         terp.setMeta(s.id, { customName: snap.customName });
+      }
+      if (snap.workPath) {
+        s.workPath = snap.workPath;
+        terp.setMeta(s.id, { workPath: snap.workPath });
       }
       // シェルは起動前の入力をためておくため、すぐ送ってよい
       if (snap.claudeSession) terp.write(s.id, `claude --resume ${snap.claudeSession}\r`);
@@ -2430,7 +2438,7 @@ function markNotify(s, kind, message = '') {
 // remember を外すのは、作業（worktree）を消して端末も閉じるときだけ。開き直しても場所が無い
 function closeSession(id, { remember = true } = {}) {
   const s = sessions.get(id);
-  if (s && remember) rememberClosed({ kind: 'terminal', cwd: s.cwd, workspace: s.workspace, name: s.customName, favorite: s.favorite });
+  if (s && remember) rememberClosed({ kind: 'terminal', cwd: s.workPath || s.cwd, workspace: s.workspace, name: s.customName, favorite: s.favorite });
   terp.kill(id);
 }
 
@@ -2515,6 +2523,92 @@ function removeSession(id) {
   if (activeId === id) activeId = null;
   dropTab(key, group);
 }
+
+// ---- 新しいリポジトリの案内 ----
+// その他のターミナルの作業場所の直下に、端末を開いた後で .git ができたら、端末をそこへまとめるか尋ねる。
+// 勝手には登録しない。断ったものは、この窓の間は聞き直さない
+const repoToast = document.getElementById('repo-toast');
+const offeredRepos = new Set();
+const repoOffers = [];
+let shownOffer = null;
+
+async function scanNewRepos() {
+  const loose = [...sessions.values()].filter((s) => !workOf(s) && s.cwd);
+  for (const cwd of new Set(loose.map((s) => s.cwd))) {
+    const here = loose.filter((s) => s.cwd === cwd);
+    const res = await terp.findNewRepos(cwd, Math.min(...here.map((s) => s.createdAt)));
+    if (!res.ok) continue;
+    for (const repo of res.value) {
+      if (offeredRepos.has(repo.path) || projects.some((p) => p.path === repo.path)) continue;
+      // どの端末が作ったかは分からないため、できる前から開いていた端末のうち、エージェントで最後に触ったものに聞く
+      const candidates = here.filter((s) => s.createdAt <= repo.since && sessions.has(s.id));
+      const s = candidates.sort((a, b) => Number(isAgent(b)) - Number(isAgent(a)) || (b.lastActive || 0) - (a.lastActive || 0))[0];
+      if (!s) continue;
+      offeredRepos.add(repo.path);
+      repoOffers.push({ sessionId: s.id, path: repo.path });
+    }
+  }
+  showNextOffer();
+}
+
+function showNextOffer() {
+  if (shownOffer) return;
+  while (repoOffers.length && !sessions.has(repoOffers[0].sessionId)) repoOffers.shift();
+  shownOffer = repoOffers.shift() || null;
+  renderOffer();
+}
+
+function renderOffer() {
+  repoToast.hidden = !shownOffer;
+  if (!shownOffer) return;
+  const name = shownOffer.path.split('/').pop();
+  repoToast.querySelector('.repo-toast__title').textContent = `${name} が git の管理を始めました`;
+  const s = sessions.get(shownOffer.sessionId);
+  const keep = s && isAgent(s) ? `${s.program} の会話はそのまま続きます。` : '端末は閉じずにそのまま使えます。';
+  const sample = shownOffer.sample ? '（試しの案内のため、押しても登録しません）' : '';
+  repoToast.querySelector('.repo-toast__body').textContent = `この端末（${s ? displayName(s) : '~'}）を ${name} にまとめますか？ ${keep}${sample}`;
+  repoToast.querySelector('[data-action="accept"]').textContent = `${name} にまとめる`;
+  repoToast.querySelector('.repo-toast__error').hidden = true;
+}
+
+// 設定の「通知」から、案内の見た目を試しに出す。押しても何も登録しない
+function showSampleOffer() {
+  if (shownOffer && !shownOffer.sample) return { ok: false, error: '新しいリポジトリの案内を表示中のため、試しの案内は出せない' };
+  shownOffer = { sessionId: activeId, path: `${terp.home}/sample-app`, sample: true };
+  renderOffer();
+  return { ok: true };
+}
+
+async function acceptOffer() {
+  const offer = shownOffer;
+  if (offer?.sample) { closeOffer(); return; }
+  const s = sessions.get(offer?.sessionId);
+  if (!s) { closeOffer(); return; }
+  // 端末と同じワークスペースに足す。表示中のワークスペースに足すと、別の所属の端末からはまとめ先が見えない
+  const res = await terp.addProject(offer.path, s.workspace);
+  if (res.ok) await refreshProjects();
+  if (!res.ok) {
+    const error = repoToast.querySelector('.repo-toast__error');
+    error.textContent = res.error;
+    error.hidden = false;
+    return;
+  }
+  s.workPath = res.value || offer.path;
+  terp.setMeta(s.id, { workPath: s.workPath });
+  closeOffer();
+  renderAll();
+  refreshGit(true);
+  refreshFiles(false);
+}
+
+function closeOffer() {
+  shownOffer = null;
+  repoToast.hidden = true;
+  showNextOffer();
+}
+
+repoToast.querySelector('[data-action="accept"]').addEventListener('click', acceptOffer);
+repoToast.querySelector('[data-action="dismiss"]').addEventListener('click', closeOffer);
 
 function switchRecent() {
   const inWorkspace = recent.filter((key) => workspaceOfKey(key) === activeWorkspace);
@@ -2728,6 +2822,7 @@ document.getElementById('empty-add-project').addEventListener('click', () => add
 
 // 外で作った worktree や変更の数を拾うため、定期的に git から読み直す
 setInterval(refreshProjects, 5000);
+setInterval(scanNewRepos, 5000);
 setInterval(refreshSubagents, 3000);
 window.addEventListener('focus', refreshSubagents);
 window.addEventListener('focus', refreshProjects);
@@ -2759,6 +2854,9 @@ window.__terp = {
   toggleSessionFavorite,
   setProjectHidden,
   addDroppedRepos,
+  scanNewRepos,
+  showSampleOffer,
+  get repoOffer() { return shownOffer; },
   workspaceDeleteReason,
   nextAttention,
   stateOf,
@@ -2823,6 +2921,7 @@ initSettings({
   agents: () => agentList,
   registry: () => agentRegistry,
   refreshAgents,
+  showSampleOffer,
   onClose: () => (activeKey?.startsWith('t:') ? sessions.get(activeId)?.term.focus() : null),
 });
 initFilesPanel({
