@@ -537,10 +537,17 @@ function createWindow() {
   win.on('leave-full-screen', () => toWindow('fullscreen:wallpaper', null));
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
   win.once('ready-to-show', () => {
-    setBlur(win, initial.window.blur);
+    applyWindowLook(win, initial.window);
     if (process.env.TERP_SELFTEST) win.showInactive();
   });
   if (process.env.TERP_SELFTEST) require('./selftest').run(win);
+}
+
+// 透かす・ぼかす窓では影を切る（Ghostty と同じ）。透明な窓の影は四角い窓の形のまま描かれ、
+// 丸い角の外に四角い線と隅の影が残る（2026-10-27 利用者の指摘）。不透明なら影を戻し、ほかの窓との境目を保つ
+function applyWindowLook(target, look) {
+  setBlur(target, look.blur);
+  target.setHasShadow(!(look.opacity < 1 || look.blur > 0));
 }
 
 app.whenReady().then(() => {
@@ -551,7 +558,7 @@ app.whenReady().then(() => {
   config.watchConfig((loaded) => {
     updateDockBadge();
     if (!win || win.isDestroyed()) return;
-    setBlur(win, loaded.window.blur);
+    applyWindowLook(win, loaded.window);
     toWindow('config', loaded);
   });
   setInterval(pollInfo, 1500);

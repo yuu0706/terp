@@ -2771,6 +2771,7 @@ async function runThemeTest({ win, js, send, check, outDir }) {
   await js('window.__terp.open()');
   await sleep(1500);
   await shoot('1-default');
+  check('不透明の窓は影を付ける', win.hasShadow());
 
   await writeConfig({ theme: 'Sakura Night' });
   const accent = await js('window.__terp.config.chrome.accent');
@@ -2794,12 +2795,15 @@ async function runThemeTest({ win, js, send, check, outDir }) {
       .map(([name, bg]) => name + ' ' + bg).join(' / ');
   })()`);
   check('端末の面に不透明な背景が残らない', opaque === '', opaque);
+  // 透明な窓の影は四角い窓の形のまま描かれ、丸い角の外に線が残るため切る
+  check('透かすと窓の影を切る', !win.hasShadow());
   const { setBlur } = require('./blur');
   check('窓の後ろのぼかしの関数が通る', setBlur(win, 20) === true);
   check('ぼかしを外せる', setBlur(win, 0) === true);
   await shoot('3-sakura-transparent');
 
   await writeConfig({ theme: 'Sakura Night', accent: '#ff69b4' });
+  check('不透明に戻すと影も戻る', win.hasShadow());
   const custom = await js('window.__terp.config.chrome.accent');
   check('強調色だけ上書きできる', custom === '#ff69b4', custom);
 
