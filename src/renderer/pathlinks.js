@@ -78,7 +78,7 @@ function logicalLine(term, row) {
   return { buffer, cols: term.cols, first, last, text, starts, ends };
 }
 
-export function createPathLinkProvider(term, { context, statFile, openFile, revealFile }) {
+export function createPathLinkProvider(term, { context, statFile, openFile, revealFile, onHover }) {
   const parsed = new Map();
 
   async function resolve(candidate, { cwd, root, home }) {
@@ -109,12 +109,19 @@ export function createPathLinkProvider(term, { context, statFile, openFile, reve
     if (!current || current.buffer !== logical.buffer || current.first !== logical.first || current.text !== logical.text ||
         term.cols !== logical.cols ||
         location.cwd !== nextLocation.cwd || location.root !== nextLocation.root) return [];
-    return resolved.filter(Boolean).map((link) => ({
-      ...link,
-      range: { start: logical.starts[link.start], end: logical.ends[link.end - 1] },
-      decorations: { underline: true, pointerCursor: true },
-      activate: () => link.directory ? revealFile(link.path) : openFile(link.path, { line: link.line, column: link.column }),
-    }));
+    return resolved.filter(Boolean).map((link) => {
+      const open = () => link.directory ? revealFile(link.path) : openFile(link.path, { line: link.line, column: link.column });
+      return {
+        ...link,
+        range: { start: logical.starts[link.start], end: logical.ends[link.end - 1] },
+        decorations: { underline: true, pointerCursor: true },
+        open,
+        // 普通のクリックは文字の選択に使うため開かない。⌘クリックで開き、右クリックは onHover で受けた先が開く
+        activate: (event) => { if (event?.metaKey) open(); },
+        hover: () => onHover?.(open),
+        leave: () => onHover?.(null),
+      };
+    });
   }
 
   async function visibleLinks() {
@@ -139,7 +146,7 @@ export function createPathLinkProvider(term, { context, statFile, openFile, reve
     async activate(text) {
       const link = (await visibleLinks()).find((item) => item.text === text);
       if (!link) return false;
-      await link.activate();
+      await link.open();
       return true;
     },
   };

@@ -2241,7 +2241,23 @@ function buildTerminal() {
   term.loadAddon(fit);
   term.loadAddon(new Unicode11Addon());
   term.unicode.activeVersion = '11';
-  term.loadAddon(new WebLinksAddon((_event, url) => terp.openExternal(url)));
+  // リンクは ⌘クリックか右クリックで開く（2026-10-27 利用者の指示）。普通のクリックは文字の選択に使う。
+  // 右クリックは xterm.js が知らせないため、指を置いているリンクを覚えておき、contextmenu で開く
+  const links = { hovered: null };
+  const hoverLink = (open) => {
+    links.hovered = open;
+    el.title = open ? '⌘クリックか右クリックで開く' : '';
+  };
+  term.loadAddon(new WebLinksAddon((event, url) => { if (event.metaKey) terp.openExternal(url); }, {
+    hover: (_event, url) => hoverLink(() => terp.openExternal(url)),
+    leave: () => hoverLink(null),
+  }));
+  el.addEventListener('contextmenu', (event) => {
+    if (!links.hovered) return;
+    event.preventDefault();
+    event.stopPropagation();
+    links.hovered();
+  }, true);
   const search = new SearchAddon();
   term.loadAddon(search);
   term.open(el);
@@ -2249,10 +2265,10 @@ function buildTerminal() {
   el.hidden = false;
   fit.fit();
   el.hidden = true;
-  return { el, term, fit, search };
+  return { el, term, fit, search, hoverLink };
 }
 
-function registerSession(id, { el, term, fit, search }, extra = {}) {
+function registerSession(id, { el, term, fit, search, hoverLink }, extra = {}) {
   const s = {
     id,
     term,
@@ -2283,6 +2299,7 @@ function registerSession(id, { el, term, fit, search }, extra = {}) {
     statFile: (path) => terp.statFile(path),
     openFile,
     revealFile: (path) => terp.revealFile(path),
+    onHover: hoverLink,
   });
   term.registerLinkProvider(s.pathLinks);
   s.li = createItem(s);
@@ -2880,6 +2897,22 @@ window.__terp = {
   editorOf: (path) => fileViews.get(path)?.view?.editor || null,
   terminalLinks: async (id) => (await sessions.get(id).pathLinks.visibleLinks()).map(({ text, path, line, column, range, directory }) => ({ text, path, line, column, range, directory })),
   activateTerminalLink: (id, text) => sessions.get(id).pathLinks.activate(text),
+  // 自己診断用。クリックと右クリックを、xterm.js がリンクに渡すのと同じ形で再現する
+  clickTerminalLink: async (id, text, init = {}) => {
+    const link = (await sessions.get(id).pathLinks.visibleLinks()).find((item) => item.text === text);
+    link?.activate(new MouseEvent('mouseup', init));
+    return Boolean(link);
+  },
+  rightClickTerminalLink: async (id, text) => {
+    const s = sessions.get(id);
+    const link = (await s.pathLinks.visibleLinks()).find((item) => item.text === text);
+    if (!link) return false;
+    link.hover();
+    const event = new MouseEvent('contextmenu', { bubbles: true, cancelable: true });
+    s.el.querySelector('.xterm-screen').dispatchEvent(event);
+    link.leave();
+    return event.defaultPrevented;
+  },
   closeKey,
   setPanel,
   openSettings,

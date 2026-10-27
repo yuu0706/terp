@@ -1243,7 +1243,8 @@ async function runDropPathsTest({ js, check, outDir }) {
 
 // TERP_SELFTEST_PATHLINKS を付けると、実在確認・折り返し・ファイルの行と桁への移動を確かめる
 async function runPathLinksTest({ js, check, outDir }) {
-  const dir = fs.mkdtempSync(path.join(path.resolve(outDir), 'pathlinks-'));
+  // シェルの作業場所は実体のパス（/private/var/…）で返るため、比べるパスも実体にそろえる
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(path.resolve(outDir), 'pathlinks-')));
   const source = path.join(dir, 'src', 'a.js');
   const notes = path.join(dir, 'notes.md');
   fs.mkdirSync(path.dirname(source), { recursive: true });
@@ -1280,6 +1281,22 @@ async function runPathLinksTest({ js, check, outDir }) {
   const position = await js(`window.__terp.editorOf(${JSON.stringify(source)})?.getPosition()`);
   check('カーソルが3行目2桁目に移る', position?.lineNumber === 3 && position?.column === 2, JSON.stringify(position));
   await js(`window.__terp.activate(${id})`);
+  await js(`window.__terp.clickTerminalLink(${id}, ${JSON.stringify(notes)})`);
+  await sleep(300);
+  check('普通のクリックではリンクを開かない', (await js('window.__terp.activeKey')) === `t:${id}`);
+  await js(`window.__terp.clickTerminalLink(${id}, ${JSON.stringify(notes)}, { metaKey: true })`);
+  await sleep(300);
+  check('⌘クリックでリンクを開く', (await js('window.__terp.activeKey')) === `f:${notes}`);
+  await js(`window.__terp.activate(${id})`);
+  check('右クリックでリンクを開き、右クリックの既定の動きは止める', await js(`window.__terp.rightClickTerminalLink(${id}, 'src/a.js:3:2')`));
+  await sleep(300);
+  check('右クリックで開いたファイルがタブで出る', (await js('window.__terp.activeKey')) === `f:${source}`);
+  await js(`window.__terp.activate(${id})`);
+  check('リンクの外の右クリックは止めない', !(await js(`(() => {
+    const event = new MouseEvent('contextmenu', { bubbles: true, cancelable: true });
+    window.__terp.sessions.get(${id}).el.querySelector('.xterm-screen').dispatchEvent(event);
+    return event.defaultPrevented;
+  })()`)));
   check('絶対パスのリンクを押せる', await js(`window.__terp.activateTerminalLink(${id}, ${JSON.stringify(notes)})`));
   check('notes.md がタブで開く', (await js('window.__terp.activeKey')) === `f:${notes}`);
   await js(`window.__terp.activate(${id})`);
