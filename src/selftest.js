@@ -1716,6 +1716,41 @@ async function runSidebarTest({ win, js, check, outDir }) {
   check('一覧の上のボタンでも隠せる', (await state()).hidden);
   await menu();
   check('もう一度 ⌘B で戻る', !(await state()).hidden);
+
+  // 幅: 右端をドラッグして変え、tabs.json に残す。ダブルクリックで元に戻す
+  const width = () => js(`Math.round(document.getElementById('sidebar').getBoundingClientRect().width)`);
+  const base = await width();
+  const edge = await js(`(() => { const r = document.getElementById('sidebar-resize').getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + 200) }; })()`);
+  // 窓を前に出さずに本物のマウスの操作を送るため、DevTools の入力を使う
+  const cdp = win.webContents.debugger;
+  if (!cdp.isAttached()) cdp.attach('1.3');
+  const mouse = (type, x) => cdp.sendCommand('Input.dispatchMouseEvent', { type, x, y: edge.y, button: 'left', buttons: type === 'mouseReleased' ? 0 : 1, clickCount: 1 });
+  await mouse('mousePressed', edge.x);
+  for (let x = edge.x; x <= edge.x + 120; x += 20) { await mouse('mouseMoved', x); await sleep(30); }
+  await mouse('mouseReleased', edge.x + 120);
+  cdp.detach();
+  await sleep(600);
+  const wide = await width();
+  check('右端をドラッグすると左の一覧が広がる', Math.abs(wide - (base + 120)) <= 3, `${base} → ${wide}`);
+  check('広げると端末の桁が減る', (await state()).cols < before.cols);
+  const savedWidth = JSON.parse(fs.readFileSync(path.join(require('./config').CONFIG_DIR, 'tabs.json'), 'utf8')).sidebarWidth;
+  check('幅が tabs.json に残る', Math.abs(savedWidth - wide) <= 1, String(savedWidth));
+  await js(`window.__terp.setSidebarWidth(0)`);
+  await sleep(300);
+  check('狭めすぎない（200px まで）', (await js(`getComputedStyle(document.getElementById('sidebar')).width`)) === '200px');
+  check('いちばん狭くしても、上端のボタンが一覧の中に収まる', await js(`(() => {
+    const side = document.getElementById('sidebar').getBoundingClientRect();
+    return [...document.querySelectorAll('.sidebar__head button, .sidebar__head .sidebar__title')].filter((el) => el.getClientRects().length)
+      .every((el) => { const r = el.getBoundingClientRect(); return r.left >= 76 && r.right <= side.right; });
+  })()`));
+  fs.writeFileSync(path.join(outDir, 'sidebar-narrow.png'), (await win.webContents.capturePage()).toPNG());
+  await js(`window.__terp.setSidebarWidth(9999)`);
+  check('広げすぎない（520px まで）', (await js(`getComputedStyle(document.getElementById('sidebar')).width`)) === '520px');
+  await js(`document.getElementById('sidebar-resize').dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))`);
+  await sleep(300);
+  check('ダブルクリックで元の幅に戻る', (await width()) === base);
+  // 幅に余裕があっても、リポジトリの見出しでは隠れたボタンが場所を取らない
+  check('リポジトリの見出しで、隠れたボタンが場所を取らない', await js(`[...document.querySelectorAll('.project__head .icon-btn--hover:not([aria-pressed="true"])')].every((el) => el.getBoundingClientRect().width === 0)`));
 }
 
 // TERP_SELFTEST_SHORTCUTS は、VS Code に倣って足したキー（⌘F・⌘G、⌘= / ⌘- / ⌘0、⇧⌘T）を確かめる

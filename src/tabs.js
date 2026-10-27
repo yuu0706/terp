@@ -26,16 +26,17 @@ function load() {
       fileWorkspaces: data?.fileWorkspaces && typeof data.fileWorkspaces === 'object' ? data.fileWorkspaces : {},
       sidebarHidden: data?.sidebarHidden === true,
       fontDelta: Number.isInteger(data?.fontDelta) ? data.fontDelta : 0,
+      sidebarWidth: Number.isInteger(data?.sidebarWidth) ? data.sidebarWidth : null,
     };
   } catch {
     return { files: [], order: [], active: null, layout: null };
   }
 }
 
-function save({ files, order, active, layout, workspaces, fileWorkspaces, sidebarHidden, fontDelta }) {
+function save({ files, order, active, layout, workspaces, fileWorkspaces, sidebarHidden, fontDelta, sidebarWidth }) {
   fs.mkdirSync(CONFIG_DIR, { recursive: true });
   const body = JSON.stringify({ files, order, active, layout, workspaces, fileWorkspaces, sidebarHidden: sidebarHidden === true,
-    fontDelta: Number.isInteger(fontDelta) ? fontDelta : 0 }, null, 2) + '\n';
+    fontDelta: Number.isInteger(fontDelta) ? fontDelta : 0, sidebarWidth: Number.isInteger(sidebarWidth) ? sidebarWidth : null }, null, 2) + '\n';
   // 書きかけのファイルを読まれないよう、別名で書いてから置き換える
   const tmp = `${TABS_PATH}.tmp`;
   fs.writeFileSync(tmp, body);

@@ -77,12 +77,38 @@ body {
 
 /* ---- 左の一覧 ---- */
 #sidebar {
+  position: relative;
+  container: sidebar / inline-size;
   width: var(--sidebar-width);
   flex: none;
   display: flex;
   flex-direction: column;
   background: var(--surface-sidebar);
   border-right: 1px solid var(--color-border);
+  user-select: none;
+}
+
+/* 左の一覧の右端をドラッグして幅を変える。つかむ所は線の左右に少し広げる */
+#sidebar-resize {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: -3px;
+  width: 6px;
+  z-index: 5;
+  cursor: col-resize;
+  -webkit-app-region: no-drag;
+}
+
+#sidebar-resize:hover,
+#sidebar-resize:focus-visible,
+body[data-sidebar-resizing] #sidebar-resize {
+  background: linear-gradient(to right, transparent 2px, var(--color-accent) 2px, var(--color-accent) 4px, transparent 4px);
+  outline: none;
+}
+
+body[data-sidebar-resizing] {
+  cursor: col-resize;
   user-select: none;
 }
 
@@ -139,6 +165,17 @@ body[data-sidebar='hidden'] .topbar {
 .sidebar__actions {
   display: flex;
   gap: var(--space-1);
+}
+
+/* 狭くしたら「作業」の題を消し、信号機ボタンの右にボタンだけを並べる。題があると窓の外へはみ出す */
+@container sidebar (max-width: 239px) {
+  .sidebar__title {
+    display: none;
+  }
+
+  .sidebar__head {
+    justify-content: flex-end;
+  }
 }
 
 .btn {
@@ -2960,6 +2997,17 @@ button.subagent:hover,
 .project__head:focus-within .favorite,
 .favorite[aria-pressed='true'] {
   visibility: visible;
+}
+
+/* リポジトリの見出しでは、隠れているボタンの場所も空けず、名前をなるべく長く出す。載せたときだけ並べる */
+.project__head .icon-btn--hover {
+  display: none;
+}
+
+.project__head:hover .icon-btn--hover,
+.project__head:focus-within .icon-btn--hover,
+.project__head .favorite[aria-pressed='true'] {
+  display: grid;
 }
 
 .favorite[aria-pressed='true'] .icon {

@@ -1956,7 +1956,7 @@ function savedTabState() {
   }));
   const active = persistent(activeKey) ? activeKey : recent.find((key) => persistent(key) && workspaceOfKey(key) === activeWorkspace) || null;
   return { files: [...fileViews.keys()], order, active, layout: restoreLayout(layout, order), workspaces: states,
-    fileWorkspaces: Object.fromEntries([...fileViews].map(([path, view]) => [path, view.workspace])), sidebarHidden, fontDelta };
+    fileWorkspaces: Object.fromEntries([...fileViews].map(([path, view]) => [path, view.workspace])), sidebarHidden, fontDelta, sidebarWidth };
 }
 
 function saveTabs() {
@@ -1975,6 +1975,7 @@ async function restoreTabs() {
     const data = res.value;
     if (data.sidebarHidden) setSidebarHidden(true, { save: false });
     if (data.fontDelta) setFontDelta(data.fontDelta, { save: false });
+    if (data.sidebarWidth) setSidebarWidth(data.sidebarWidth, { save: false });
     const legacyWorkspace = workspaces.find((w) => w.id === 'default')?.id || workspaces[0].id;
     for (const path of data.files) {
       const workspace = workspaces.some((w) => w.id === data.fileWorkspaces?.[path]) ? data.fileWorkspaces[path] : legacyWorkspace;
@@ -2199,6 +2200,46 @@ function setSidebarHidden(hidden, { save = true } = {}) {
   window.dispatchEvent(new Event('resize'));
   if (hidden && document.getElementById('sidebar').contains(document.activeElement)) viewOf(activeKey)?.term?.focus();
 }
+
+// 左の一覧の幅。右端をドラッグするか、つかむ所を選んで ←→ で変える。ダブルクリックで既定の幅に戻す。
+// 幅はタブの控え（tabs.json）に残す。null は既定（CSS の --sidebar-width）
+// 下限は、信号機ボタンの右に上端のボタン4つが収まる幅
+const SIDEBAR_MIN = 200;
+const SIDEBAR_MAX = 520;
+const sidebarEdge = document.getElementById('sidebar-resize');
+let sidebarWidth = null;
+function setSidebarWidth(width, { save = true } = {}) {
+  sidebarWidth = width === null ? null : Math.round(Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, width)));
+  if (sidebarWidth === null) document.documentElement.style.removeProperty('--sidebar-width');
+  else document.documentElement.style.setProperty('--sidebar-width', `${sidebarWidth}px`);
+  sidebarEdge.setAttribute('aria-valuenow', String(document.getElementById('sidebar').getBoundingClientRect().width | 0));
+  if (save) saveTabs();
+  window.dispatchEvent(new Event('resize'));
+}
+
+sidebarEdge.addEventListener('pointerdown', (event) => {
+  if (event.button !== 0) return;
+  event.preventDefault();
+  sidebarEdge.setPointerCapture(event.pointerId);
+  const left = document.getElementById('sidebar').getBoundingClientRect().left;
+  document.body.dataset.sidebarResizing = 'true';
+  const move = (e) => setSidebarWidth(e.clientX - left, { save: false });
+  const end = () => {
+    sidebarEdge.removeEventListener('pointermove', move);
+    delete document.body.dataset.sidebarResizing;
+    saveTabs();
+  };
+  sidebarEdge.addEventListener('pointermove', move);
+  sidebarEdge.addEventListener('pointerup', end, { once: true });
+  sidebarEdge.addEventListener('pointercancel', end, { once: true });
+});
+sidebarEdge.addEventListener('dblclick', () => setSidebarWidth(null));
+sidebarEdge.addEventListener('keydown', (event) => {
+  if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+  event.preventDefault();
+  const current = document.getElementById('sidebar').getBoundingClientRect().width;
+  setSidebarWidth(current + (event.key === 'ArrowRight' ? 16 : -16));
+});
 
 // 上の帯のボタン: 閉じていれば開き、同じ切り替え先が開いていれば閉じる
 function togglePanel(tab) {
@@ -2898,6 +2939,7 @@ window.__terp = {
   toggleProjectFavorite,
   toggleSessionFavorite,
   setProjectHidden,
+  setSidebarWidth,
   addDroppedRepos,
   scanNewRepos,
   showSampleOffer,

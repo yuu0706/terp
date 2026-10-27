@@ -93,7 +93,7 @@ async function run() {
     projects.update('/repo', { hidden: true });
     equal(projects.load().projects.map((p) => [p.path, p.hidden]), [['/second', false], ['/repo', true]]);
     projects.update('/repo', { hidden: false });
-    const saved = { files: [], order: ['t:1'], active: 't:1', layout: null, workspaces: { [b.id]: { active: 't:1', layout: null } }, fileWorkspaces: {}, sidebarHidden: true, fontDelta: -2 };
+    const saved = { files: [], order: ['t:1'], active: 't:1', layout: null, workspaces: { [b.id]: { active: 't:1', layout: null } }, fileWorkspaces: {}, sidebarHidden: true, fontDelta: -2, sidebarWidth: 320 };
     tabs.save(saved);
     equal(tabs.load(), saved);
     const sessions = [{ id: 1, cwd: '/tmp', workspace: b.id, favorite: true }];
