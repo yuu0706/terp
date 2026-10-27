@@ -2156,7 +2156,7 @@ async function runPersistTest({ js, check, outDir, phase }) {
 }
 
 // TERP_CONFIG_DIR の一時フォルダで実行し、利用者のリポジトリと設定には触れない。
-async function runWorkspaceTest({ js, check, outDir }) {
+async function runWorkspaceTest({ win, js, check, outDir }) {
   const { CONFIG_DIR, CONFIG_PATH } = require('./config');
   if (!process.env.TERP_CONFIG_DIR || path.resolve(CONFIG_DIR) === path.join(os.homedir(), '.config/terp')) throw new Error('ワークスペースの自己診断には一時フォルダの TERP_CONFIG_DIR が必要');
   const { execFileSync } = require('child_process');
@@ -2259,12 +2259,15 @@ async function runWorkspaceTest({ js, check, outDir }) {
       const head = document.querySelector('.project[data-path=${JSON.stringify(repos[0])}] .project__head');
       const style = getComputedStyle(row), sidebar = getComputedStyle(document.getElementById('sidebar'));
       return { bg: style.backgroundColor, text: style.color, sub: getComputedStyle(row.querySelector('.session__sub')).color,
-        head: getComputedStyle(head).backgroundColor, sidebar: sidebar.backgroundColor, selected: style.boxShadow };
+        head: getComputedStyle(head).backgroundImage, image: style.backgroundImage, sidebar: sidebar.backgroundColor, selected: style.boxShadow,
+        primary: getComputedStyle(document.getElementById('new-terminal')).backgroundImage };
     })()`);
     const rgba = (value) => value.match(/[\d.]+/g).map(Number);
     const { contrast, luminance } = await import('data:text/javascript;base64,' + fs.readFileSync(path.join(__dirname, 'renderer/favcolor.js')).toString('base64'));
     const hex = (value) => '#' + rgba(value).slice(0, 3).map((c) => c.toString(16).padStart(2, '0')).join('');
-    check('お気に入りの背景が強調色になる', rgba(colors.bg).slice(0, 3).every((c) => c === 238) && colors.head === colors.bg);
+    check('お気に入りの背景が強調色のぼかしになる', colors.image.startsWith('linear-gradient') && colors.head === colors.image, colors.image);
+    check('新しいターミナルのボタンも強調色のぼかしになる', colors.primary.startsWith('linear-gradient'), colors.primary);
+    fs.writeFileSync(path.join(outDir, 'favorite-gradient.png'), (await win.webContents.capturePage()).toPNG());
     // 星と × は同じ行の隣り合う別の場所に置き、押し間違えないようにする
     const buttons = await js(`(() => {
       const row = window.__terp.sessions.get(${a}).li;
@@ -2274,7 +2277,7 @@ async function runWorkspaceTest({ js, check, outDir }) {
     check('お気に入りの星と閉じるの × が重ならない',
       buttons.star.right <= buttons.close.left && buttons.star.bottom > buttons.close.top && buttons.star.top < buttons.close.bottom,
       JSON.stringify(buttons));
-    check('お気に入りの不透明度が一覧と同じ', rgba(colors.bg)[3] === 0.65 && rgba(colors.sidebar)[3] === 0.65);
+    check('お気に入りの不透明度が一覧と同じ', /\/ 0\.65\)/.test(colors.image) && rgba(colors.sidebar)[3] === 0.65, colors.image);
     check('文字は暗くなりコントラスト比4.5以上', contrast('#eeeeee', hex(colors.text)) >= 4.5 && luminance(hex(colors.text)) < luminance('#eeeeee'));
     check('2行目も同じ色、選択中の線が残る', colors.sub === colors.text && colors.selected !== 'none');
     await sleep(500);
@@ -2585,8 +2588,9 @@ async function runThemeTest({ win, js, send, check, outDir }) {
   check('テーマ名だけで Ghostty のテーマが読める', accent === '#ff9ebb', `強調色 ${accent}`);
   const termFg = await js(`window.__terp.sessions.get(${id}).term.options.theme.foreground`);
   check('開いている端末にも反映される', termFg === '#f5d5de', `文字色 ${termFg}`);
-  const btnColor = await js(`getComputedStyle(document.getElementById('new-terminal')).backgroundColor`);
-  check('新規ボタンが強調色になる', btnColor === 'rgb(255, 158, 187)', btnColor);
+  // 面は強調色をわずかにずらしたぼかし、縁は強調色そのもの
+  const btn = await js(`(() => { const style = getComputedStyle(document.getElementById('new-terminal')); return { image: style.backgroundImage, border: style.borderTopColor }; })()`);
+  check('新規ボタンが強調色になる', btn.border === 'rgb(255, 158, 187)' && btn.image.startsWith('linear-gradient'), JSON.stringify(btn));
   await shoot('2-sakura');
 
   await writeConfig({ theme: 'Sakura Night', backgroundOpacity: 0.75, backgroundBlur: true });
@@ -2868,7 +2872,7 @@ exports.run = (win) => {
     }
 
     if (process.env.TERP_SELFTEST_WORKSPACE) {
-      await runWorkspaceTest({ js, check, outDir });
+      await runWorkspaceTest({ win, js, check, outDir });
       fs.writeFileSync(path.join(outDir, 'result.txt'), log.join('\n') + '\n');
       await finish();
       return;

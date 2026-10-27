@@ -126,6 +126,7 @@ function applyConfig(c) {
   root.setProperty('--surface-term', withAlpha(c.chrome['term-bg'], c.window.opacity));
   root.setProperty('--surface-sidebar', withAlpha(c.chrome.bg, c.window.opacity));
   root.setProperty('--surface-favorite', withAlpha(c.chrome.accent, c.window.opacity));
+  root.setProperty('--window-alpha', String(c.window.opacity));
   root.setProperty('--favorite-text', favoriteText(c.chrome.accent, c.chrome.text));
   root.setProperty('--window-blur', `${c.window.blur}px`);
   showWallpaper();

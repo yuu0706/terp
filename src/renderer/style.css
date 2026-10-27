@@ -29,6 +29,15 @@
   --text-sm: 12px;
   --text-md: 14px;
   --text-lg: 18px;
+  /* 強調色の面は単色にせず、明るさと色相をわずかにずらしたぼかしにする（2026-10-26 利用者の指示）。
+     ずらしは小さく保ち、強調色に合わせて決めた文字の色（--favorite-text など）の見やすさを崩さない */
+  --window-alpha: 1;
+  --gradient-accent: linear-gradient(135deg,
+    oklch(from var(--color-accent) calc(l + 0.04) c calc(h - 12)),
+    oklch(from var(--color-accent) calc(l - 0.04) c calc(h + 18)));
+  --gradient-favorite: linear-gradient(90deg,
+    oklch(from var(--color-accent) calc(l + 0.03) c calc(h - 12) / var(--window-alpha)),
+    oklch(from var(--color-accent) calc(l - 0.03) c calc(h + 18) / var(--window-alpha)));
   --radius: 6px;
   --icon-sm: 16px;
   --term-padding-x: 10px;
@@ -184,13 +193,13 @@ body[data-sidebar='hidden'] .topbar {
 }
 
 .btn--primary {
-  background: var(--color-accent);
+  background: var(--gradient-accent);
   border-color: var(--color-accent);
   color: var(--color-bg);
 }
 
 .btn--primary:hover {
-  background: var(--color-accent);
+  background: var(--gradient-accent);
   filter: brightness(1.08);
 }
 
@@ -2957,7 +2966,7 @@ button.subagent:hover,
 /* 不透明度は一覧と同じ設定値。選択は面の色に頼らず左端の線でも示す。 */
 .session[data-favorite='true'],
 .project__head[data-favorite='true'] {
-  background: var(--surface-favorite);
+  background: var(--gradient-favorite);
   color: var(--favorite-text);
 }
 
