@@ -17,7 +17,7 @@ function normalizeProjects(value = {}) {
     if (!p || typeof p.path !== 'string' || !p.path || paths.has(p.path)) return false;
     paths.add(p.path);
     return true;
-  }).map((p) => ({ ...p, workspace: valid(p.workspace) ? p.workspace : fallback, favorite: Boolean(p.favorite) }));
+  }).map((p) => ({ ...p, workspace: valid(p.workspace) ? p.workspace : fallback, favorite: Boolean(p.favorite), hidden: Boolean(p.hidden) }));
   return { ...value, projects, workspaces, activeWorkspace: valid(value.activeWorkspace) ? value.activeWorkspace : fallback };
 }
 

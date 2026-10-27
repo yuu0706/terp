@@ -1820,6 +1820,76 @@ async function runLockTest({ win, js, check, outDir }) {
   check('もう一度押すと固定が外れる', !(await panes()).find((p) => p.id === left).locked);
 }
 
+// TERP_SELFTEST_HIDEREPO は、左の一覧に出すリポジトリを選べることを確かめる。隠したものは1行にまとまり、⌘M の一覧には出る
+async function runHideRepoTest({ win, js, check, outDir }) {
+  const { execFileSync } = require('child_process');
+  const wait = async (code, tries = 60) => {
+    for (let i = 0; i < tries; i++) {
+      if (await js(code)) return true;
+      await sleep(100);
+    }
+    return false;
+  };
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'terp-hiderepo-')));
+  const repos = ['repo-a', 'repo-b', 'repo-c'].map((name) => {
+    const repo = path.join(dir, name);
+    fs.mkdirSync(repo);
+    execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repo });
+    return repo;
+  });
+  const [a, b, c] = repos;
+  const section = (repo) => `document.querySelector('.project[data-path=${JSON.stringify(JSON.stringify(repo)).slice(1, -1)}]')`;
+  try {
+    await sleep(1000);
+    for (const repo of repos) await js(`window.__terp.addProject(${JSON.stringify(repo)})`);
+    await wait(`window.__terp.projects.length === 3`);
+    const ta = await js(`window.__terp.open(${JSON.stringify(a)})`);
+    const tb = await js(`window.__terp.open(${JSON.stringify(b)})`);
+    await wait(`window.__terp.workOf(${tb}) === ${JSON.stringify(b)}`);
+    await js(`window.__terp.activate(${ta})`);
+    await js(`window.__terp.setProjectHidden(${JSON.stringify(b)}, true)`);
+    await js(`window.__terp.setProjectHidden(${JSON.stringify(c)}, true)`);
+    await wait(`!${section(b)} && !${section(c)}`);
+    const state = await js(`({ a: Boolean(${section(a)}), b: Boolean(${section(b)}), c: Boolean(${section(c)}),
+      row: !document.getElementById('hidden-repos').hidden, count: document.querySelector('.hidden-repos__count').textContent,
+      termB: window.__terp.sessions.get(${tb}).li.isConnected })`);
+    check('隠したリポジトリは左の一覧に出ず、1行に数がまとまる', state.a && !state.b && !state.c && state.row && state.count === '2', JSON.stringify(state));
+    check('隠したリポジトリの端末は、その他のターミナルにも紛れない', !state.termB);
+    await sleep(400);
+    const stored = JSON.parse(fs.readFileSync(path.join(require('./config').CONFIG_DIR, 'projects.json'), 'utf8'));
+    check('隠したことが projects.json に残る', stored.projects.filter((p) => p.hidden).map((p) => p.path).sort().join() === [b, c].join());
+    fs.writeFileSync(path.join(outDir, 'hidden-repos.png'), (await win.webContents.capturePage()).toPNG());
+
+    await js(`window.__terp.activate(${tb})`);
+    await wait(`Boolean(${section(b)})`);
+    check('隠していても、表示中のタブのリポジトリは出す', await js(`Boolean(${section(b)}) && window.__terp.sessions.get(${tb}).li.isConnected && document.querySelector('.hidden-repos__count').textContent === '1'`));
+    await js(`window.__terp.activate(${ta})`);
+    check('ほかへ移るとまた隠れる', await wait(`!${section(b)}`));
+
+    await js(`document.getElementById('repo-filter').click()`);
+    await sleep(300);
+    const items = await js(`[...document.querySelectorAll('.menu:popover-open .menu__item[role="menuitemcheckbox"]')].map((el) => el.textContent + ':' + el.getAttribute('aria-checked'))`);
+    check('上端のボタンで、出すリポジトリをチェックで選べる', JSON.stringify(items) === JSON.stringify(['repo-a:true', 'repo-b:false', 'repo-c:false']), JSON.stringify(items));
+    await js(`[...document.querySelectorAll('.menu:popover-open .menu__item')].find((el) => el.textContent === 'repo-b').click()`);
+    await wait(`Boolean(${section(b)})`);
+    await sleep(300);
+    check('チェックを付けると出て、メニューは開いたまま', await js(`Boolean(${section(b)}) && Boolean(document.querySelector('.menu:popover-open'))
+      && document.querySelector('.menu:popover-open .menu__item[aria-checked="true"]:nth-child(2)')?.textContent === 'repo-b'`));
+    await js(`[...document.querySelectorAll('.menu:popover-open .menu__item')].find((el) => el.textContent === 'すべて出す').click()`);
+    check('すべて出すで、隠したリポジトリの行が消える', await wait(`Boolean(${section(c)}) && document.getElementById('hidden-repos').hidden`));
+    await js(`${section(a)}.querySelector('[data-action="hide"]').click()`);
+    check('見出しのボタンでも隠せる（表示中のタブがあるうちは出たまま）', await wait(`window.__terp.projects.find((p) => p.path === ${JSON.stringify(a)}).hidden && Boolean(${section(a)})`));
+    await js(`window.__terp.activate(${tb})`);
+    check('表示中のタブが外れると隠れる', await wait(`!${section(a)}`));
+    await js(`document.getElementById('overview-open').click()`);
+    await sleep(500);
+    check('⌘M の一覧には隠したリポジトリの端末も出る', await js(`Boolean(document.querySelector('.overview__tile[data-id="${ta}"]'))`));
+    await js(`document.querySelector('#overview [data-close]').click()`);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 // TERP_SELFTEST_KEYS は、行の編集のキー（⌥←→・⌘←→・⌘⌫）と Shift+Enter が zsh で効くことを確かめる
 async function runKeysTest({ win, js, check }) {
   const id = await js('window.__terp.activeId');
@@ -2730,6 +2800,12 @@ exports.run = (win) => {
     }
     if (process.env.TERP_SELFTEST_LOCK) {
       await runLockTest({ win, js, check, outDir });
+      fs.writeFileSync(path.join(outDir, 'result.txt'), log.join('\n') + '\n');
+      await finish();
+      return;
+    }
+    if (process.env.TERP_SELFTEST_HIDEREPO) {
+      await runHideRepoTest({ win, js, check, outDir });
       fs.writeFileSync(path.join(outDir, 'result.txt'), log.join('\n') + '\n');
       await finish();
       return;

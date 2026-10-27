@@ -25,7 +25,7 @@ export function createMenu() {
       const button = document.createElement('button');
       button.type = 'button';
       button.className = 'menu__item';
-      button.setAttribute('role', item.checked === undefined ? 'menuitem' : 'menuitemradio');
+      button.setAttribute('role', item.checked === undefined ? 'menuitem' : item.checkbox ? 'menuitemcheckbox' : 'menuitemradio');
       if (item.checked !== undefined) button.setAttribute('aria-checked', String(item.checked));
       const label = document.createElement('span');
       label.className = 'menu__label';

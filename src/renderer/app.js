@@ -350,6 +350,10 @@ function renderItem(s, index = visibleKeys().indexOf(termKey(s.id))) {
 }
 
 function renderAll() {
+  if (shownProjectsSignature() !== shownSignature) {
+    renderProjects();
+    return;
+  }
   placeSessions();
   const now = Date.now();
   const focused = focusForTest ?? document.hasFocus();
@@ -370,6 +374,7 @@ function renderAll() {
     el.querySelector('.work__row').setAttribute('aria-current', String(group === el.dataset.path));
   }
   renderWorkStatuses();
+  renderHiddenRepos();
   renderWorkspaceStatuses();
   updateDockBadge();
   renderTabs(visible);
@@ -487,6 +492,7 @@ function workLabel(w) {
 const BRANCH_ICON = `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="6" r="2" /><circle cx="6" cy="18" r="2" /><circle cx="18" cy="8" r="2" /><path d="M6 8v8M18 10c0 4-6 3-6 8" /></svg>`;
 const PLUS_ICON = `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>`;
 const CLOSE_ICON = `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>`;
+const EYE_OFF_ICON = `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3l18 18" /><path d="M10.6 6.1A9.8 9.8 0 0 1 12 6c5 0 9 6 9 6a17 17 0 0 1-2.6 3.2M6.6 6.6C4.3 8.1 3 12 3 12s4 6 9 6a9.2 9.2 0 0 0 4.4-1.1" /><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2" /></svg>`;
 const TRASH_ICON = `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V4h6v3" /></svg>`;
 
 function escapeHtml(text) {
@@ -742,7 +748,8 @@ function renderProjects() {
   // 描き直す前に、ターミナルの行を退避しておく
   for (const s of sessions.values()) looseList.appendChild(s.li);
   projectsEl.innerHTML = '';
-  for (const p of currentProjects()) {
+  shownSignature = shownProjectsSignature();
+  for (const p of currentProjects().filter(projectShown)) {
     const section = document.createElement('section');
     section.className = 'project';
     section.dataset.path = p.path;
@@ -750,16 +757,20 @@ function renderProjects() {
       <div class="project__head" data-favorite="${Boolean(p.favorite)}" title="${escapeHtml(shortPath(p.path))}&#10;ドラッグか ⌥↑ / ⌥↓ で並べ替え" draggable="true" tabindex="0">
         <span class="project__name">${escapeHtml(p.name)}</span>
         <button class="icon-btn icon-btn--hover favorite" type="button" data-action="favorite" aria-pressed="${Boolean(p.favorite)}" aria-label="${favoriteLabel(p.favorite)}" title="${favoriteLabel(p.favorite)}">${STAR_ICON}</button>
+        <button class="icon-btn icon-btn--hover" type="button" data-action="hide" aria-label="${escapeHtml(p.name)} を左の一覧で隠す" title="左の一覧で隠す（⌘M の一覧には出る）">${EYE_OFF_ICON}</button>
         <button class="icon-btn" type="button" data-action="new-work" aria-label="${escapeHtml(p.name)} に新しい作業を作る" title="新しい作業">${PLUS_ICON}</button>
         <button class="icon-btn icon-btn--hover" type="button" data-action="forget" aria-label="${escapeHtml(p.name)} を一覧から外す" title="一覧から外す（ファイルは消さない）">${CLOSE_ICON}</button>
       </div>`;
     section.querySelector('[data-action="new-work"]').addEventListener('click', () => openWorkDialog(p.path));
     setupProjectDrag(section, p.path);
     section.querySelector('[data-action="favorite"]').addEventListener('click', () => toggleProjectFavorite(p.path));
+    section.querySelector('[data-action="hide"]').addEventListener('click', () => setProjectHidden(p.path, true));
+    if (p.hidden) section.dataset.hiddenRepo = 'true';
     section.querySelector('.project__head').addEventListener('contextmenu', (e) => {
       e.preventDefault();
       rowMenu.open([
         { label: favoriteLabel(p.favorite), run: () => toggleProjectFavorite(p.path) },
+        { label: '左の一覧で隠す', run: () => setProjectHidden(p.path, true) },
         moveWorkspaceMenu(p.workspace, (id) => moveProjectWorkspace(p.path, id)),
       ], { x: e.clientX, y: e.clientY, target: e.currentTarget });
     });
@@ -809,7 +820,76 @@ function renderProjects() {
     projectsEl.appendChild(section);
   }
   noProjects.hidden = currentProjects().length > 0;
+  renderHiddenRepos();
   renderAll();
+}
+
+// ---- 左の一覧に出すリポジトリ ----
+// 同時に触るリポジトリだけを出し、残りは「隠したリポジトリ」の1行にまとめる（⌘M の一覧には全部出る）。
+// 隠していても、表示中のタブがそのリポジトリにあれば出す。行が見えないまま作業させないため
+let shownSignature = '';
+const hiddenReposEl = document.getElementById('hidden-repos');
+
+function projectShown(p) {
+  if (!p.hidden) return true;
+  const group = activeKey ? groupOf(activeKey) : null;
+  return p.worktrees.some((w) => w.path === group);
+}
+
+function shownProjectsSignature() {
+  return currentProjects().filter(projectShown).map((p) => p.path).join('\n');
+}
+
+function hiddenProjects() {
+  return currentProjects().filter((p) => !projectShown(p));
+}
+
+function renderHiddenRepos() {
+  const hidden = hiddenProjects();
+  hiddenReposEl.hidden = hidden.length === 0;
+  hiddenReposEl.querySelector('.hidden-repos__count').textContent = String(hidden.length);
+  const paths = new Set(hidden.flatMap((p) => p.worktrees.map((w) => w.path)));
+  const summary = urgentAgentSessions(sessionsInListOrder().filter((s) => paths.has(workOf(s)?.path)));
+  const status = hiddenReposEl.querySelector('.work__status');
+  status.hidden = summary.sessions.length === 0;
+  if (status.hidden) return;
+  renderStatus(status, summary.sessions[0], summary.state);
+  status.querySelector('.work__status-count').textContent = summary.sessions.length > 1 ? summary.sessions.length : '';
+  status.setAttribute('aria-label', `隠したリポジトリの${STATE_LABELS[summary.state]} ${summary.sessions.length}件の先頭を表示`);
+}
+
+async function setProjectHidden(repo, hidden) {
+  projectRevision++;
+  const res = await terp.updateProject(repo, { hidden });
+  if (!res.ok) workspaceUI.error(res.error);
+  else await refreshProjects();
+}
+
+function repoFilterItems() {
+  const list = currentProjects();
+  return [
+    ...list.map((p) => ({ label: p.name, checked: !p.hidden, checkbox: true, keepOpen: true,
+      run: async () => { await setProjectHidden(p.path, !p.hidden); reopenRepoFilter(); } })),
+    { separator: true },
+    { label: 'すべて出す', run: async () => {
+      projectRevision++;
+      for (const p of list.filter((entry) => entry.hidden)) await terp.updateProject(p.path, { hidden: false });
+      await refreshProjects();
+    } },
+  ];
+}
+
+let repoFilterTarget = null;
+function openRepoFilter(target) {
+  repoFilterTarget = target;
+  rowMenu.open(repoFilterItems(), { target });
+}
+
+// 選び直すたびに描き直す。押した項目に焦点を戻し、続けて選べるようにする
+function reopenRepoFilter() {
+  const focused = document.activeElement?.textContent;
+  rowMenu.open(repoFilterItems(), { target: repoFilterTarget });
+  [...rowMenu.el.querySelectorAll('.menu__item')].find((el) => el.textContent === focused)?.focus();
 }
 
 // 各ターミナルの行を、作業場所を含む作業の下へ動かす。どれにも入らないものは「その他」へ
@@ -821,7 +901,14 @@ function placeSessions() {
       continue;
     }
     const w = workOf(s);
-    const target = (w && projectsEl.querySelector(`.work[data-path="${CSS.escape(w.path)}"] .session-list`)) || looseList;
+    const list = w && projectsEl.querySelector(`.work[data-path="${CSS.escape(w.path)}"] .session-list`);
+    // 隠したリポジトリの端末は、その他のターミナルに紛れ込ませず一覧から外す
+    if (w && !list && currentProjects().some((p) => p.path === w.repo && !projectShown(p))) {
+      s.li.remove();
+      subagentLists.get(s.id)?.el.remove();
+      continue;
+    }
+    const target = list || looseList;
     // 名前の編集中に動かすと入力欄の選択が外れるため、動かす必要があるときだけ動かす
     if (s.li.parentElement !== target) {
       const after = [...target.children].find((li) => li.classList.contains('session') && Number(li.dataset.id) > s.id);
@@ -2581,6 +2668,13 @@ document.getElementById('panel-refresh').addEventListener('click', () => (panelT
 document.getElementById('empty-new').addEventListener('click', () => newTerminal());
 document.getElementById('new-work').addEventListener('click', () => openWorkDialog());
 document.getElementById('add-project').addEventListener('click', () => addProject());
+document.getElementById('repo-filter').addEventListener('click', (e) => openRepoFilter(e.currentTarget));
+document.getElementById('hidden-repos-open').addEventListener('click', (e) => openRepoFilter(e.currentTarget));
+hiddenReposEl.querySelector('.work__status').addEventListener('click', () => {
+  const paths = new Set(hiddenProjects().flatMap((p) => p.worktrees.map((w) => w.path)));
+  const summary = urgentAgentSessions(sessionsInListOrder().filter((s) => paths.has(workOf(s)?.path)));
+  if (summary.sessions.length) activate(summary.sessions[0].id);
+});
 document.getElementById('settings-open').addEventListener('click', () => openSettings());
 document.getElementById('empty-add-project').addEventListener('click', () => addProject());
 
@@ -2615,6 +2709,7 @@ window.__terp = {
   moveSessionWorkspace,
   toggleProjectFavorite,
   toggleSessionFavorite,
+  setProjectHidden,
   workspaceDeleteReason,
   nextAttention,
   stateOf,

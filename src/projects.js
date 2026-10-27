@@ -71,6 +71,7 @@ function update(repo, patch) {
     project.workspace = patch.workspace;
   }
   if ('favorite' in patch) project.favorite = Boolean(patch.favorite);
+  if ('hidden' in patch) project.hidden = Boolean(patch.hidden);
   save(data);
 }
 

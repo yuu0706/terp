@@ -232,13 +232,15 @@ body[data-sidebar='hidden'] .topbar {
 }
 
 .tree__empty[hidden],
-.project[hidden] {
+.project[hidden],
+.hidden-repos[hidden] {
   display: none;
 }
 
 /* リポジトリの境目に、強調色（テーマの色）の線を引く（2026-10-23 利用者の指示） */
 .project + .project,
-#projects:not(:empty) + .project:not([hidden]) {
+#projects:not(:empty) ~ .project:not([hidden]),
+#projects:not(:empty) + .hidden-repos:not([hidden]) {
   margin-top: var(--space-2);
   padding-top: var(--space-2);
   border-top: 1px solid var(--color-accent);
@@ -3018,3 +3020,32 @@ button.subagent:hover,
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
+
+/* 左の一覧で隠したリポジトリの数。押すと出すリポジトリを選び直す。要対応の印は隠していても出す */
+.hidden-repos {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding-right: var(--space-1);
+}
+
+.hidden-repos__open {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  height: 28px;
+  padding: 0 var(--space-2);
+  border: 0;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--color-text-muted);
+  font: inherit;
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+
+.hidden-repos__open:hover { background: var(--color-bg-hover); color: var(--color-text); }
+
+.hidden-repos__count { font-variant-numeric: tabular-nums; }
