@@ -52,6 +52,28 @@ export function overviewGroups(members) {
   return groups;
 }
 
+// 右の列の、AI エージェントの会話の履歴。絞り込みの文字は題名・名前・場所・エージェントに当てる
+export function filterHistory(entries, query) {
+  const needle = query.trim().toLowerCase();
+  return entries.filter((e) => !needle || [e.title, e.name, e.cwd, e.agent].some((value) => String(value || '').toLowerCase().includes(needle)));
+}
+
+// 使った時刻を、1時間以内は「N分前」、今日は時刻、昨日は「昨日 時刻」、それより前は日付で出す
+export function historyTime(at, now = Date.now()) {
+  if (!at) return '';
+  const minutes = Math.floor((now - at) / 60000);
+  if (minutes < 1) return 'たった今';
+  if (minutes < 60) return `${minutes}分前`;
+  const date = new Date(at);
+  const today = new Date(now);
+  const time = `${date.getHours()}:${String(date.getMinutes()).padStart(2, '0')}`;
+  const day = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const days = Math.round((day(today) - day(date)) / 86400000);
+  if (days === 0) return time;
+  if (days === 1) return `昨日 ${time}`;
+  return date.getFullYear() === today.getFullYear() ? `${date.getMonth() + 1}/${date.getDate()}` : `${date.getFullYear()}/${date.getMonth() + 1}/${date.getDate()}`;
+}
+
 // 列数は窓幅とまとまりごとに変わるため、描画されたタイルの位置から隣を選ぶ。
 export function overviewNeighbor(rects, id, direction) {
   const current = rects.find((rect) => rect.id === id);
@@ -72,7 +94,7 @@ export function overviewNeighbor(rects, id, direction) {
   return candidates[0]?.id ?? id;
 }
 
-export function createOverview({ host, snapshot, preview, renderStatus, star, activate, restoreFocus, beforeOpen }) {
+export function createOverview({ host, snapshot, preview, renderStatus, star, activate, restoreFocus, beforeOpen, history }) {
   const button = document.createElement('button');
   button.id = 'overview-open';
   button.className = 'btn overview-open';
@@ -97,12 +119,22 @@ export function createOverview({ host, snapshot, preview, renderStatus, star, ac
   </div>
   <div class="overview__tabs" role="tablist" aria-label="まとまり"></div>
   <div id="overview-list" class="overview__list" role="listbox" aria-label="全ターミナル"></div>
-  <p class="overview__empty" role="status" hidden></p>`;
+  <p class="overview__empty" role="status" hidden></p>
+  <aside class="overview__history" aria-labelledby="overview-history-title">
+    <h2 id="overview-history-title">エージェントの履歴</h2>
+    <p class="overview__history-hint">押すと、その会話を再開する。開いているものはそのターミナルへ移る</p>
+    <ul class="overview__history-list"></ul>
+    <p class="overview__history-empty" role="status" hidden></p>
+  </aside>`;
   document.body.append(dialog);
   const input = dialog.querySelector('input');
   const list = dialog.querySelector('.overview__list');
   const empty = dialog.querySelector('.overview__empty');
   const tabsEl = dialog.querySelector('.overview__tabs');
+  const historyList = dialog.querySelector('.overview__history-list');
+  const historyEmpty = dialog.querySelector('.overview__history-empty');
+  let historyEntries = [];
+  let historySignature = null;
   // 選んだタブは、窓を開いている間は次に一覧を開いたときも保つ
   let tab = 'all';
   let tabsSignature = null;
@@ -194,9 +226,43 @@ export function createOverview({ host, snapshot, preview, renderStatus, star, ac
       tile.title = [labels.main, labels.meta, item.cwd].filter(Boolean).join('\n');
       renderStatus(tile, item);
     }
+    renderHistory();
     select(selected);
     empty.hidden = matches.length > 0;
     empty.textContent = items.length ? '合うターミナルはない' : 'ターミナルはない';
+  }
+
+  // 履歴は開いたときと、履歴が変わったと知らされたときに読み直す
+  async function loadHistory() {
+    if (!history) return;
+    historyEntries = await history.load();
+    render();
+  }
+
+  function renderHistory() {
+    if (!history) return;
+    const now = Date.now();
+    const matches = filterHistory(historyEntries, input.value);
+    const next = JSON.stringify([matches, Math.floor(now / 60000)]);
+    if (next !== historySignature) {
+      historySignature = next;
+      historyList.replaceChildren(...matches.map((entry) => {
+        const labels = history.describe(entry);
+        const li = document.createElement('li');
+        li.className = 'overview__history-item';
+        li.dataset.agent = entry.agent;
+        li.dataset.session = entry.sessionId;
+        li.innerHTML = `<button class="overview__history-open" type="button"><span class="overview__history-head"><span class="overview__history-name"></span><span class="overview__history-live" hidden>開いている</span></span><span class="overview__history-meta"></span></button>
+          <button class="icon-btn overview__history-remove" type="button" aria-label="履歴から消す" title="履歴から消す"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg></button>`;
+        li.querySelector('.overview__history-name').textContent = labels.main;
+        li.querySelector('.overview__history-meta').textContent = [entry.agent, labels.place, historyTime(entry.lastUsed, now)].filter(Boolean).join(' · ');
+        li.querySelector('.overview__history-live').hidden = !labels.live;
+        li.querySelector('.overview__history-open').title = [labels.main, entry.cwd].filter(Boolean).join('\n');
+        return li;
+      }));
+    }
+    historyEmpty.hidden = matches.length > 0;
+    historyEmpty.textContent = historyEntries.length ? '合う会話はない' : 'まだ履歴はない。terp で動かした claude・codex の会話がここに残る';
   }
 
   // タブの並びが変わったときだけ作り直し、件数（絞り込み後）と選びは毎回更新する
@@ -260,11 +326,13 @@ export function createOverview({ host, snapshot, preview, renderStatus, star, ac
     dialog.showModal();
     button.setAttribute('aria-expanded', 'true');
     input.setAttribute('aria-expanded', 'true');
+    historySignature = null;
     render();
     list.scrollTop = 0;
     select(selected, true);
     input.focus();
     timer = setInterval(render, 500);
+    loadHistory();
   }
 
   function choose(id) {
@@ -283,6 +351,22 @@ export function createOverview({ host, snapshot, preview, renderStatus, star, ac
   });
   dialog.addEventListener('cancel', (event) => { event.preventDefault(); close(); });
   dialog.addEventListener('click', (event) => {
+    const item = event.target.closest('.overview__history-item');
+    if (item) {
+      const entry = historyEntries.find((e) => e.agent === item.dataset.agent && e.sessionId === item.dataset.session);
+      if (!entry) return;
+      if (event.target.closest('.overview__history-remove')) {
+        historyEntries = historyEntries.filter((e) => e !== entry);
+        render();
+        history.remove(entry);
+        return;
+      }
+      if (event.target.closest('.overview__history-open')) {
+        close(false);
+        history.resume(entry);
+      }
+      return;
+    }
     const tile = event.target.closest('.overview__tile');
     if (tile) { choose(Number(tile.dataset.id)); return; }
     if (!event.target.closest('input, label, button')) close();
@@ -295,6 +379,16 @@ export function createOverview({ host, snapshot, preview, renderStatus, star, ac
       return;
     }
     if (event.isComposing || event.metaKey || event.ctrlKey || event.altKey) return;
+    // 履歴の列では ↑↓ で行を移り、Enter はボタンそのものに任せる
+    if (event.target.closest('.overview__history')) {
+      if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
+      event.preventDefault();
+      event.stopPropagation();
+      const buttons = [...historyList.querySelectorAll('.overview__history-open')];
+      const at = buttons.indexOf(event.target.closest('.overview__history-item')?.querySelector('.overview__history-open'));
+      buttons[Math.max(0, Math.min(buttons.length - 1, at + (event.key === 'ArrowUp' ? -1 : 1)))]?.focus();
+      return;
+    }
     if (event.key.startsWith('Arrow')) {
       event.preventDefault();
       event.stopPropagation();
@@ -309,5 +403,5 @@ export function createOverview({ host, snapshot, preview, renderStatus, star, ac
     }
   });
   dialog.querySelector('[data-close]').addEventListener('click', () => close());
-  return { toggle, close, setTab, selectAll: () => { input.focus(); input.select(); }, get open() { return dialog.open; }, get tab() { return tab; } };
+  return { toggle, close, setTab, reloadHistory: () => { if (dialog.open) loadHistory(); }, selectAll: () => { input.focus(); input.select(); }, get open() { return dialog.open; }, get tab() { return tab; } };
 }

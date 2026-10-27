@@ -286,7 +286,7 @@ async function find(entry, id) {
 }
 
 module.exports = {
-  formatReply, find, rememberSessions,
+  formatReply, find, rememberSessions, codexFile,
   remember: (id, reply) => used.set(id, reply.signature),
   forget: (id) => used.delete(id),
   __test: process.env.TERP_SELFTEST ? {

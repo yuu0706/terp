@@ -2142,6 +2142,106 @@ async function runCommandsTest({ win, js, check, outDir }) {
   await js(`document.getElementById('settings-close').click()`);
 }
 
+// TERP_SELFTEST_AGENTHISTORY は、AI エージェントの会話を履歴に残し、⌘M の一覧の右の列から再開できることを確かめる。
+// 本物の claude・codex は動かさない。会話の ID は main に見つけたことにさせ、再開のコマンドは偽の実行ファイルで受ける
+async function runAgentHistoryTest({ win, js, check, outDir }) {
+  const { CONFIG_DIR } = require('./config');
+  const wait = async (code, tries = 80) => {
+    for (let i = 0; i < tries; i++) {
+      if (await js(code)) return true;
+      await sleep(100);
+    }
+    return false;
+  };
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'terp-agenthistory-')));
+  const bin = path.join(dir, 'bin');
+  fs.mkdirSync(bin);
+  for (const name of ['claude', 'codex']) {
+    fs.writeFileSync(path.join(bin, name), `#!/bin/sh\necho "FAKE-${name.toUpperCase()} $*"\n`, { mode: 0o755 });
+  }
+  const work = path.join(dir, 'work');
+  fs.mkdirSync(work);
+  const claudeId = '11111111-2222-4333-8444-555555555555';
+  const codexId = '66666666-7777-4888-9999-aaaaaaaaaaaa';
+  const historyFile = path.join(CONFIG_DIR, 'agent-history.json');
+  const stored = () => { try { return JSON.parse(fs.readFileSync(historyFile, 'utf8')).entries; } catch { return []; } };
+  const items = `[...document.querySelectorAll('.overview__history-item')].map((li) => ({ agent: li.dataset.agent, name: li.querySelector('.overview__history-name').textContent, meta: li.querySelector('.overview__history-meta').textContent, live: !li.querySelector('.overview__history-live').hidden }))`;
+  const openOverview = async () => {
+    await js(`window.__terp.overview.open || window.__terp.overview.toggle()`);
+    await sleep(400);
+  };
+  try {
+    await sleep(800);
+    const res = await js(`window.terp.updateConfig({ agents: [{ command: 'claude', path: ${JSON.stringify(path.join(bin, 'claude'))} }, { command: 'codex', path: ${JSON.stringify(path.join(bin, 'codex'))} }] })`);
+    check('偽の claude・codex を設定に書ける', res.ok, res.error);
+    await sleep(1200);
+    await openOverview();
+    check('履歴が無いときは、右の列に案内を出す', await js(`!document.querySelector('.overview__history-empty').hidden && document.querySelector('.overview__history-empty').textContent.startsWith('まだ履歴はない')`));
+    await js(`window.__terp.overview.close()`);
+
+    const a = await js(`window.__terp.open(${JSON.stringify(work)})`);
+    const b = await js(`window.__terp.open(${JSON.stringify(work)})`);
+    await js(`window.terp.setMeta(${a}, { agentTitle: 'ログインの不具合を調べる' }); window.terp.setMeta(${b}, { customName: 'codex の作業' })`);
+    await js(`window.terp.setAgentHistoryTestSessions({ ${a}: { agent: 'claude', sessionId: '${claudeId}' }, ${b}: { agent: 'codex', sessionId: '${codexId}' } })`);
+    const saved = stored();
+    check('動いている会話が agent-history.json に残る', saved.length === 2 && saved.some((e) => e.agent === 'claude' && e.sessionId === claudeId && e.title === 'ログインの不具合を調べる' && e.cwd === work)
+      && saved.some((e) => e.agent === 'codex' && e.sessionId === codexId && e.name === 'codex の作業'), JSON.stringify(saved));
+    await js(`window.terp.setAgentHistoryTestSessions({ ${a}: { agent: 'claude', sessionId: '${claudeId}' }, ${b}: { agent: 'codex', sessionId: '${codexId}' } })`);
+    check('同じ会話は1件にまとめる', stored().length === 2);
+
+    await openOverview();
+    await wait(`document.querySelectorAll('.overview__history-item').length === 2`);
+    const list = await js(items);
+    check('⌘M の一覧の右に履歴が出る', list.length === 2 && list.every((item) => item.live)
+      && list.some((item) => item.name === 'ログインの不具合を調べる' && item.meta.startsWith('claude · ')) && list.some((item) => item.name === 'codex の作業'), JSON.stringify(list));
+    const layout = await js(`(() => {
+      const history = document.querySelector('.overview__history').getBoundingClientRect();
+      const tiles = document.querySelector('.overview__list').getBoundingClientRect();
+      return { right: history.left >= tiles.right - 1 && history.right <= window.innerWidth + 1, width: Math.round(history.width) };
+    })()`);
+    check('履歴の列はタイルの右に並ぶ', layout.right && layout.width > 200, JSON.stringify(layout));
+    fs.writeFileSync(path.join(outDir, 'agent-history.png'), (await win.webContents.capturePage()).toPNG());
+    await js(`(() => { const input = document.getElementById('overview-query'); input.value = 'ログイン'; input.dispatchEvent(new Event('input')); })()`);
+    check('絞り込みの文字で履歴も絞る', await wait(`document.querySelectorAll('.overview__history-item').length === 1`));
+    await js(`(() => { const input = document.getElementById('overview-query'); input.value = ''; input.dispatchEvent(new Event('input')); })()`);
+    await wait(`document.querySelectorAll('.overview__history-item').length === 2`);
+    await js(`window.__terp.activate(${b})`);
+    await js(`document.querySelector('.overview__history-item[data-agent="claude"] .overview__history-open').click()`);
+    check('開いている会話を選ぶと、そのターミナルへ移る', await wait(`!window.__terp.overview.open && window.__terp.activeId === ${a}`));
+
+    // ターミナルを閉じた後は、新しいターミナルで再開する
+    await js(`window.terp.setAgentHistoryTestSessions({ ${b}: { agent: 'codex', sessionId: '${codexId}' } })`);
+    await js(`window.__terp.closeKey('t:${a}')`);
+    await wait(`!window.__terp.sessions.has(${a})`);
+    await openOverview();
+    await wait(`document.querySelectorAll('.overview__history-item').length === 2`);
+    check('閉じた会話は「開いている」が消える', !(await js(items)).find((item) => item.agent === 'claude').live);
+    const before = await js('window.__terp.sessions.size');
+    await js(`document.querySelector('.overview__history-item[data-agent="claude"] .overview__history-open').click()`);
+    const resumed = await wait(`window.__terp.sessions.size === ${before + 1} && window.__terp.bufferText(window.__terp.activeId).includes('FAKE-CLAUDE --resume ${claudeId}')`);
+    check('閉じた会話は、同じ場所の新しいターミナルで claude --resume する', resumed, await js('window.__terp.bufferText(window.__terp.activeId)'));
+    check('再開したターミナルの作業場所は会話の場所', await wait(`window.__terp.sessions.get(window.__terp.activeId).cwd === ${JSON.stringify(work)}`));
+    await js(`window.terp.setAgentHistoryTestSessions({})`);
+    await openOverview();
+    await wait(`document.querySelectorAll('.overview__history-item').length === 2`);
+    await js(`window.__terp.closeKey('t:${b}')`);
+    await wait(`!window.__terp.sessions.has(${b})`);
+    await sleep(600);
+    await js(`document.querySelector('.overview__history-item[data-agent="codex"] .overview__history-open').click()`);
+    check('codex は codex resume で再開する', await wait(`window.__terp.bufferText(window.__terp.activeId).includes('FAKE-CODEX resume ${codexId}')`), await js('window.__terp.bufferText(window.__terp.activeId)'));
+
+    await openOverview();
+    await wait(`document.querySelectorAll('.overview__history-item').length === 2`);
+    await js(`document.querySelector('.overview__history-item[data-agent="codex"] .overview__history-remove').click()`);
+    await sleep(500);
+    check('× で履歴から消える', (await js(items)).length === 1 && stored().length === 1 && stored()[0].agent === 'claude');
+    await js(`window.__terp.overview.close()`);
+  } finally {
+    await js(`window.terp.setAgentHistoryTestSessions(null)`);
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 // TERP_SELFTEST_KEYS は、行の編集のキー（⌥←→・⌘←→・⌘⌫）と Shift+Enter が zsh で効くことを確かめる
 async function runKeysTest({ win, js, check }) {
   const id = await js('window.__terp.activeId');
@@ -3074,6 +3174,12 @@ exports.run = (win) => {
     }
     if (process.env.TERP_SELFTEST_COMMANDS) {
       await runCommandsTest({ win, js, check, outDir });
+      fs.writeFileSync(path.join(outDir, 'result.txt'), log.join('\n') + '\n');
+      await finish();
+      return;
+    }
+    if (process.env.TERP_SELFTEST_AGENTHISTORY) {
+      await runAgentHistoryTest({ win, js, check, outDir });
       fs.writeFileSync(path.join(outDir, 'result.txt'), log.join('\n') + '\n');
       await finish();
       return;

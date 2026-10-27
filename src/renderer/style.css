@@ -2733,10 +2733,116 @@ button.subagent:hover,
   font: inherit;
 }
 
+/* 左にターミナルのタイル、右にエージェントの履歴の列を並べる */
 .overview[open] {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--panel-width);
+  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+}
+
+.overview__head { grid-column: 1 / -1; }
+.overview__search,
+.overview__tabs,
+.overview__list,
+.overview__empty { grid-column: 1; }
+
+.overview__history {
   display: flex;
   flex-direction: column;
+  grid-column: 2;
+  grid-row: 2 / -1;
+  min-height: 0;
+  border-left: 1px solid var(--color-border);
 }
+
+.overview__history > h2 {
+  padding: var(--space-3) var(--space-3) 0;
+}
+
+.overview__history-hint {
+  margin: var(--space-1) 0 var(--space-2);
+  padding: 0 var(--space-3);
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+.overview__history-list {
+  flex: 1;
+  min-height: 0;
+  margin: 0;
+  padding: 0 var(--space-2) var(--space-3);
+  overflow: auto;
+  list-style: none;
+}
+
+.overview__history-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  border-radius: var(--radius);
+}
+
+.overview__history-item:hover { background: var(--color-bg-hover); }
+
+.overview__history-open {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  padding: var(--space-2);
+  border: 0;
+  border-radius: var(--radius);
+  background: none;
+  color: var(--color-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.overview__history-open:focus-visible { outline: 2px solid var(--color-accent); }
+
+.overview__history-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.overview__history-name,
+.overview__history-meta {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.overview__history-name { flex: 1; min-width: 0; }
+
+.overview__history-live {
+  flex: none;
+  font-size: var(--text-sm);
+  color: var(--color-accent);
+}
+
+.overview__history-live[hidden] { display: none; }
+
+.overview__history-meta {
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+.overview__history-remove { flex: none; visibility: hidden; }
+.overview__history-item:hover .overview__history-remove,
+.overview__history-item:focus-within .overview__history-remove { visibility: visible; }
+
+.overview__history-empty {
+  margin: 0;
+  padding: var(--space-3);
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+.overview__history-empty[hidden] { display: none; }
 
 .overview::backdrop { background: var(--color-bg); }
 

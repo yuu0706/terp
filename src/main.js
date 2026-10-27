@@ -23,6 +23,7 @@ const tabs = require('./tabs');
 const notify = require('./notify');
 const wallpaper = require('./wallpaper');
 const agentreply = require('./agentreply');
+const agenthistory = require('./agenthistory');
 const { PtyClient } = require('./ptyclient');
 
 // シェルは常駐のプロセス（ptyhost.js）が持つ。terp を閉じてもシェルは残り、開き直したらつなぎ直す
@@ -174,9 +175,33 @@ async function writeSnapshot() {
         claudeSession: sessions.get(e.pid) || null,
       })),
     );
+    await recordAgentHistory(list, sessions);
   } catch {
     // 控えが書けなくても、動いているシェルには影響しない
   }
+}
+
+// 動いている会話を履歴に書き足す。claude は会話の ID を claude agents から、codex は開いている記録のファイル名から拾う。
+// 会話の ID ごとに、今それを動かしているターミナルを覚え、履歴から選んだときはそのターミナルへ移る
+let liveAgentSessions = new Map();
+let historyTestLookup = null;
+async function recordAgentHistory(list, claudeSessions) {
+  const seen = [];
+  for (const e of list) {
+    const program = known.get(e.id)?.program;
+    let found = null;
+    if (historyTestLookup) found = historyTestLookup(e);
+    else if (program === 'claude' && claudeSessions.get(e.pid)) found = { agent: 'claude', sessionId: claudeSessions.get(e.pid) };
+    else if (program === 'codex') {
+      const sessionId = agenthistory.codexSessionId(await agentreply.codexFile(e.pid, new AbortController().signal).catch(() => null));
+      if (sessionId) found = { agent: 'codex', sessionId };
+    }
+    if (!found) continue;
+    seen.push({ ...found, terminalId: e.id, cwd: known.get(e.id)?.cwd || e.cwd, workspace: e.meta.workspace,
+      title: e.meta.agentTitle, name: e.meta.customName });
+  }
+  liveAgentSessions = new Map(seen.map((item) => [`${item.agent}:${item.sessionId}`, item.terminalId]));
+  if (agenthistory.record(seen)) toWindow('agent-history:changed');
 }
 
 // claude の実行ファイルは版番号（例 2.1.309）の名前で動いている
@@ -273,6 +298,14 @@ ipcMain.handle('notify:show', safe(async (_e, message) => {
   return shown;
 }));
 ipcMain.handle('notify:test', safe(() => notify.show({ title: 'terp', body: '通知の試し' })));
+ipcMain.handle('agent-history:list', safe(() => agenthistory.load().map((e) => ({ ...e, terminalId: liveAgentSessions.get(`${e.agent}:${e.sessionId}`) ?? null }))));
+ipcMain.handle('agent-history:remove', safe((_e, agent, sessionId) => agenthistory.remove(agent, sessionId)));
+// 自己診断で、本物の claude・codex を動かさずに会話を見つけたことにする。terminals は { 端末の ID: { agent, sessionId } }
+ipcMain.handle('agent-history:test-sessions', async (_e, terminals) => {
+  if (!process.env.TERP_SELFTEST) return;
+  historyTestLookup = terminals ? (e) => terminals[e.id] || null : null;
+  await saveSnapshot();
+});
 ipcMain.handle('tabs:load', safe(() => tabs.load()));
 ipcMain.handle('tabs:save', safe((_e, state) => tabs.save(state)));
 ipcMain.handle('projects:list', safe(() => projects.list()));

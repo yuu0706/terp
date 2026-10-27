@@ -682,7 +682,22 @@ const overview = createOverview({
     else view?.el.querySelector('.fileview__body, .subagent-view__body, .commit-view__body')?.focus({ preventScroll: true });
   },
   beforeOpen: () => { rowMenu.close(); workspaceUI.menu.close(); closeTabMenu(); },
+  history: {
+    load: async () => {
+      const res = await terp.listAgentHistory();
+      return res.ok ? res.value : [];
+    },
+    describe: (entry) => {
+      const work = workOfPath(entry.cwd, null);
+      const repo = projects.find((p) => p.path === work?.repo);
+      return { main: entry.title || entry.name || '（題名なし）', live: sessions.has(entry.terminalId),
+        place: repo ? [repo.name, work.main ? '' : work.branch].filter(Boolean).join(' / ') : shortPath(entry.cwd).split('/').pop() || '/' };
+    },
+    resume: (entry) => resumeAgentSession(entry),
+    remove: (entry) => terp.removeAgentHistory(entry.agent, entry.sessionId),
+  },
 });
+terp.onAgentHistoryChanged(() => overview.reloadHistory());
 
 function moveWorkspaceMenu(current, run) {
   return { label: 'ワークスペースへ移す', children: workspaces.map((w) => ({
@@ -1496,6 +1511,26 @@ async function launchAgent(a, bypass) {
   markBypass(s, bypass);
   // シェルは起動前の入力をためておくため、すぐ送ってよい
   terp.write(s.id, agentCommandLine(a, bypass) + '\r');
+  return s;
+}
+
+// 履歴の会話を再開する。いま動いているターミナルがあればそこへ移り、無ければ同じ作業場所で新しいターミナルを開いて
+// claude は --resume、codex は resume で再開する。起動の仕方（実行ファイル・引数・確認を飛ばすか）は左下のボタンと同じ
+async function resumeAgentSession(entry) {
+  const live = sessions.get(entry.terminalId);
+  if (live) {
+    activate(live.id);
+    return live;
+  }
+  const workspace = workspaces.some((w) => w.id === entry.workspace) ? entry.workspace : activeWorkspace;
+  if (workspace !== activeWorkspace) await switchWorkspace(workspace);
+  const a = agentRegistry.find((item) => item.command === entry.agent && item.found) || { command: entry.agent };
+  const bypass = wantsBypass(a);
+  const s = await openTerminal({ cwd: entry.cwd, workspace });
+  markBypass(s, bypass);
+  const resume = entry.agent === 'codex' ? `resume ${entry.sessionId}` : `--resume ${entry.sessionId}`;
+  // シェルは起動前の入力をためておくため、すぐ送ってよい
+  terp.write(s.id, `${agentCommandLine(a, bypass)} ${resume}\r`);
   return s;
 }
 
@@ -2940,6 +2975,8 @@ window.__terp = {
   toggleSessionFavorite,
   setProjectHidden,
   setSidebarWidth,
+  resumeAgentSession,
+  overview,
   addDroppedRepos,
   scanNewRepos,
   showSampleOffer,
