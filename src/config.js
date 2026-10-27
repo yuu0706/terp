@@ -33,6 +33,8 @@ const DEFAULT_CONFIG = {
   skipApprovals: false,
   // タブの並びの隣のボタンで、プルダウンなしで起動するエージェントの command。null なら見つかった最初のもの
   mainAgent: null,
+  // 新しいタブのプルダウンに出す、利用者が決めたコマンド。配列の順に並べる。{ label（表示名）, command（シェルに打つ1行） }
+  commands: [],
   notifications: true,
   dockBadge: true,
   notifyAgentDone: true,
@@ -220,6 +222,7 @@ function loadConfig() {
     agents: Array.isArray(config.agents) ? config.agents : [],
     skipApprovals: config.skipApprovals === true,
     mainAgent: typeof config.mainAgent === 'string' ? config.mainAgent : null,
+    commands: readCommands(config.commands),
     notifications: config.notifications === true,
     dockBadge: config.dockBadge !== false,
     notifyAgentDone: config.notifyAgentDone === true,
@@ -261,6 +264,24 @@ function validateAgents(agents) {
   }
 }
 
+// 名前とコマンドがそろった項目だけを使う。手で書いて誤った項目は飛ばし、ほかは使えるようにする
+function readCommands(commands) {
+  if (!Array.isArray(commands)) return [];
+  return commands.filter((c) => c && ['label', 'command'].every((key) => typeof c[key] === 'string' && c[key].trim() && !/[\0\r\n]/.test(c[key])))
+    .map((c) => ({ label: c.label.trim(), command: c.command.trim() }));
+}
+
+function validateCommands(commands) {
+  if (!Array.isArray(commands)) throw new Error('コマンドは一覧で指定する');
+  for (const c of commands) {
+    if (!c || typeof c !== 'object' || Array.isArray(c)) throw new Error('コマンドの項目を確認する');
+    for (const [key, name] of [['label', '表示名'], ['command', 'コマンド']]) {
+      if (typeof c[key] !== 'string' || !c[key].trim()) throw new Error(`コマンドの${name}を入れる`);
+      if (/[\0\r\n]/.test(c[key])) throw new Error(`コマンドの${name}は1行で指定する`);
+    }
+  }
+}
+
 // 設定の画面から1つ以上の値を書き換える。null は「書かない（既定に戻す）」として消す。
 // 画面に無い値や、利用者が手で書いた値は残す。JSON が壊れているときは書かずに失敗を返す
 function updateConfig(patch) {
@@ -276,6 +297,7 @@ function updateConfig(patch) {
     if (value === null) delete next[key];
     else {
       if (key === 'agents') validateAgents(value);
+      if (key === 'commands') validateCommands(value);
       if (TERMINAL_VALIDATORS[key] && !TERMINAL_VALIDATORS[key](value)) throw new Error(`${key} の値を確認する`);
       next[key] = value;
     }

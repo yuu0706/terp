@@ -8,6 +8,7 @@ const terp = window.terp;
 const ICONS = {
   appearance: '<path d="M12 3a9 9 0 1 0 0 18c1.1 0 1.5-.8 1.5-1.5 0-1.2-1-1.5-1-2.5 0-.8.7-1.5 1.5-1.5H16a5 5 0 0 0 5-5c0-4.1-4-7.5-9-7.5z" /><circle cx="7.5" cy="11" r="1" /><circle cx="10.5" cy="7.5" r="1" /><circle cx="15" cy="8" r="1" />',
   agents: '<rect x="4" y="8" width="16" height="12" rx="2" /><path d="M12 4v4M9 13v2M15 13v2M2 14h2M20 14h2" />',
+  commands: '<path d="M7 5l12 7-12 7z" />',
   notifications: '<path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4" />',
   advanced: '<path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0" /><circle cx="16" cy="6" r="2" /><circle cx="10" cy="12" r="2" /><circle cx="18" cy="18" r="2" />',
 };
@@ -85,6 +86,17 @@ export const SECTIONS = [
         ],
       },
       { key: 'agents', type: 'registry' },
+    ],
+  },
+  {
+    id: 'commands',
+    label: 'コマンド',
+    fields: [
+      {
+        key: 'commands',
+        type: 'commands',
+        help: 'タブの ＋ のプルダウンに出す。選ぶと、表示中のターミナルと同じ場所で新しいターミナルを開き、コマンドを打つ',
+      },
     ],
   },
   {
@@ -280,6 +292,7 @@ const FIELD_TYPES = {
   ghostty: createGhosttyImport,
   theme: createThemePicker,
   registry: createAgentRegistry,
+  commands: createCommandList,
   async select(field, value, id) {
     const select = document.createElement('select');
     select.className = 'input';
@@ -442,7 +455,7 @@ async function renderField(field) {
   row.className = 'settings__field';
   const id = `setting-${field.key || field.label}`;
   const control = await FIELD_TYPES[field.type](field, values[field.key], id);
-  if (!['action', 'registry', 'ghostty'].includes(field.type)) {
+  if (!['action', 'registry', 'ghostty', 'commands'].includes(field.type)) {
     const label = document.createElement('label');
     label.className = 'settings__label';
     label.htmlFor = id;
@@ -469,6 +482,96 @@ async function renderField(field) {
   }
   if (field.key) row.dataset.key = field.key;
   return row;
+}
+
+// 利用者のコマンドの一覧。登録済みの行は書き換えるとすぐ保存する。
+// 下に空の入力欄を常に出し、「登録」か Enter で一覧に足す（行を増やすボタンを押さずに書き始められる）
+function createCommandList(_field, value) {
+  const wrap = element('div', 'command-list');
+  const rows = element('div', 'command-list__rows');
+  const empty = element('p', 'settings__help command-list__empty', 'まだ登録していません');
+  let timer = null;
+  const collect = () => [...rows.children].map((row) => ({
+    label: row.querySelector('[data-command-field="label"]').value.trim(),
+    command: row.querySelector('[data-command-field="command"]').value.trim(),
+  })).filter((c) => c.label && c.command);
+  const commit = () => {
+    clearTimeout(timer);
+    const next = collect();
+    if (JSON.stringify(next) !== JSON.stringify(values.commands || [])) save('commands', next.length ? next : null);
+  };
+  const refresh = () => {
+    empty.hidden = rows.children.length > 0;
+    [...rows.children].forEach((row, i) => {
+      row.querySelector('[data-action="up"]').disabled = i === 0;
+      row.querySelector('[data-action="down"]').disabled = i === rows.children.length - 1;
+    });
+  };
+  const addRow = (c = { label: '', command: '' }) => {
+    const row = element('div', 'command-list__row');
+    for (const [key, label] of [['label', '表示名'], ['command', 'コマンド']]) {
+      const input = element('input', `input command-list__${key}`);
+      input.dataset.commandField = key;
+      input.spellcheck = false;
+      input.placeholder = label;
+      input.value = c[key];
+      input.setAttribute('aria-label', label);
+      // 入力が止まって 800ms 後と、欄から離れたときに保存する
+      input.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(commit, 800); });
+      input.addEventListener('blur', commit);
+      row.append(input);
+    }
+    for (const [action, text, label] of [['up', '↑', '上へ'], ['down', '↓', '下へ'], ['remove', '削除', '削除']]) {
+      const btn = element('button', 'btn btn--xs', text);
+      btn.type = 'button';
+      btn.dataset.action = action;
+      btn.setAttribute('aria-label', label);
+      btn.addEventListener('click', () => {
+        if (action === 'remove') row.remove();
+        else if (action === 'up') row.previousElementSibling?.before(row);
+        else row.nextElementSibling?.after(row);
+        refresh();
+        commit();
+      });
+      row.append(btn);
+    }
+    rows.append(row);
+    refresh();
+    return row;
+  };
+  for (const c of Array.isArray(value) ? value : []) addRow(c);
+  const draft = element('div', 'command-list__draft');
+  const fields = [['label', '表示名'], ['command', 'コマンド']].map(([key, label]) => {
+    const input = element('input', `input command-list__${key}`);
+    input.dataset.newField = key;
+    input.spellcheck = false;
+    input.placeholder = label;
+    input.setAttribute('aria-label', `新しいコマンドの${label}`);
+    input.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' && !event.isComposing) { event.preventDefault(); register(); }
+    });
+    return input;
+  });
+  const add = element('button', 'btn command-list__add', '登録');
+  add.type = 'button';
+  add.dataset.action = 'add';
+  const register = () => {
+    const [label, command] = fields.map((input) => input.value.trim());
+    if (!label || !command) {
+      showStatus('表示名とコマンドを入れてください', 'error');
+      fields[label ? 1 : 0].focus();
+      return;
+    }
+    addRow({ label, command });
+    commit();
+    for (const input of fields) input.value = '';
+    fields[0].focus();
+  };
+  add.addEventListener('click', register);
+  draft.append(...fields, add);
+  wrap.append(element('h3', 'settings__label', 'タブに足すコマンド'), rows, empty, draft);
+  refresh();
+  return wrap;
 }
 
 const FALLBACK_AGENT_ICON = '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="8" width="16" height="12" rx="2" /><path d="M12 4v4M9 13v2M15 13v2M2 14h2M20 14h2" /></svg>';

@@ -3107,3 +3107,42 @@ button.subagent:hover,
   justify-content: flex-end;
   gap: var(--space-2);
 }
+
+/* 設定の「コマンド」: 表示名・コマンド・並べ替え・削除を1行に並べる */
+.settings__field[data-key='commands'] {
+  align-items: stretch;
+  max-width: none;
+}
+
+.command-list {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr) auto auto auto;
+  gap: var(--space-2) 6px;
+}
+
+/* 登録済みの行と新しいコマンドの欄は親の列を共有し、入力欄の幅を揃える */
+.command-list > * {
+  grid-column: 1 / -1;
+}
+
+.command-list__rows,
+.command-list__row,
+.command-list__draft {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: subgrid;
+  align-items: center;
+}
+
+.command-list__rows {
+  row-gap: 6px;
+}
+
+.command-list__command {
+  font-family: var(--font-mono);
+}
+
+.command-list__add {
+  grid-column: 3 / -1;
+  justify-self: end;
+}

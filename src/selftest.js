@@ -176,7 +176,7 @@ async function runSettingsTest({ win, js, check, outDir }) {
   await sleep(800);
   check('⌘, で設定の画面が開く', (await js(`document.getElementById('settings').hidden`)) === false);
   const navs = await js(`[...document.querySelectorAll('#settings-nav .settings__nav-item')].map((b) => b.textContent)`);
-  check('左にメニューが並ぶ', navs.join() === '外観,AI エージェント,通知,詳しい設定', navs.join());
+  check('左にメニューが並ぶ', navs.join() === '外観,AI エージェント,コマンド,通知,詳しい設定', navs.join());
   const themeCount = await js(`document.querySelectorAll('.theme-picker__row').length`);
   check('テーマを一覧から選べる', themeCount > 100, `${themeCount} 件`);
   await shot('1-appearance');
@@ -2026,6 +2026,87 @@ async function runNewRepoTest({ win, js, check, outDir }) {
   }
 }
 
+// TERP_SELFTEST_COMMANDS は、設定で決めたコマンドがタブの ＋ のプルダウンに出て、選ぶと新しいターミナルで打たれること、
+// 設定の「コマンド」で足す・並べ替える・消すと設定ファイルに残ることを確かめる
+async function runCommandsTest({ win, js, check, outDir }) {
+  const { CONFIG_PATH } = require('./config');
+  const wait = async (code, tries = 80) => {
+    for (let i = 0; i < tries; i++) {
+      if (await js(code)) return true;
+      await sleep(100);
+    }
+    return false;
+  };
+  const saved = () => JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8')).commands;
+  const menuLabels = `[...document.querySelectorAll('#tab-menu .menu__item .menu__label')].map((l) => l.textContent)`;
+  const openMenu = async () => {
+    if (!(await js(`document.getElementById('tab-menu').hidden`))) await js(`document.getElementById('tab-new').click()`);
+    await js(`document.getElementById('tab-new').click()`);
+    await sleep(200);
+  };
+  await sleep(500);
+  await openMenu();
+  check('登録が無いときは、プルダウンに登録の入口だけ出る', (await js(menuLabels)).at(-1) === 'コマンドを登録' && !(await js(`Boolean(document.querySelector('#tab-menu [data-user-command]'))`)), (await js(menuLabels)).join(', '));
+  await js(`document.getElementById('tab-new').click()`);
+  const res = await js(`window.terp.updateConfig({ commands: [{ label: 'あいさつ', command: 'echo USERCMD-$((40+2))' }] })`);
+  check('設定にコマンドを書ける', res.ok, res.error);
+  const bad = await js(`window.terp.updateConfig({ commands: [{ label: '', command: 'ls' }] })`);
+  check('表示名の無いコマンドは書かない', !bad.ok && saved().length === 1, bad.error);
+  await sleep(1200);
+  await openMenu();
+  const labels = await js(menuLabels);
+  check('プルダウンにコマンドと編集の入口が出る', labels.at(-2) === 'あいさつ' && labels.at(-1) === 'コマンドを編集' && labels[0] === 'ターミナル', labels.join(', '));
+  check('エージェントとコマンドの間を線で分ける', await js(`document.querySelector('#tab-menu [data-user-command]').previousElementSibling.classList.contains('menu__sep')`));
+  fs.writeFileSync(path.join(outDir, 'commands-menu.png'), (await win.webContents.capturePage()).toPNG());
+  const before = await js('window.__terp.sessions.size');
+  await js(`document.querySelector('#tab-menu [data-user-command]').click()`);
+  const ran = await wait(`window.__terp.sessions.size === ${before + 1} && window.__terp.bufferText(window.__terp.activeId).includes('USERCMD-42')`);
+  check('選ぶと新しいターミナルでコマンドを打つ', ran, await js('window.__terp.bufferText(window.__terp.activeId)'));
+  check('選んだらプルダウンが閉じる', await js(`document.getElementById('tab-menu').hidden`));
+
+  await openMenu();
+  await js(`[...document.querySelectorAll('#tab-menu .menu__item')].find((b) => b.textContent.includes('コマンドを編集')).click()`);
+  check('編集の入口で設定のコマンドの画面が開く', await wait(`!document.getElementById('settings').hidden && document.querySelector('.settings__title')?.textContent === 'コマンド' && document.querySelectorAll('.command-list__row').length === 1`));
+  const fill = (index, key, value) => js(`(() => {
+    const input = document.querySelectorAll('.command-list__row')[${index}].querySelector('[data-command-field="${key}"]');
+    input.value = ${JSON.stringify(value)};
+    input.dispatchEvent(new Event('input'));
+    input.dispatchEvent(new Event('blur'));
+  })()`);
+  const draft = (key, value) => js(`(() => {
+    const input = document.querySelector('.command-list__draft [data-new-field="${key}"]');
+    input.value = ${JSON.stringify(value)};
+    input.dispatchEvent(new Event('input'));
+  })()`);
+  check('ボタンを押さなくても、新しいコマンドの入力欄が出ている', await js(`document.querySelectorAll('.command-list__draft input').length === 2 && !document.querySelector('.command-list__draft').hidden`));
+  await draft('label', '一覧');
+  await js(`document.querySelector('.command-list__draft [data-action="add"]').click()`);
+  await sleep(500);
+  check('コマンドが空なら登録しない', saved().length === 1 && await js(`document.querySelectorAll('.command-list__row').length === 1 && document.getElementById('settings-status').dataset.tone === 'error'`));
+  await draft('command', 'ls -la');
+  await js(`document.querySelector('.command-list__draft [data-new-field="command"]').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))`);
+  await sleep(500);
+  check('Enter で登録すると一覧に足し、入力欄を空にする', await js(`document.querySelectorAll('.command-list__row').length === 2 && [...document.querySelectorAll('.command-list__draft input')].every((el) => el.value === '')`));
+  check('名前とコマンドを入れると保存する', JSON.stringify(saved()) === JSON.stringify([{ label: 'あいさつ', command: 'echo USERCMD-$((40+2))' }, { label: '一覧', command: 'ls -la' }]), JSON.stringify(saved()));
+  fs.writeFileSync(path.join(outDir, 'commands-settings.png'), (await win.webContents.capturePage()).toPNG());
+  check('新しいコマンドの欄は、登録済みの行と入力欄の幅が揃う', await js(`(() => {
+    const row = [...document.querySelector('.command-list__row').querySelectorAll('input')].map((el) => el.getBoundingClientRect());
+    const draft = [...document.querySelectorAll('.command-list__draft input')].map((el) => el.getBoundingClientRect());
+    return row.every((r, i) => Math.abs(r.left - draft[i].left) < 1 && Math.abs(r.width - draft[i].width) < 1);
+  })()`));
+  check('入力欄のプレースホルダーに欄の名前を出す', await js(`[...document.querySelectorAll('.command-list__row input')].slice(0, 2).map((el) => el.placeholder).join() === '表示名,コマンド'`));
+  await js(`document.querySelectorAll('.command-list__row')[1].querySelector('[data-action="up"]').click()`);
+  await sleep(500);
+  check('並べ替えると設定の順も変わる', saved().map((c) => c.label).join(',') === '一覧,あいさつ');
+  await js(`document.querySelectorAll('.command-list__row')[0].querySelector('[data-action="remove"]').click()`);
+  await sleep(500);
+  check('消すと設定からも消える', saved().map((c) => c.label).join(',') === 'あいさつ');
+  await js(`document.querySelector('.command-list__row [data-action="remove"]').click()`);
+  await sleep(500);
+  check('全部消すと設定の項目ごと消える', !('commands' in JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'))) && await js(`!document.querySelector('.command-list__empty').hidden`));
+  await js(`document.getElementById('settings-close').click()`);
+}
+
 // TERP_SELFTEST_KEYS は、行の編集のキー（⌥←→・⌘←→・⌘⌫）と Shift+Enter が zsh で効くことを確かめる
 async function runKeysTest({ win, js, check }) {
   const id = await js('window.__terp.activeId');
@@ -2952,6 +3033,12 @@ exports.run = (win) => {
     }
     if (process.env.TERP_SELFTEST_DROPREPO) {
       await runDropRepoTest({ win, js, check, outDir });
+      fs.writeFileSync(path.join(outDir, 'result.txt'), log.join('\n') + '\n');
+      await finish();
+      return;
+    }
+    if (process.env.TERP_SELFTEST_COMMANDS) {
+      await runCommandsTest({ win, js, check, outDir });
       fs.writeFileSync(path.join(outDir, 'result.txt'), log.join('\n') + '\n');
       await finish();
       return;

@@ -1394,6 +1394,12 @@ mainAgentBtn.addEventListener('click', (e) => {
   if (a) launchAgent(a, wantsBypass(a, e.altKey));
 });
 
+const MENU_ICONS = {
+  terminal: '<path d="M4 17l6-6-6-6M12 19h8" />',
+  command: '<path d="M7 5l12 7-12 7z" />',
+  edit: '<path d="M4 20h4L19 9l-4-4L4 16zM13 7l4 4" />',
+};
+
 function closeTabMenu() {
   tabMenu.hidden = true;
   tabNewBtn.setAttribute('aria-expanded', 'false');
@@ -1401,16 +1407,22 @@ function closeTabMenu() {
 
 function openTabMenu() {
   tabMenu.textContent = '';
-  const items = [
-    { label: 'ターミナル', hint: '⌘T', run: () => newTerminal() },
-    ...agentList.map((a) => ({
+  // ターミナル・エージェント・利用者のコマンドの順に、まとまりの間を線で分ける
+  const groups = [
+    [{ label: 'ターミナル', hint: '⌘T', run: () => newTerminal() }],
+    agentList.map((a) => ({
       label: a.label,
       agent: a,
       run: (altKey) => launchAgent(a, wantsBypass(a, altKey)),
     })),
+    [
+      ...config.commands.map((c) => ({ label: c.label, command: c, run: () => runUserCommand(c) })),
+      { label: config.commands.length ? 'コマンドを編集' : 'コマンドを登録', icon: 'edit', run: () => openSettings('commands') },
+    ],
   ];
-  items.forEach((item, i) => {
-    if (i === 1) {
+  const items = groups.filter((group) => group.length).flatMap((group, g) => group.map((item, i) => ({ ...item, sep: g > 0 && i === 0 })));
+  items.forEach((item) => {
+    if (item.sep) {
       const sep = document.createElement('div');
       sep.className = 'menu__sep';
       sep.setAttribute('role', 'separator');
@@ -1420,8 +1432,12 @@ function openTabMenu() {
     btn.type = 'button';
     btn.className = 'menu__item';
     btn.setAttribute('role', 'menuitem');
-    btn.innerHTML = `${item.agent ? agentIcon(item.agent) : '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 17l6-6-6-6M12 19h8" /></svg>'}<span class="menu__label"></span>`;
+    btn.innerHTML = `${item.agent ? agentIcon(item.agent) : `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true">${MENU_ICONS[item.command ? 'command' : item.icon || 'terminal']}</svg>`}<span class="menu__label"></span>`;
     btn.querySelector('.menu__label').textContent = item.label;
+    if (item.command) {
+      btn.dataset.userCommand = item.command.command;
+      btn.title = `${item.command.command} を新しいターミナルで打つ`;
+    }
     if (item.agent) {
       btn.dataset.command = item.agent.command;
       btn.title = agentTitle(item.agent);
@@ -1480,6 +1496,14 @@ async function launchAgent(a, bypass) {
   markBypass(s, bypass);
   // シェルは起動前の入力をためておくため、すぐ送ってよい
   terp.write(s.id, agentCommandLine(a, bypass) + '\r');
+  return s;
+}
+
+// 利用者が設定で決めたコマンドを、表示中のターミナルと同じ作業場所の新しいターミナルで打つ
+async function runUserCommand(c) {
+  const s = await openTerminal({ cwd: activeCwd() });
+  // シェルは起動前の入力をためておくため、すぐ送ってよい
+  terp.write(s.id, c.command + '\r');
   return s;
 }
 
