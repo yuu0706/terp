@@ -94,7 +94,7 @@ export function overviewNeighbor(rects, id, direction) {
   return candidates[0]?.id ?? id;
 }
 
-export function createOverview({ host, snapshot, preview, renderStatus, star, activate, restoreFocus, beforeOpen, history }) {
+export function createOverview({ host, snapshot, preview, renderStatus, activate, restoreFocus, beforeOpen, history }) {
   const button = document.createElement('button');
   button.id = 'overview-open';
   button.className = 'btn overview-open';
@@ -197,8 +197,7 @@ export function createOverview({ host, snapshot, preview, renderStatus, star, ac
               tile.dataset.id = item.id;
               tile.tabIndex = -1;
               tile.setAttribute('role', 'option');
-              tile.innerHTML = '<span class="overview__tile-head"><span class="session__dot"></span><span class="overview__label"><span class="overview__name"></span><span class="overview__meta"></span></span><span class="overview__star" aria-label="お気に入り"></span></span><span class="overview__preview" aria-hidden="true"></span>';
-              tile.querySelector('.overview__star').innerHTML = star;
+              tile.innerHTML = '<span class="overview__tile-head"><span class="session__dot"></span><span class="overview__label"><span class="overview__name"></span><span class="overview__meta"></span></span></span><span class="overview__preview" aria-hidden="true"></span>';
               tiles.set(item.id, tile);
             }
             keep.add(item.id);
@@ -220,7 +219,6 @@ export function createOverview({ host, snapshot, preview, renderStatus, star, ac
       const meta = tile.querySelector('.overview__meta');
       meta.textContent = labels.meta;
       meta.hidden = !labels.meta;
-      tile.querySelector('.overview__star').hidden = !item.favorite;
       tile.querySelector('.overview__preview').textContent = preview(item.id);
       tile.setAttribute('aria-current', String(item.current));
       tile.title = [labels.main, labels.meta, item.cwd].filter(Boolean).join('\n');

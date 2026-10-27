@@ -16,7 +16,7 @@
     <link rel="stylesheet" href="style.css" />
   </head>
   <body>
-    <nav id="sidebar" aria-label="作業とターミナルの一覧">
+    <nav id="sidebar" data-view="draft" aria-label="作業とターミナルの一覧">
       <div id="sidebar-resize" role="separator" aria-orientation="vertical" aria-label="左の一覧の幅" aria-valuemin="200" aria-valuemax="520" tabindex="0" title="ドラッグで幅を変える。ダブルクリックで元の幅"></div>
       <div class="sidebar__head">
         <span class="sidebar__title">作業</span>
@@ -30,9 +30,6 @@
               <circle cx="12" cy="12" r="3" />
             </svg>
           </button>
-          <button id="repo-filter" class="icon-btn" type="button" aria-haspopup="menu" aria-label="左の一覧に出すリポジトリを選ぶ" title="左の一覧に出すリポジトリを選ぶ">
-            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M7 12h10M10 18h4" /></svg>
-          </button>
           <button id="add-project" class="icon-btn" type="button" aria-label="リポジトリを追加" title="リポジトリを追加">
             <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
               <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
@@ -40,6 +37,10 @@
             </svg>
           </button>
         </div>
+      </div>
+      <div class="sidebar-views" role="tablist" aria-label="左の一覧の面" title="2本指で横に滑らせても切り替わる">
+        <button class="sidebar-views__tab" type="button" role="tab" data-view="all" aria-selected="false" tabindex="-1">すべて</button>
+        <button class="sidebar-views__tab" type="button" role="tab" data-view="draft" aria-selected="true">ドラフト</button>
       </div>
       <div id="tree" class="tree">
         <div id="no-projects" class="tree__empty" hidden>
@@ -53,13 +54,9 @@
           </button>
         </div>
         <div id="projects"></div>
-        <div id="hidden-repos" class="hidden-repos" hidden>
-          <button id="hidden-repos-open" class="hidden-repos__open" type="button" aria-haspopup="menu" title="隠したリポジトリを選び直す">
-            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3l18 18" /><path d="M10.6 6.1A9.8 9.8 0 0 1 12 6c5 0 9 6 9 6a17 17 0 0 1-2.6 3.2M6.6 6.6C4.3 8.1 3 12 3 12s4 6 9 6a9.2 9.2 0 0 0 4.4-1.1" /><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2" /></svg>
-            <span>隠したリポジトリ</span>
-            <span class="hidden-repos__count"></span>
-          </button>
-          <button class="work__status" type="button" hidden><span class="session__dot"></span><span class="work__status-count"></span></button>
+        <div id="draft-empty" class="tree__empty" hidden>
+          <p>ドラフトに入れたリポジトリはありません。「すべて」でリポジトリを押すと、ここに出ます</p>
+          <button class="btn" type="button" data-show-view="all">「すべて」を開く</button>
         </div>
         <section id="loose" class="project" hidden>
           <div class="project__head">
@@ -67,6 +64,14 @@
           </div>
           <ul class="session-list"></ul>
         </section>
+        <div id="draft-out" class="draft-out" hidden>
+          <button id="draft-out-open" class="draft-out__open" type="button" aria-haspopup="menu" title="外したターミナルを選んでドラフトに戻す">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3l18 18" /><path d="M10.6 6.1A9.8 9.8 0 0 1 12 6c5 0 9 6 9 6a17 17 0 0 1-2.6 3.2M6.6 6.6C4.3 8.1 3 12 3 12s4 6 9 6a9.2 9.2 0 0 0 4.4-1.1" /><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2" /></svg>
+            <span>外したターミナル</span>
+            <span class="draft-out__count"></span>
+          </button>
+          <button class="work__status" type="button" hidden><span class="session__dot"></span><span class="work__status-count"></span></button>
+        </div>
       </div>
       <p id="config-error" class="config-error" role="alert" hidden></p>
       <p id="host-notice" class="config-error" role="status" hidden>

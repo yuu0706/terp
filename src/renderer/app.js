@@ -13,7 +13,7 @@ import { initSettings, openSettings, applySettingsConfig, agentIcon } from './se
 import { createPane, paneList, splitPane, closePane, replacePane, setPaneLocked, openPaneFor, restoreLayout, createPaneView, makeTabDraggable, paneTitle, MAX_PANES } from './panes.js';
 import { terminalPaths, pathDropTarget, pathsFromTransfer } from './droppaths.js';
 import { withAlpha, favoriteText } from './favcolor.js';
-import { STAR_ICON, favoriteLabel, createMenu, createWorkspaceUI } from './workspaceui.js';
+import { STAR_ICON, draftLabel, createMenu, createWorkspaceUI } from './workspaceui.js';
 import { createOverview } from './overview.js';
 import { createTermSearch } from './termsearch.js';
 
@@ -125,9 +125,9 @@ function applyConfig(c) {
   for (const [key, value] of Object.entries(c.chrome)) root.setProperty(`--color-${key}`, value);
   root.setProperty('--surface-term', withAlpha(c.chrome['term-bg'], c.window.opacity));
   root.setProperty('--surface-sidebar', withAlpha(c.chrome.bg, c.window.opacity));
-  root.setProperty('--surface-favorite', withAlpha(c.chrome.accent, c.window.opacity));
+  root.setProperty('--surface-draft', withAlpha(c.chrome.accent, c.window.opacity));
   root.setProperty('--window-alpha', String(c.window.opacity));
-  root.setProperty('--favorite-text', favoriteText(c.chrome.accent, c.chrome.text));
+  root.setProperty('--draft-text', favoriteText(c.chrome.accent, c.chrome.text));
   root.setProperty('--window-blur', `${c.window.blur}px`);
   showWallpaper();
   root.setProperty('--font-mono', c.font.family);
@@ -332,11 +332,6 @@ function renderItem(s, index = visibleKeys().indexOf(termKey(s.id))) {
   const li = s.li;
   const state = stateOf(s);
   renderStatus(li, s, state);
-  li.dataset.favorite = String(Boolean(s.favorite));
-  const star = li.querySelector('[data-action="favorite"]');
-  star.setAttribute('aria-pressed', String(Boolean(s.favorite)));
-  star.setAttribute('aria-label', favoriteLabel(s.favorite));
-  star.title = favoriteLabel(s.favorite);
   li.setAttribute('aria-current', String(activeKey === termKey(s.id)));
   li.title = [s.title, shortPath(s.cwd)].filter(Boolean).join('\n');
   const nameEl = li.querySelector('.session__name');
@@ -375,7 +370,7 @@ function renderAll() {
     el.querySelector('.work__row').setAttribute('aria-current', String(group === el.dataset.path));
   }
   renderWorkStatuses();
-  renderHiddenRepos();
+  renderDraftOut();
   renderWorkspaceStatuses();
   updateDockBadge();
   renderTabs(visible);
@@ -659,7 +654,7 @@ const overview = createOverview({
       items: ordered.flatMap((w) => list.filter((s) => s.workspace === w.id)).map((s) => {
         const work = workOf(s);
         const repo = projects.find((p) => p.path === work?.repo && p.workspace === s.workspace);
-        return { id: s.id, workspace: s.workspace, name: displayName(s), favorite: s.favorite,
+        return { id: s.id, workspace: s.workspace, name: displayName(s),
           requirement: isAgent(s) ? s.agentTitle : '', customName: s.customName || '',
           open: s.workspace === activeWorkspace && openKeys.has(termKey(s.id)),
           program: isAgent(s) ? s.program : 'シェル', place: work ? placeInWork(s, work) : shortPath(s.cwd),
@@ -673,7 +668,6 @@ const overview = createOverview({
     const s = sessions.get(item.id);
     renderStatus(tile, s, stateOf(s));
   },
-  star: STAR_ICON,
   activate,
   restoreFocus: () => {
     const view = viewOf(activeKey);
@@ -731,21 +725,67 @@ function moveSessionWorkspace(id, workspace) {
   saveTabs();
 }
 
-async function toggleProjectFavorite(repo) {
+// ---- ドラフト ----
+// 左の一覧は「ドラフト」と「すべて」の2枚。ドラフトには、ドラフトに入れたリポジトリ（作業とターミナルを含む）と
+// どの作業にも入らないターミナルを出す。ターミナルを開けるのはドラフトだけ。
+// 「すべて」は追加したリポジトリの控えで、名前だけを並べ、押すとドラフトに出し入れする（2026-10-27 利用者の指示）
+let sidebarView = 'draft';
+
+async function setProjectDraft(repo, draft) {
   projectRevision++;
   const project = projects.find((p) => p.path === repo);
-  if (!project) return;
-  const res = await terp.updateProject(repo, { favorite: !project.favorite });
-  if (!res.ok) workspaceUI.error(res.error);
-  else await refreshProjects();
+  if (project) project.draft = draft;
+  const res = await terp.updateProject(repo, { draft });
+  if (!res.ok) { workspaceUI.error(res.error); return; }
+  await refreshProjects();
+  renderAll();
 }
 
-function toggleSessionFavorite(id) {
+// ターミナルをドラフトから外す・戻す。シェルは止めず、上のタブと ⌘M の一覧にも残す。
+// 戻すとき、リポジトリがドラフトに無ければ一緒に入れる
+async function setSessionDraft(id, inDraft) {
   const s = sessions.get(id);
   if (!s) return;
-  s.favorite = !s.favorite;
-  terp.setMeta(id, { favorite: s.favorite });
-  renderItem(s);
+  s.draftOut = !inDraft;
+  terp.setMeta(id, { draftOut: s.draftOut });
+  const repo = workOf(s)?.repo;
+  if (inDraft && repo && !repoDrafted(repo)) await setProjectDraft(repo, true);
+  renderAll();
+}
+
+function repoDrafted(repo) {
+  return projects.some((p) => p.path === repo && p.draft);
+}
+
+function sessionInDraft(s) {
+  if (s.draftOut) return false;
+  const w = workOf(s);
+  return !w || repoDrafted(w.repo);
+}
+
+// 表示中のタブのターミナルは、リポジトリがドラフトに無くても出す。行が見えないまま作業させないため。
+// 自分で外したものは出さない
+function sessionShown(s) {
+  return sidebarView === 'draft' && (sessionInDraft(s) || (!s.draftOut && activeKey === termKey(s.id)));
+}
+
+function setSidebarView(view, { save = true, animate = true } = {}) {
+  if (view !== 'draft' && view !== 'all') return;
+  const before = sidebarView;
+  sidebarView = view;
+  document.getElementById('sidebar').dataset.view = view;
+  for (const tab of document.querySelectorAll('.sidebar-views__tab')) {
+    const selected = tab.dataset.view === view;
+    tab.setAttribute('aria-selected', String(selected));
+    tab.tabIndex = selected ? 0 : -1;
+  }
+  renderProjects();
+  if (animate && before !== view && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    // すべては左、ドラフトは右の面として、滑らせて入れ替える
+    const from = view === 'draft' ? 24 : -24;
+    document.getElementById('tree').animate([{ transform: `translateX(${from}px)`, opacity: 0 }, { transform: 'none', opacity: 1 }], { duration: 140, easing: 'ease-out' });
+  }
+  if (save) saveTabs();
 }
 
 function allSessionsInListOrder() {
@@ -760,41 +800,63 @@ function allSessionsInListOrder() {
   return result;
 }
 
-// リポジトリと作業の行を描き直す。ターミナルの行（li）は作り直さず、placeSessions で入れ替える
+// リポジトリと作業の行を描き直す。ターミナルの行（li）は作り直さず、placeSessions で入れ替える。
+// 「すべて」ではリポジトリの名前だけを並べ、作業とターミナルは出さない
 function renderProjects() {
   // 描き直す前に、ターミナルの行を退避しておく
   for (const s of sessions.values()) looseList.appendChild(s.li);
   projectsEl.innerHTML = '';
   shownSignature = shownProjectsSignature();
+  const all = sidebarView === 'all';
   for (const p of currentProjects().filter(projectShown)) {
     const section = document.createElement('section');
     section.className = 'project';
     section.dataset.path = p.path;
-    section.innerHTML = `
-      <div class="project__head" data-favorite="${Boolean(p.favorite)}" title="${escapeHtml(shortPath(p.path))}&#10;ドラッグか ⌥↑ / ⌥↓ で並べ替え" draggable="true" tabindex="0">
-        <span class="project__name">${escapeHtml(p.name)}</span>
-        <button class="icon-btn icon-btn--hover favorite" type="button" data-action="favorite" aria-pressed="${Boolean(p.favorite)}" aria-label="${favoriteLabel(p.favorite)}" title="${favoriteLabel(p.favorite)}">${STAR_ICON}</button>
-        <button class="icon-btn icon-btn--hover" type="button" data-action="hide" aria-label="${escapeHtml(p.name)} を左の一覧で隠す" title="左の一覧で隠す（⌘M の一覧には出る）">${EYE_OFF_ICON}</button>
-        <button class="icon-btn" type="button" data-action="new-work" aria-label="${escapeHtml(p.name)} に新しい作業を作る" title="新しい作業">${PLUS_ICON}</button>
-        <button class="icon-btn icon-btn--hover" type="button" data-action="forget" aria-label="${escapeHtml(p.name)} を一覧から外す" title="一覧から外す（ファイルは消さない）">${CLOSE_ICON}</button>
-      </div>`;
-    section.querySelector('[data-action="new-work"]').addEventListener('click', () => openWorkDialog(p.path));
+    const name = escapeHtml(p.name);
+    const head = all
+      ? `<div class="project__head" data-draft="${p.draft}" role="button" aria-pressed="${p.draft}" title="${escapeHtml(shortPath(p.path))}&#10;押すとドラフトに${p.draft ? 'から外す' : '入れる'}。ドラッグか ⌥↑ / ⌥↓ で並べ替え" draggable="true" tabindex="0">
+          <span class="project__name">${name}</span>
+          <button class="icon-btn draft-star" type="button" data-action="draft" aria-pressed="${p.draft}" aria-label="${name} を${draftLabel(p.draft)}" title="${draftLabel(p.draft)}">${STAR_ICON}</button>
+          <button class="icon-btn icon-btn--hover" type="button" data-action="forget" aria-label="${name} を一覧から外す" title="一覧から外す（ファイルは消さない）">${CLOSE_ICON}</button>
+        </div>`
+      : `<div class="project__head" title="${escapeHtml(shortPath(p.path))}&#10;ドラッグか ⌥↑ / ⌥↓ で並べ替え" draggable="true" tabindex="0">
+          <span class="project__name">${name}</span>
+          <button class="icon-btn icon-btn--hover draft-star" type="button" data-action="draft" aria-pressed="true" aria-label="${name} を${draftLabel(true)}" title="${draftLabel(true)}（「すべて」に残る）">${STAR_ICON}</button>
+          <button class="icon-btn" type="button" data-action="new-work" aria-label="${name} に新しい作業を作る" title="新しい作業">${PLUS_ICON}</button>
+        </div>`;
+    section.innerHTML = head;
+    const headEl = section.querySelector('.project__head');
     setupProjectDrag(section, p.path);
-    section.querySelector('[data-action="favorite"]').addEventListener('click', () => toggleProjectFavorite(p.path));
-    section.querySelector('[data-action="hide"]').addEventListener('click', () => setProjectHidden(p.path, true));
-    if (p.hidden) section.dataset.hiddenRepo = 'true';
-    section.querySelector('.project__head').addEventListener('contextmenu', (e) => {
+    section.querySelector('[data-action="draft"]').addEventListener('click', (e) => {
+      e.stopPropagation();
+      setProjectDraft(p.path, !p.draft);
+    });
+    headEl.addEventListener('contextmenu', (e) => {
       e.preventDefault();
       rowMenu.open([
-        { label: favoriteLabel(p.favorite), run: () => toggleProjectFavorite(p.path) },
-        { label: '左の一覧で隠す', run: () => setProjectHidden(p.path, true) },
+        { label: draftLabel(p.draft), run: () => setProjectDraft(p.path, !p.draft) },
         moveWorkspaceMenu(p.workspace, (id) => moveProjectWorkspace(p.path, id)),
       ], { x: e.clientX, y: e.clientY, target: e.currentTarget });
     });
-    section.querySelector('[data-action="forget"]').addEventListener('click', async () => {
-      await terp.removeProject(p.path);
-      refreshProjects();
-    });
+    if (all) {
+      headEl.addEventListener('click', (e) => {
+        if (e.target.closest('button')) return;
+        setProjectDraft(p.path, !p.draft);
+      });
+      headEl.addEventListener('keydown', (e) => {
+        if (e.target !== headEl || e.altKey || (e.key !== 'Enter' && e.key !== ' ')) return;
+        e.preventDefault();
+        setProjectDraft(p.path, !p.draft);
+      });
+      section.querySelector('[data-action="forget"]').addEventListener('click', async (e) => {
+        e.stopPropagation();
+        await terp.removeProject(p.path);
+        refreshProjects();
+      });
+      projectsEl.appendChild(section);
+      continue;
+    }
+    section.querySelector('[data-action="new-work"]').addEventListener('click', () => openWorkDialog(p.path));
     if (p.error) {
       const err = document.createElement('p');
       err.className = 'project__error';
@@ -837,98 +899,69 @@ function renderProjects() {
     projectsEl.appendChild(section);
   }
   noProjects.hidden = currentProjects().length > 0;
-  renderHiddenRepos();
+  draftEmpty.hidden = sidebarView !== 'draft' || currentProjects().length === 0 || projectsEl.children.length > 0
+    || [...sessions.values()].some((s) => s.workspace === activeWorkspace && sessionShown(s));
+  renderDraftOut();
   renderAll();
 }
 
-// ---- 左の一覧に出すリポジトリ ----
-// 同時に触るリポジトリだけを出し、残りは「隠したリポジトリ」の1行にまとめる（⌘M の一覧には全部出る）。
-// 隠していても、表示中のタブがそのリポジトリにあれば出す。行が見えないまま作業させないため
+// ---- ドラフトに出すリポジトリ ----
+// ドラフトに入れていなくても、表示中のタブがそのリポジトリにあれば出す。行が見えないまま作業させないため
 let shownSignature = '';
-const hiddenReposEl = document.getElementById('hidden-repos');
+const draftOutEl = document.getElementById('draft-out');
+const draftEmpty = document.getElementById('draft-empty');
 
 function projectShown(p) {
-  if (!p.hidden) return true;
-  const group = activeKey ? groupOf(activeKey) : null;
+  if (sidebarView === 'all' || p.draft) return true;
+  if (!activeKey) return false;
+  const active = activeKey.startsWith('t:') ? sessions.get(Number(activeKey.slice(2))) : null;
+  if (active?.draftOut) return false;
+  const group = groupOf(activeKey);
   return p.worktrees.some((w) => w.path === group);
 }
 
 function shownProjectsSignature() {
-  return currentProjects().filter(projectShown).map((p) => p.path).join('\n');
+  const drafted = sidebarView === 'draft' && [...sessions.values()].some((s) => s.workspace === activeWorkspace && sessionShown(s));
+  return [sidebarView, drafted, ...currentProjects().filter(projectShown).map((p) => `${p.path}:${p.draft}`)].join('\n');
 }
 
-function hiddenProjects() {
-  return currentProjects().filter((p) => !projectShown(p));
+// ドラフトに出ていないターミナル（外したもの・ドラフトに無いリポジトリのもの）
+function draftOutSessions() {
+  return [...sessions.values()].filter((s) => s.workspace === activeWorkspace && !sessionShown(s));
 }
 
-function renderHiddenRepos() {
-  const hidden = hiddenProjects();
-  hiddenReposEl.hidden = hidden.length === 0;
-  hiddenReposEl.querySelector('.hidden-repos__count').textContent = String(hidden.length);
-  const paths = new Set(hidden.flatMap((p) => p.worktrees.map((w) => w.path)));
-  const summary = urgentAgentSessions(sessionsInListOrder().filter((s) => paths.has(workOf(s)?.path)));
-  const status = hiddenReposEl.querySelector('.work__status');
+function renderDraftOut() {
+  const out = sidebarView === 'draft' ? draftOutSessions() : [];
+  draftOutEl.hidden = out.length === 0;
+  draftOutEl.querySelector('.draft-out__count').textContent = String(out.length);
+  const summary = urgentAgentSessions(out);
+  const status = draftOutEl.querySelector('.work__status');
   status.hidden = summary.sessions.length === 0;
   if (status.hidden) return;
   renderStatus(status, summary.sessions[0], summary.state);
   status.querySelector('.work__status-count').textContent = summary.sessions.length > 1 ? summary.sessions.length : '';
-  status.setAttribute('aria-label', `隠したリポジトリの${STATE_LABELS[summary.state]} ${summary.sessions.length}件の先頭を表示`);
+  status.setAttribute('aria-label', `外したターミナルの${STATE_LABELS[summary.state]} ${summary.sessions.length}件の先頭を表示`);
 }
 
-async function setProjectHidden(repo, hidden) {
-  projectRevision++;
-  const res = await terp.updateProject(repo, { hidden });
-  if (!res.ok) { workspaceUI.error(res.error); return; }
-  // 裏の定期の読み直しと重なると、読み直しが捨てられてメニューのチェックが古いまま描かれるため、先に手元も直す
-  const project = projects.find((p) => p.path === repo);
-  if (project) project.hidden = hidden;
-  await refreshProjects();
-  if (shownProjectsSignature() !== shownSignature) renderProjects();
-}
-
-function repoFilterItems() {
-  const list = currentProjects();
-  return [
-    ...list.map((p) => ({ label: p.name, checked: !p.hidden, checkbox: true, keepOpen: true,
-      run: async () => { await setProjectHidden(p.path, !p.hidden); reopenRepoFilter(); } })),
-    { separator: true },
-    { label: 'すべて出す', run: async () => {
-      projectRevision++;
-      for (const p of list.filter((entry) => entry.hidden)) await terp.updateProject(p.path, { hidden: false });
-      await refreshProjects();
-    } },
-  ];
-}
-
-let repoFilterTarget = null;
-function openRepoFilter(target) {
-  repoFilterTarget = target;
-  rowMenu.open(repoFilterItems(), { target });
-}
-
-// 選び直すたびに描き直す。押した項目に焦点を戻し、続けて選べるようにする
-function reopenRepoFilter() {
-  const focused = document.activeElement?.textContent;
-  rowMenu.open(repoFilterItems(), { target: repoFilterTarget });
-  [...rowMenu.el.querySelectorAll('.menu__item')].find((el) => el.textContent === focused)?.focus();
+// 外したターミナルを選んでドラフトに戻し、表示する
+function openDraftOut(target) {
+  rowMenu.open(draftOutSessions().map((s) => ({
+    label: [displayName(s), placeLabel(s)].filter(Boolean).join(' · '),
+    run: async () => { await setSessionDraft(s.id, true); activate(s.id); },
+  })), { target });
 }
 
 // 各ターミナルの行を、作業場所を含む作業の下へ動かす。どれにも入らないものは「その他」へ
 function placeSessions() {
   for (const s of sessions.values()) {
-    if (s.workspace !== activeWorkspace) {
+    // ほかのワークスペースのもの、「すべて」を見ているとき、ドラフトに出さないものは一覧から外す
+    if (s.workspace !== activeWorkspace || !sessionShown(s)) {
       s.li.remove();
       subagentLists.get(s.id)?.el.remove();
       continue;
     }
     const w = workOf(s);
     const list = w && projectsEl.querySelector(`.work[data-path="${CSS.escape(w.path)}"] .session-list`);
-    // 隠したリポジトリの端末は、その他のターミナルに紛れ込ませず一覧から外す
-    if (w && !list && currentProjects().some((p) => p.path === w.repo && !projectShown(p))) {
-      s.li.remove();
-      subagentLists.get(s.id)?.el.remove();
-      continue;
-    }
     const target = list || looseList;
     // 名前の編集中に動かすと入力欄の選択が外れるため、動かす必要があるときだけ動かす
     if (s.li.parentElement !== target) {
@@ -1684,19 +1717,19 @@ function createItem(s) {
       <span class="session__bypass" title="ファイルの読み書きやコマンドの実行の確認を飛ばして起動しています" hidden>確認なし</span>
       <span class="session__sub"></span>
     </span>
-    <button class="session__favorite icon-btn favorite" type="button" data-action="favorite" aria-label="お気に入りにする">${STAR_ICON}</button>
+    <button class="session__draft icon-btn draft-star" type="button" data-action="draft" aria-pressed="true" aria-label="${draftLabel(true)}" title="${draftLabel(true)}（上のタブと ⌘M には残る）">${STAR_ICON}</button>
     <button class="session__close" type="button" aria-label="閉じる" title="閉じる（⌘W）">
       <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
     </button>`;
   li.addEventListener('click', () => activate(s.id));
-  li.querySelector('[data-action="favorite"]').addEventListener('click', (e) => {
+  li.querySelector('[data-action="draft"]').addEventListener('click', (e) => {
     e.stopPropagation();
-    toggleSessionFavorite(s.id);
+    setSessionDraft(s.id, false);
   });
   li.addEventListener('contextmenu', (e) => {
     e.preventDefault();
     rowMenu.open([
-      { label: favoriteLabel(s.favorite), run: () => toggleSessionFavorite(s.id) },
+      { label: draftLabel(true), run: () => setSessionDraft(s.id, false) },
       { label: '名前を変更', run: () => startRename(s) },
       moveWorkspaceMenu(s.workspace, (id) => moveSessionWorkspace(s.id, id)),
     ], { x: e.clientX, y: e.clientY, target: li });
@@ -1991,7 +2024,7 @@ function savedTabState() {
   }));
   const active = persistent(activeKey) ? activeKey : recent.find((key) => persistent(key) && workspaceOfKey(key) === activeWorkspace) || null;
   return { files: [...fileViews.keys()], order, active, layout: restoreLayout(layout, order), workspaces: states,
-    fileWorkspaces: Object.fromEntries([...fileViews].map(([path, view]) => [path, view.workspace])), sidebarHidden, fontDelta, sidebarWidth };
+    fileWorkspaces: Object.fromEntries([...fileViews].map(([path, view]) => [path, view.workspace])), sidebarHidden, fontDelta, sidebarWidth, sidebarView };
 }
 
 function saveTabs() {
@@ -2011,6 +2044,7 @@ async function restoreTabs() {
     if (data.sidebarHidden) setSidebarHidden(true, { save: false });
     if (data.fontDelta) setFontDelta(data.fontDelta, { save: false });
     if (data.sidebarWidth) setSidebarWidth(data.sidebarWidth, { save: false });
+    if (data.sidebarView) setSidebarView(data.sidebarView, { save: false, animate: false });
     const legacyWorkspace = workspaces.find((w) => w.id === 'default')?.id || workspaces[0].id;
     for (const path of data.files) {
       const workspace = workspaces.some((w) => w.id === data.fileWorkspaces?.[path]) ? data.fileWorkspaces[path] : legacyWorkspace;
@@ -2380,7 +2414,7 @@ function registerSession(id, { el, term, fit, search, hoverLink }, extra = {}) {
     title: '',
     customName: null,
     workspace: activeWorkspace,
-    favorite: false,
+    draftOut: false,
     workPath: null,
     agentTitle: '',
     ...reduceAgentStatus({}, { type: 'reset' }, Date.now()),
@@ -2435,11 +2469,18 @@ function registerSession(id, { el, term, fit, search, hoverLink }, extra = {}) {
   return s;
 }
 
-async function openTerminal({ cwd, show = true, workspace = activeWorkspace, favorite = false } = {}) {
+// ターミナルはドラフトに開く。「すべて」を見ていたらドラフトへ切り替え、リポジトリがドラフトに無ければ一緒に入れる。
+// 開き直し（restore）は控えの状態に従い、ドラフトの出し入れも表示の切り替えもしない
+async function openTerminal({ cwd, show = true, workspace = activeWorkspace, draftOut = false, restore = false } = {}) {
   const view = buildTerminal();
   const { id, cwd: startCwd } = await terp.createPty({ cols: view.term.cols, rows: view.term.rows, cwd, workspace });
-  const s = registerSession(id, view, { cwd: startCwd, workspace, favorite });
-  terp.setMeta(id, { workspace, favorite });
+  const s = registerSession(id, view, { cwd: startCwd, workspace, draftOut });
+  terp.setMeta(id, { workspace, draftOut });
+  if (!restore) {
+    if (sidebarView !== 'draft') setSidebarView('draft');
+    const repo = workOf(s)?.repo;
+    if (repo && !repoDrafted(repo)) setProjectDraft(repo, true);
+  }
   tabOrder.push(termKey(id));
   if (show) activate(id);
   else renderAll();
@@ -2452,7 +2493,7 @@ async function attachTerminal(e) {
   const s = registerSession(e.id, view, {
     cwd: e.cwd,
     workspace: e.meta.workspace,
-    favorite: Boolean(e.meta.favorite),
+    draftOut: Boolean(e.meta.draftOut),
     customName: e.meta.customName || null,
     workPath: e.meta.workPath || null,
     title: e.meta.title || '',
@@ -2490,7 +2531,7 @@ async function restoreSessions() {
   }
   if (snapshot.length > 0) {
     for (const snap of snapshot) {
-      const s = await openTerminal({ cwd: snap.cwd, workspace: snap.workspace, favorite: Boolean(snap.favorite), show: false });
+      const s = await openTerminal({ cwd: snap.cwd, workspace: snap.workspace, draftOut: Boolean(snap.draftOut), show: false, restore: true });
       if (snap.id) restoredKeys.set(termKey(snap.id), termKey(s.id));
       if (snap.customName) {
         s.customName = snap.customName;
@@ -2559,7 +2600,7 @@ function markNotify(s, kind, message = '') {
 // remember を外すのは、作業（worktree）を消して端末も閉じるときだけ。開き直しても場所が無い
 function closeSession(id, { remember = true } = {}) {
   const s = sessions.get(id);
-  if (s && remember) rememberClosed({ kind: 'terminal', cwd: s.workPath || s.cwd, workspace: s.workspace, name: s.customName, favorite: s.favorite });
+  if (s && remember) rememberClosed({ kind: 'terminal', cwd: s.workPath || s.cwd, workspace: s.workspace, name: s.customName });
   terp.kill(id);
 }
 
@@ -2578,7 +2619,7 @@ async function reopenClosed() {
     await openFile(entry.path, { workspace });
     return;
   }
-  const s = await openTerminal({ cwd: entry.cwd, workspace, favorite: entry.favorite });
+  const s = await openTerminal({ cwd: entry.cwd, workspace });
   if (entry.name) {
     s.customName = entry.name;
     terp.setMeta(s.id, { customName: s.customName });
@@ -2931,11 +2972,66 @@ document.getElementById('panel-refresh').addEventListener('click', () => (panelT
 document.getElementById('empty-new').addEventListener('click', () => newTerminal());
 document.getElementById('new-work').addEventListener('click', () => openWorkDialog());
 document.getElementById('add-project').addEventListener('click', () => addProject());
-document.getElementById('repo-filter').addEventListener('click', (e) => openRepoFilter(e.currentTarget));
-document.getElementById('hidden-repos-open').addEventListener('click', (e) => openRepoFilter(e.currentTarget));
-hiddenReposEl.querySelector('.work__status').addEventListener('click', () => {
-  const paths = new Set(hiddenProjects().flatMap((p) => p.worktrees.map((w) => w.path)));
-  const summary = urgentAgentSessions(sessionsInListOrder().filter((s) => paths.has(workOf(s)?.path)));
+// 「ドラフト」「すべて」の切り替え。タブを押すか ←→、一覧の上で2本指で横に滑らせる
+const viewTabs = document.querySelector('.sidebar-views');
+viewTabs.addEventListener('click', (e) => {
+  const tab = e.target.closest('.sidebar-views__tab');
+  if (tab) setSidebarView(tab.dataset.view);
+});
+viewTabs.addEventListener('keydown', (e) => {
+  if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+  e.preventDefault();
+  setSidebarView(e.key === 'ArrowLeft' ? 'all' : 'draft');
+  viewTabs.querySelector('[aria-selected="true"]').focus();
+});
+document.querySelector('[data-show-view="all"]').addEventListener('click', () => setSidebarView('all'));
+// 指を左へ滑らせると右の面（ドラフト）、右へ滑らせると左の面（すべて）。滑らせている間は一覧を指に合わせて動かし、
+// SWIPE_DISTANCE を超えたら切り替える。指を離した後も慣性の横スクロールが届くため、切り替えた後は勢いが落ちていく間を無視し、
+// 勢いが強まったときか向きが変わったときに新しい滑らせとして受ける（待たずに切り替え直せるように）
+const SWIPE_DISTANCE = 50;
+const tree = document.getElementById('tree');
+const freshSwipe = () => ({ dx: 0, done: false, sign: 0, last: 0, timer: null });
+let swipe = freshSwipe();
+function settleSwipe() {
+  if (!swipe.done && tree.style.transform) {
+    tree.animate([{ transform: tree.style.transform }, { transform: 'none' }], { duration: 140, easing: 'ease-out' });
+  }
+  tree.style.transform = '';
+  swipe = freshSwipe();
+}
+tree.addEventListener('wheel', (e) => {
+  if (Math.abs(e.deltaX) <= Math.abs(e.deltaY)) return;
+  e.preventDefault();
+  const abs = Math.abs(e.deltaX);
+  const sign = Math.sign(e.deltaX);
+  if (swipe.done && (sign !== swipe.sign || abs > swipe.last + 4)) {
+    clearTimeout(swipe.timer);
+    swipe = freshSwipe();
+  }
+  swipe.last = abs;
+  clearTimeout(swipe.timer);
+  swipe.timer = setTimeout(settleSwipe, 120);
+  if (swipe.done) return;
+  swipe.dx += e.deltaX;
+  const target = swipe.dx > 0 ? 'draft' : 'all';
+  // その先に面が無い向きは、少しだけ動かして端であることを示す
+  if (target === sidebarView) {
+    swipe.dx = Math.sign(swipe.dx) * Math.min(Math.abs(swipe.dx), 40);
+    tree.style.transform = `translateX(${-swipe.dx * 0.2}px)`;
+    return;
+  }
+  if (Math.abs(swipe.dx) < SWIPE_DISTANCE) {
+    tree.style.transform = `translateX(${-swipe.dx * 0.5}px)`;
+    return;
+  }
+  swipe.done = true;
+  swipe.sign = sign;
+  tree.style.transform = '';
+  setSidebarView(target);
+}, { passive: false });
+document.getElementById('draft-out-open').addEventListener('click', (e) => openDraftOut(e.currentTarget));
+draftOutEl.querySelector('.work__status').addEventListener('click', () => {
+  const summary = urgentAgentSessions(draftOutSessions());
   if (summary.sessions.length) activate(summary.sessions[0].id);
 });
 document.getElementById('settings-open').addEventListener('click', () => openSettings());
@@ -2971,9 +3067,10 @@ window.__terp = {
   removeWorkspace,
   moveProjectWorkspace,
   moveSessionWorkspace,
-  toggleProjectFavorite,
-  toggleSessionFavorite,
-  setProjectHidden,
+  setProjectDraft,
+  setSessionDraft,
+  setSidebarView,
+  get sidebarView() { return sidebarView; },
   setSidebarWidth,
   resumeAgentSession,
   overview,

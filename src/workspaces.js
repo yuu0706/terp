@@ -13,11 +13,16 @@ function normalizeProjects(value = {}) {
   const fallback = workspaces[0].id;
   const valid = (id) => workspaces.some((w) => w.id === id);
   const paths = new Set();
-  const projects = (Array.isArray(value.projects) ? value.projects : []).filter((p) => {
+  const list = (Array.isArray(value.projects) ? value.projects : []).filter((p) => {
     if (!p || typeof p.path !== 'string' || !p.path || paths.has(p.path)) return false;
     paths.add(p.path);
     return true;
-  }).map((p) => ({ ...p, workspace: valid(p.workspace) ? p.workspace : fallback, favorite: Boolean(p.favorite), hidden: Boolean(p.hidden) }));
+  });
+  // draft は左の一覧の「ドラフト」に出すか（2026-10-27 お気に入りと「隠す」を置き換えた）。
+  // 旧形式は、お気に入りが1つでもあればお気に入りを、無ければ隠していないものをドラフトとして読む
+  const anyFavorite = list.some((p) => p.favorite === true);
+  const projects = list.map(({ favorite, hidden, ...p }) => ({ ...p, workspace: valid(p.workspace) ? p.workspace : fallback,
+    draft: typeof p.draft === 'boolean' ? p.draft : anyFavorite ? favorite === true : hidden !== true }));
   return { ...value, projects, workspaces, activeWorkspace: valid(value.activeWorkspace) ? value.activeWorkspace : fallback };
 }
 

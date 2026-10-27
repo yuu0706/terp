@@ -38,7 +38,7 @@ async function add(dir, workspace) {
   requireWorkspace(data, workspace);
   const existing = data.projects.find((p) => p.path === repo);
   if (!existing) {
-    data.projects.push({ path: repo, workspace, favorite: false });
+    data.projects.push({ path: repo, workspace, draft: true });
     save(data);
   } else if (existing.workspace !== workspace) {
     existing.workspace = workspace;
@@ -70,8 +70,7 @@ function update(repo, patch) {
     requireWorkspace(data, patch.workspace);
     project.workspace = patch.workspace;
   }
-  if ('favorite' in patch) project.favorite = Boolean(patch.favorite);
-  if ('hidden' in patch) project.hidden = Boolean(patch.hidden);
+  if ('draft' in patch) project.draft = Boolean(patch.draft);
   save(data);
 }
 

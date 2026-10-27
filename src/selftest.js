@@ -1872,9 +1872,11 @@ async function runLockTest({ win, js, check, outDir }) {
   check('もう一度押すと固定が外れる', !(await panes()).find((p) => p.id === left).locked);
 }
 
-// TERP_SELFTEST_HIDEREPO は、左の一覧に出すリポジトリを選べることを確かめる。隠したものは1行にまとまり、⌘M の一覧には出る
-async function runHideRepoTest({ win, js, check, outDir }) {
+// TERP_SELFTEST_DRAFT は、左の一覧の「ドラフト」「すべて」を確かめる。ドラフトにはドラフトに入れたリポジトリとターミナルだけを出し、
+// 「すべて」は追加したリポジトリの名前だけを並べて、押すとドラフトに出し入れする。外したターミナルは1行にまとまり、そこから戻せる
+async function runDraftTest({ win, js, check, outDir }) {
   const { execFileSync } = require('child_process');
+  const { CONFIG_DIR } = require('./config');
   const wait = async (code, tries = 60) => {
     for (let i = 0; i < tries; i++) {
       if (await js(code)) return true;
@@ -1882,7 +1884,7 @@ async function runHideRepoTest({ win, js, check, outDir }) {
     }
     return false;
   };
-  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'terp-hiderepo-')));
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'terp-draft-')));
   const repos = ['repo-a', 'repo-b', 'repo-c'].map((name) => {
     const repo = path.join(dir, name);
     fs.mkdirSync(repo);
@@ -1890,53 +1892,104 @@ async function runHideRepoTest({ win, js, check, outDir }) {
     return repo;
   });
   const [a, b, c] = repos;
-  const section = (repo) => `document.querySelector('.project[data-path=${JSON.stringify(JSON.stringify(repo)).slice(1, -1)}]')`;
+  const q = (repo) => JSON.stringify(JSON.stringify(repo)).slice(1, -1);
+  const section = (repo) => `document.querySelector('.project[data-path=${q(repo)}]')`;
+  const shown = (id) => `window.__terp.sessions.get(${id}).li.isConnected`;
+  const stored = () => JSON.parse(fs.readFileSync(path.join(CONFIG_DIR, 'projects.json'), 'utf8')).projects;
   try {
     await sleep(1000);
     for (const repo of repos) await js(`window.__terp.addProject(${JSON.stringify(repo)})`);
     await wait(`window.__terp.projects.length === 3`);
+    check('足したリポジトリはドラフトに入る', await wait(`Boolean(${section(a)} && ${section(b)} && ${section(c)})`) && stored().every((p) => p.draft === true));
+    check('初めは「ドラフト」を開いている', await js(`window.__terp.sidebarView === 'draft' && document.querySelector('.sidebar-views__tab[data-view="draft"]').getAttribute('aria-selected') === 'true'`));
     const ta = await js(`window.__terp.open(${JSON.stringify(a)})`);
     const tb = await js(`window.__terp.open(${JSON.stringify(b)})`);
     await wait(`window.__terp.workOf(${tb}) === ${JSON.stringify(b)}`);
     await js(`window.__terp.activate(${ta})`);
-    await js(`window.__terp.setProjectHidden(${JSON.stringify(b)}, true)`);
-    await js(`window.__terp.setProjectHidden(${JSON.stringify(c)}, true)`);
-    await wait(`!${section(b)} && !${section(c)}`);
-    const state = await js(`({ a: Boolean(${section(a)}), b: Boolean(${section(b)}), c: Boolean(${section(c)}),
-      row: !document.getElementById('hidden-repos').hidden, count: document.querySelector('.hidden-repos__count').textContent,
-      termB: window.__terp.sessions.get(${tb}).li.isConnected })`);
-    check('隠したリポジトリは左の一覧に出ず、1行に数がまとまる', state.a && !state.b && !state.c && state.row && state.count === '2', JSON.stringify(state));
-    check('隠したリポジトリの端末は、その他のターミナルにも紛れない', !state.termB);
+    await js(`${section(b)}.querySelector('[data-action="draft"]').click()`);
+    check('見出しの星でリポジトリをドラフトから外す', await wait(`!${section(b)} && !${shown(tb)}`));
+    check('外したリポジトリのターミナルは「外したターミナル」の1行にまとまる', await wait(`!document.getElementById('draft-out').hidden && document.querySelector('.draft-out__count').textContent === '1'`));
+    await sleep(300);
+    check('ドラフトから外したことが projects.json に残る', stored().find((p) => p.path === b).draft === false);
+    fs.writeFileSync(path.join(outDir, 'draft-view.png'), (await win.webContents.capturePage()).toPNG());
+
+    await js(`document.querySelector('.sidebar-views__tab[data-view="all"]').click()`);
+    await wait(`window.__terp.sidebarView === 'all'`);
+    const all = await js(`({
+      repos: [...document.querySelectorAll('#projects .project')].map((el) => el.dataset.path),
+      sessions: document.querySelectorAll('#tree .session').length, works: document.querySelectorAll('#tree .work').length,
+      draft: [...document.querySelectorAll('#projects .project__head')].map((el) => el.dataset.draft),
+      out: !document.getElementById('draft-out').hidden,
+      newTerminal: getComputedStyle(document.getElementById('new-terminal')).display, newWork: getComputedStyle(document.getElementById('new-work')).display,
+      drafted: getComputedStyle(${section(a)}.querySelector('.project__head')).backgroundImage,
+      plain: getComputedStyle(${section(b)}.querySelector('.project__head')).backgroundImage })`);
+    check('「すべて」には追加したリポジトリを全部、名前だけで並べる', all.repos.join() === repos.join() && all.sessions === 0 && all.works === 0 && !all.out, JSON.stringify(all));
+    check('「すべて」にはターミナルを開くボタンを出さない', all.newTerminal === 'none' && all.newWork === 'none', JSON.stringify(all));
+    check('「すべて」ではドラフト済みのリポジトリを強調色のぼかしの背景にする', all.draft.join() === 'true,false,true' && all.drafted.startsWith('linear-gradient') && all.plain === 'none', JSON.stringify(all));
     await sleep(400);
-    const stored = JSON.parse(fs.readFileSync(path.join(require('./config').CONFIG_DIR, 'projects.json'), 'utf8'));
-    check('隠したことが projects.json に残る', stored.projects.filter((p) => p.hidden).map((p) => p.path).sort().join() === [b, c].join());
-    fs.writeFileSync(path.join(outDir, 'hidden-repos.png'), (await win.webContents.capturePage()).toPNG());
+    fs.writeFileSync(path.join(outDir, 'all-view.png'), (await win.webContents.capturePage()).toPNG());
+    await js(`${section(b)}.querySelector('.project__head').click()`);
+    check('「すべて」で名前を押すとドラフトに入る', await wait(`${section(b)}.querySelector('.project__head').dataset.draft === 'true'`) && (await sleep(300), stored().find((p) => p.path === b).draft === true));
+    await js(`${section(b)}.querySelector('.project__head').click()`);
+    check('もう一度押すとドラフトから外れる', await wait(`${section(b)}.querySelector('.project__head').dataset.draft === 'false'`));
+    await sleep(400);
+    check('表示中の面が tabs.json に残る', JSON.parse(fs.readFileSync(path.join(CONFIG_DIR, 'tabs.json'), 'utf8')).sidebarView === 'all');
 
-    await js(`window.__terp.activate(${tb})`);
-    await wait(`Boolean(${section(b)})`);
-    check('隠していても、表示中のタブのリポジトリは出す', await js(`Boolean(${section(b)}) && window.__terp.sessions.get(${tb}).li.isConnected && document.querySelector('.hidden-repos__count').textContent === '1'`));
+    const swipe = (dx) => js(`document.getElementById('tree').dispatchEvent(new WheelEvent('wheel', { deltaX: ${dx}, deltaY: 0, cancelable: true }))`);
+    await sleep(300);
+    await swipe(30);
+    check('滑らせている間は一覧が指に合わせて動く', await js(`document.getElementById('tree').style.transform === 'translateX(-15px)' && window.__terp.sidebarView === 'all'`));
+    await swipe(30);
+    check('2本指で左へ滑らせると「ドラフト」に切り替わる', await wait(`window.__terp.sidebarView === 'draft' && !document.getElementById('tree').style.transform`));
+    for (const dx of [30, 20, 12, 6]) await swipe(dx);
+    check('指を離した後の慣性では切り替えない', await js(`window.__terp.sidebarView === 'draft'`));
+    for (const dx of [-20, -40]) await swipe(dx);
+    check('待たずに逆へ滑らせると、すぐに切り替え直す', await wait(`window.__terp.sidebarView === 'all'`));
+    for (const dx of [-40, -20, -10]) await swipe(dx);
+    for (const dx of [8, 20, 40]) await swipe(dx);
+    check('慣性の途中でも、逆へ滑らせれば新しい滑らせとして受ける', await wait(`window.__terp.sidebarView === 'draft'`));
+    await sleep(300);
+    for (const dx of [-20, -20]) await swipe(dx);
+    await sleep(300);
+    check('切り替えに届かずに離すと元の位置へ戻る', await js(`window.__terp.sidebarView === 'draft' && !document.getElementById('tree').style.transform`));
+    await swipe(-90);
+    check('右へ滑らせると「すべて」に切り替わる', await wait(`window.__terp.sidebarView === 'all'`));
+    await sleep(300);
+    await js(`(() => { const tab = document.querySelector('.sidebar-views__tab[aria-selected="true"]'); tab.focus(); tab.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })); })()`);
+    check('切り替えは ← → でもできる', await wait(`window.__terp.sidebarView === 'draft'`));
+
     await js(`window.__terp.activate(${ta})`);
-    check('ほかへ移るとまた隠れる', await wait(`!${section(b)}`));
-
-    await js(`document.getElementById('repo-filter').click()`);
-    await sleep(300);
-    const items = await js(`[...document.querySelectorAll('.menu:popover-open .menu__item[role="menuitemcheckbox"]')].map((el) => el.textContent + ':' + el.getAttribute('aria-checked'))`);
-    check('上端のボタンで、出すリポジトリをチェックで選べる', JSON.stringify(items) === JSON.stringify(['repo-a:true', 'repo-b:false', 'repo-c:false']), JSON.stringify(items));
-    await js(`[...document.querySelectorAll('.menu:popover-open .menu__item')].find((el) => el.textContent === 'repo-b').click()`);
-    await wait(`Boolean(${section(b)})`);
-    await sleep(300);
-    check('チェックを付けると出て、メニューは開いたまま', await js(`Boolean(${section(b)}) && Boolean(document.querySelector('.menu:popover-open'))
-      && document.querySelector('.menu:popover-open .menu__item[aria-checked="true"]:nth-child(2)')?.textContent === 'repo-b'`));
-    await js(`[...document.querySelectorAll('.menu:popover-open .menu__item')].find((el) => el.textContent === 'すべて出す').click()`);
-    check('すべて出すで、隠したリポジトリの行が消える', await wait(`Boolean(${section(c)}) && document.getElementById('hidden-repos').hidden`));
-    await js(`${section(a)}.querySelector('[data-action="hide"]').click()`);
-    check('見出しのボタンでも隠せる（表示中のタブがあるうちは出たまま）', await wait(`window.__terp.projects.find((p) => p.path === ${JSON.stringify(a)}).hidden && Boolean(${section(a)})`));
-    await js(`window.__terp.activate(${tb})`);
-    check('表示中のタブが外れると隠れる', await wait(`!${section(a)}`));
+    await js(`window.__terp.sessions.get(${ta}).li.querySelector('[data-action="draft"]').click()`);
+    check('ターミナルの星でドラフトから外す（表示中でも消える）', await wait(`!${shown(ta)} && document.querySelector('.draft-out__count').textContent === '2'`));
+    check('外したターミナルも上のタブには残る', await js(`window.__terp.tabOrder.includes('t:${ta}')`));
     await js(`document.getElementById('overview-open').click()`);
     await sleep(500);
-    check('⌘M の一覧には隠したリポジトリの端末も出る', await js(`Boolean(document.querySelector('.overview__tile[data-id="${ta}"]'))`));
+    check('⌘M の一覧には外したターミナルも出る', await js(`Boolean(document.querySelector('.overview__tile[data-id="${ta}"]')) && Boolean(document.querySelector('.overview__tile[data-id="${tb}"]'))`));
     await js(`document.querySelector('#overview [data-close]').click()`);
+    await sleep(300);
+    await js(`document.getElementById('draft-out-open').click()`);
+    await sleep(300);
+    const items = await js(`[...document.querySelectorAll('.menu:popover-open .menu__item')].map((el) => el.textContent)`);
+    check('「外したターミナル」を押すと、外したものが並ぶ', items.length === 2, JSON.stringify(items));
+    await js(`document.querySelectorAll('.menu:popover-open .menu__item')[1].click()`);
+    check('選ぶと、リポジトリごとドラフトに戻って表示する', await wait(`${shown(tb)} && Boolean(${section(b)}) && window.__terp.activeId === ${tb} && document.querySelector('.draft-out__count').textContent === '1'`));
+    await js(`window.__terp.setSessionDraft(${ta}, true)`);
+    await wait(`${shown(ta)} && document.getElementById('draft-out').hidden`);
+
+    await js(`window.__terp.setProjectDraft(${JSON.stringify(c)}, false)`);
+    await js(`window.__terp.setSidebarView('all')`);
+    const tc = await js(`window.__terp.open(${JSON.stringify(c)})`);
+    check('「すべて」を見ていてもターミナルはドラフトに開き、リポジトリもドラフトに入る', await wait(`window.__terp.sidebarView === 'draft' && ${shown(tc)} && window.__terp.projects.find((p) => p.path === ${JSON.stringify(c)}).draft`));
+
+    for (const repo of repos) await js(`window.__terp.setProjectDraft(${JSON.stringify(repo)}, false)`);
+    for (const id of [ta, tb, tc]) await js(`window.__terp.setSessionDraft(${id}, false)`);
+    const ids = await js(`[...window.__terp.sessions.keys()]`);
+    for (const id of ids) await js(`window.__terp.setSessionDraft(${id}, false)`);
+    check('ドラフトが空なら、「すべて」への案内を出す', await wait(`!document.getElementById('draft-empty').hidden && document.querySelectorAll('#projects .project').length === 0`));
+    await js(`document.querySelector('[data-show-view="all"]').click()`);
+    check('案内のボタンで「すべて」を開く', await wait(`window.__terp.sidebarView === 'all' && document.getElementById('draft-empty').hidden`));
+    await js(`window.__terp.setSidebarView('draft')`);
+    for (const id of ids) await js(`window.__terp.setSessionDraft(${id}, true)`);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -2520,7 +2573,7 @@ async function runPersistTest({ js, check, outDir, phase }) {
     const workspace = await js("window.__terp.createWorkspace('保持用')");
     await js(`window.__terp.moveSessionWorkspace(${id}, ${JSON.stringify(workspace.id)})`);
     await js(`window.__terp.activate(${id})`);
-    await js(`window.__terp.toggleSessionFavorite(${id})`);
+    await js(`window.__terp.setSessionDraft(${id}, false)`);
     const dir = fs.mkdtempSync(path.join(path.resolve(outDir), 'persist-files-'));
     const files = [path.join(dir, 'first.js'), path.join(dir, 'second.md')];
     fs.writeFileSync(files[0], 'const first = 1;\n');
@@ -2546,7 +2599,7 @@ async function runPersistTest({ js, check, outDir, phase }) {
     check('2回目: 開き直してもターミナルが残る', list.length === 1, `枚数 ${list.length}`);
     const id = list[0];
     const name = await js(`window.__terp.sessions.get(${id}).li.querySelector('.session__name').textContent`);
-    check('2回目: ワークスペースとお気に入りが残る', await js(`window.__terp.sessions.get(${id}).workspace === ${JSON.stringify(saved.workspace)} && window.__terp.sessions.get(${id}).favorite && window.__terp.activeWorkspace === ${JSON.stringify(saved.workspace)}`));
+    check('2回目: ワークスペースとドラフトから外したことが残る', await js(`window.__terp.sessions.get(${id}).workspace === ${JSON.stringify(saved.workspace)} && window.__terp.sessions.get(${id}).draftOut && window.__terp.activeWorkspace === ${JSON.stringify(saved.workspace)}`));
     check('2回目: 名前が残る', name === '保持テスト', name);
     check('2回目: 前の出力が画面に戻る', /phase1-output/.test(await buffer(id)));
     const files = await fileKeys();
@@ -2572,7 +2625,7 @@ async function runPersistTest({ js, check, outDir, phase }) {
   const cwd = await js(`window.__terp.sessions.get(${id}).cwd`);
   check('3回目: 同じ作業場所で開く', /\/tmp$/.test(cwd), cwd);
   const name = await js(`window.__terp.sessions.get(${id}).li.querySelector('.session__name').textContent`);
-  check('3回目: 控えからワークスペースとお気に入りが戻る', await js(`window.__terp.sessions.get(${id}).workspace === ${JSON.stringify(saved.workspace)} && window.__terp.sessions.get(${id}).favorite && window.__terp.activeWorkspace === ${JSON.stringify(saved.workspace)}`));
+  check('3回目: 控えからワークスペースとドラフトから外したことが戻る', await js(`window.__terp.sessions.get(${id}).workspace === ${JSON.stringify(saved.workspace)} && window.__terp.sessions.get(${id}).draftOut && window.__terp.activeWorkspace === ${JSON.stringify(saved.workspace)}`));
   check('3回目: 名前が戻る', name === '保持テスト', name);
   check('3回目: シェルは新しい（前の変数は無い）', !(await buffer(id)).includes('mark=persist-ok'));
 }
@@ -2672,44 +2725,48 @@ async function runWorkspaceTest({ win, js, check, outDir }) {
     check('一覧のワークスペース名にも許可待ちを出す', await js(`document.querySelector('[data-workspace-status=${JSON.stringify(b.id)}]').dataset.agentState === 'waiting'`));
     await js('window.__terp.nextAttention()');
     check('次の要対応は裏のワークスペースへ移る', (await js('window.__terp.activeWorkspace')) === b.id && (await js('window.__terp.activeId')) === a);
-    await js(`window.__terp.toggleProjectFavorite(${JSON.stringify(repos[0])})`);
-    await js(`window.__terp.toggleSessionFavorite(${a})`);
+    // 星と × は同じ行の隣り合う別の場所に置き、押し間違えないようにする
+    const buttons = await js(`(() => {
+      const row = window.__terp.sessions.get(${a}).li;
+      const box = (el) => { const r = el.getBoundingClientRect(); return { left: r.left, right: r.right, top: r.top, bottom: r.bottom }; };
+      return { star: box(row.querySelector('.session__draft')), close: box(row.querySelector('.session__close')) };
+    })()`);
+    check('ドラフトの星と閉じるの × が重ならない',
+      buttons.star.right <= buttons.close.left && buttons.star.bottom > buttons.close.top && buttons.star.top < buttons.close.bottom,
+      JSON.stringify(buttons));
     await js("window.terp.updateConfig({ accent: '#eeeeee', backgroundOpacity: 0.65 })");
     await wait(() => js("window.__terp.config.chrome.accent === '#eeeeee' && window.__terp.config.window.opacity === 0.65"));
+    await js(`window.__terp.setSidebarView('all', { animate: false })`);
+    const head = `document.querySelector('.project[data-path=${JSON.stringify(repos[0])}] .project__head')`;
+    await wait(() => js(`Boolean(${head})`));
     const colors = await js(`(() => {
-      const row = window.__terp.sessions.get(${a}).li;
-      const head = document.querySelector('.project[data-path=${JSON.stringify(repos[0])}] .project__head');
-      const style = getComputedStyle(row), sidebar = getComputedStyle(document.getElementById('sidebar'));
-      return { bg: style.backgroundColor, text: style.color, sub: getComputedStyle(row.querySelector('.session__sub')).color,
-        head: getComputedStyle(head).backgroundImage, image: style.backgroundImage, sidebar: sidebar.backgroundColor, selected: style.boxShadow,
+      const head = ${head};
+      const style = getComputedStyle(head), sidebar = getComputedStyle(document.getElementById('sidebar'));
+      return { text: style.color, star: getComputedStyle(head.querySelector('.draft-star')).color, image: style.backgroundImage, sidebar: sidebar.backgroundColor,
         primary: getComputedStyle(document.getElementById('new-terminal')).backgroundImage };
     })()`);
     const rgba = (value) => value.match(/[\d.]+/g).map(Number);
     const { contrast, luminance } = await import('data:text/javascript;base64,' + fs.readFileSync(path.join(__dirname, 'renderer/favcolor.js')).toString('base64'));
     const hex = (value) => '#' + rgba(value).slice(0, 3).map((c) => c.toString(16).padStart(2, '0')).join('');
-    check('お気に入りの背景が強調色のぼかしになる', colors.image.startsWith('linear-gradient') && colors.head === colors.image, colors.image);
-    check('新しいターミナルのボタンも強調色のぼかしになる', colors.primary.startsWith('linear-gradient'), colors.primary);
-    fs.writeFileSync(path.join(outDir, 'favorite-gradient.png'), (await win.webContents.capturePage()).toPNG());
-    // 星と × は同じ行の隣り合う別の場所に置き、押し間違えないようにする
-    const buttons = await js(`(() => {
-      const row = window.__terp.sessions.get(${a}).li;
-      const box = (el) => { const r = el.getBoundingClientRect(); return { left: r.left, right: r.right, top: r.top, bottom: r.bottom }; };
-      return { star: box(row.querySelector('.session__favorite')), close: box(row.querySelector('.session__close')) };
-    })()`);
-    check('お気に入りの星と閉じるの × が重ならない',
-      buttons.star.right <= buttons.close.left && buttons.star.bottom > buttons.close.top && buttons.star.top < buttons.close.bottom,
-      JSON.stringify(buttons));
-    check('お気に入りの不透明度が一覧と同じ', /\/ 0\.65\)/.test(colors.image) && rgba(colors.sidebar)[3] === 0.65, colors.image);
+    check('「すべて」でドラフト済みのリポジトリの背景が強調色のぼかしになる', colors.image.startsWith('linear-gradient'), colors.image);
+    fs.writeFileSync(path.join(outDir, 'draft-gradient.png'), (await win.webContents.capturePage()).toPNG());
+    check('ドラフトの背景の不透明度が一覧と同じ', /\/ 0\.65\)/.test(colors.image) && rgba(colors.sidebar)[3] === 0.65, colors.image);
     check('文字は暗くなりコントラスト比4.5以上', contrast('#eeeeee', hex(colors.text)) >= 4.5 && luminance(hex(colors.text)) < luminance('#eeeeee'));
-    check('2行目も同じ色、選択中の線が残る', colors.sub === colors.text && colors.selected !== 'none');
+    check('星も同じ色', colors.star === colors.text);
+    await js(`window.__terp.setSidebarView('draft', { animate: false })`);
+    await wait(() => js(`window.__terp.sessions.get(${a}).li.isConnected`));
+    check('新しいターミナルのボタンは強調色のぼかしになる', (await js(`getComputedStyle(document.getElementById('new-terminal')).backgroundImage`)).startsWith('linear-gradient'));
     await sleep(500);
     const stored = JSON.parse(fs.readFileSync(path.join(CONFIG_DIR, 'projects.json'), 'utf8'));
     const tabs = JSON.parse(fs.readFileSync(path.join(CONFIG_DIR, 'tabs.json'), 'utf8'));
-    check('所属とお気に入りが projects.json に残る', stored.workspaces.length === 2 && stored.activeWorkspace === b.id && stored.projects.find((p) => p.path === repos[0]).favorite);
+    check('所属とドラフトが projects.json に残る', stored.workspaces.length === 2 && stored.activeWorkspace === b.id && stored.projects.find((p) => p.path === repos[0]).draft === true);
     check('ワークスペースごとのタブと配置が tabs.json に残る', tabs.workspaces[first] && tabs.workspaces[b.id]?.active === `t:${a}` && tabs.workspaces[b.id]?.layout);
-    await js(`window.__terp.toggleProjectFavorite(${JSON.stringify(repos[0])})`);
-    await js(`window.__terp.toggleSessionFavorite(${a})`);
-    check('外すと背景が戻る', await js(`window.__terp.sessions.get(${a}).li.dataset.favorite === 'false' && document.querySelector('.project[data-path=${JSON.stringify(repos[0])}] .project__head').dataset.favorite === 'false'`));
+    await js(`window.__terp.setSidebarView('all', { animate: false })`);
+    await wait(() => js(`Boolean(${head})`));
+    await js(`${head}.click()`);
+    check('ドラフトから外すと背景が戻る', await (async () => { for (let i = 0; i < 40; i++) { if (await js(`${head}?.dataset.draft === 'false' && getComputedStyle(${head}).backgroundImage === 'none'`)) return true; await sleep(100); } return false; })());
+    await js(`${head}.click()`);
+    await js(`window.__terp.setSidebarView('draft', { animate: false })`);
     fs.writeFileSync(path.join(outDir, 'workspace-colors.json'), JSON.stringify(colors, null, 2));
   } finally {
     fs.writeFileSync(CONFIG_PATH, original);
@@ -2773,14 +2830,14 @@ async function runOverviewTest({ win, js, check, outDir }) {
     const quote = (value) => "'" + value.replace(/'/g, "'\\''") + "'";
     await js(`window.terp.write(${c}, ${JSON.stringify(`${quote(fake)} ${quote(script)}\r`)})`);
     await wait(() => js(`window.__terp.sessions.get(${c}).program === 'claude' && window.__terp.bufferText(${c}).includes('overview-agent-ready')`));
-    await js(`window.__terp.switchWorkspace(${JSON.stringify(first)}); window.__terp.activate(${a}); window.__terp.toggleSessionFavorite(${a})`);
+    await js(`window.__terp.switchWorkspace(${JSON.stringify(first)}); window.__terp.activate(${a})`);
     check('メニューに ⌘M が割り当てられている', item.accelerator === 'CmdOrCtrl+M');
     check('一覧のボタンに ⌘M が見える', await js('document.getElementById("overview-open").textContent.includes("⌘M")'));
     await openMenu();
     check('端末に焦点があるときもメニューで開ける', await opened());
     check('開くと検索欄に焦点がある', await js('document.activeElement.id === "overview-query"'));
     check('全所属の端末が重複せずに出る', await js('JSON.stringify([...document.querySelectorAll(".overview__tile")].map((tile) => Number(tile.dataset.id)).sort((a, b) => a - b)) === JSON.stringify([...window.__terp.sessions.keys()].sort((a, b) => a - b))'));
-    check('表示中のターミナルが選ばれ、枠と星が付く', (await selected()) === a && await js(`document.querySelector('.overview__tile[data-id="${a}"]').getAttribute('aria-current') === 'true' && !document.querySelector('.overview__tile[data-id="${a}"] .overview__star').hidden`));
+    check('表示中のターミナルが選ばれ、枠が付く', (await selected()) === a && await js(`document.querySelector('.overview__tile[data-id="${a}"]').getAttribute('aria-current') === 'true'`));
     check('表示中の所属を先頭にして所属ごとにまとめる', await js(`(() => {
       const groups = [...document.querySelectorAll('.overview__workspace')];
       return groups[0].dataset.workspace === ${JSON.stringify(first)} && groups.some((el) => el.dataset.workspace === ${JSON.stringify(second.id)})
@@ -3160,8 +3217,8 @@ exports.run = (win) => {
       await finish();
       return;
     }
-    if (process.env.TERP_SELFTEST_HIDEREPO) {
-      await runHideRepoTest({ win, js, check, outDir });
+    if (process.env.TERP_SELFTEST_DRAFT) {
+      await runDraftTest({ win, js, check, outDir });
       fs.writeFileSync(path.join(outDir, 'result.txt'), log.join('\n') + '\n');
       await finish();
       return;

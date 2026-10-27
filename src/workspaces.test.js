@@ -22,8 +22,12 @@ async function run() {
   const state = normalizeProjects({ workspaces: [{ id: 'a', name: '仕事' }, { id: 'b', name: '個人' }], activeWorkspace: 'b',
     projects: [{ path: '/repo', workspace: 'a', favorite: true }, { path: '/repo/deep', workspace: 'b' }, { path: '/second', workspace: 'b' }] });
   state.projects[0].worktrees = [{ path: '/outside-work' }];
-  equal(state.projects[0].favorite, true);
-  equal(state.projects[1].favorite, false);
+  // お気に入りが1つでもあれば、お気に入りだけをドラフトにする。無ければ隠していないものをドラフトにする
+  equal(state.projects.map((p) => p.draft), [true, false, false]);
+  equal('favorite' in state.projects[0], false);
+  equal(normalizeProjects({ projects: [{ path: '/a', hidden: true }, { path: '/b' }] }).projects.map((p) => [p.draft, 'hidden' in p]), [[false, false], [true, false]]);
+  equal(normalizeProjects({ projects: [{ path: '/a', draft: false, favorite: true }, { path: '/b', favorite: false }] }).projects.map((p) => p.draft), [false, false]);
+  equal(migrated.projects.map((p) => p.draft), [true, true]);
   equal(normalizeProjects({ ...state, activeWorkspace: 'missing' }).activeWorkspace, 'a');
   equal(normalizeProjects({ ...state, projects: [{ path: '/x', workspace: 'missing' }] }).projects[0].workspace, 'a');
   equal(normalizeProjects({ workspaces: [{ id: 'a', name: ' A ' }, { id: 'a', name: '重複' }] }).workspaces, [{ id: 'a', name: 'A' }]);
@@ -75,11 +79,11 @@ async function run() {
     fs.writeFileSync(path.join(dir, 'projects.json'), JSON.stringify(legacy));
     equal(projects.load(), migrated);
     const b = projects.createWorkspace('個人');
-    projects.update('/repo', { favorite: true, workspace: b.id });
+    projects.update('/repo', { draft: false, workspace: b.id });
     projects.activateWorkspace(b.id);
     projects.reorder(['/second', '/repo']);
     equal(projects.load().projects.map((p) => p.path), ['/second', '/repo']);
-    equal(projects.load().projects[1].favorite, true);
+    equal(projects.load().projects[1].draft, false);
     equal(projects.load().projects[1].workspace, b.id);
     assert.throws(() => projects.removeWorkspace(b.id, false)); checked++;
     const empty = projects.createWorkspace('空');
@@ -90,13 +94,12 @@ async function run() {
     equal(projects.load().workspaces[1].name, '私用');
     projects.reorder(['/repo', '/repo', '/unknown']);
     equal(projects.load().projects.map((p) => p.path), ['/second', '/repo']);
-    projects.update('/repo', { hidden: true });
-    equal(projects.load().projects.map((p) => [p.path, p.hidden]), [['/second', false], ['/repo', true]]);
-    projects.update('/repo', { hidden: false });
-    const saved = { files: [], order: ['t:1'], active: 't:1', layout: null, workspaces: { [b.id]: { active: 't:1', layout: null } }, fileWorkspaces: {}, sidebarHidden: true, fontDelta: -2, sidebarWidth: 320 };
+    projects.update('/repo', { draft: true });
+    equal(projects.load().projects.map((p) => [p.path, p.draft]), [['/second', true], ['/repo', true]]);
+    const saved = { files: [], order: ['t:1'], active: 't:1', layout: null, workspaces: { [b.id]: { active: 't:1', layout: null } }, fileWorkspaces: {}, sidebarHidden: true, fontDelta: -2, sidebarWidth: 320, sidebarView: 'all' };
     tabs.save(saved);
     equal(tabs.load(), saved);
-    const sessions = [{ id: 1, cwd: '/tmp', workspace: b.id, favorite: true }];
+    const sessions = [{ id: 1, cwd: '/tmp', workspace: b.id, draftOut: true }];
     snapshot.save(sessions);
     equal(snapshot.load(), sessions);
     fs.writeFileSync(path.join(dir, 'tabs.json'), JSON.stringify({ files: [], order: ['t:1'], active: 't:1' }));

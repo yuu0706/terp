@@ -169,7 +169,7 @@ async function writeSnapshot() {
         id: e.id,
         cwd: known.get(e.id)?.cwd || e.cwd,
         workspace: e.meta.workspace || null,
-        favorite: Boolean(e.meta.favorite),
+        draftOut: Boolean(e.meta.draftOut),
         customName: e.meta.customName || null,
         workPath: e.meta.workPath || null,
         claudeSession: sessions.get(e.pid) || null,
@@ -396,7 +396,7 @@ ipcMain.on('pty:kill', (_e, id) => {
 // 名前などは常駐のプロセスに預け、開き直したときに戻す
 ipcMain.on('pty:meta', (_e, id, meta) => {
   client.send({ t: 'meta', id, meta });
-  if (['customName', 'workspace', 'favorite', 'workPath'].some((key) => key in meta)) saveSnapshot();
+  if (['customName', 'workspace', 'draftOut', 'workPath'].some((key) => key in meta)) saveSnapshot();
 });
 // 自己診断で、Mac の再起動に当たる状態（常駐のプロセスごと消える）を作る
 ipcMain.handle('pty:shutdown-host', async () => {
