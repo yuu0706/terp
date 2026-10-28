@@ -2068,6 +2068,29 @@ async function runDraftTest({ win, js, check, outDir }) {
     check('git でない場所のターミナルはその他のターミナルのまま', await js(`document.getElementById('loose').contains(window.__terp.sessions.get(${tp}).li)`));
     await sleep(300);
     check('足したリポジトリが projects.json に残る', stored().some((p) => p.path === d && p.draft === true));
+
+    // その他のターミナルを、右クリックのメニューか、作業の行に落としてリポジトリにまとめる
+    await js(`window.__terp.sessions.get(${tp}).li.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 60, clientY: 300 }))`);
+    await sleep(200);
+    await js(`[...document.querySelectorAll('.menu:popover-open .menu__item')].find((el) => el.textContent.startsWith('リポジトリにまとめる')).click()`);
+    await sleep(200);
+    await js(`[...document.querySelectorAll('.menu:popover-open .menu__item')].find((el) => el.textContent === 'repo-c').click()`);
+    check('右クリックの「リポジトリにまとめる」で選んだリポジトリの下へ移る', await wait(`${section(c)}?.contains(window.__terp.sessions.get(${tp}).li) && window.__terp.sessions.get(${tp}).workPath === ${JSON.stringify(c)}`));
+    check('まとめても、シェルの作業場所は変えない', await js(`window.__terp.sessions.get(${tp}).cwd === ${JSON.stringify(plainDir)}`));
+    await js(`(() => {
+      const dt = new DataTransfer();
+      dt.setData('text/x-terp-tab', 't:${tp}');
+      const work = ${section(a)}.querySelector('.work');
+      work.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: dt }));
+      work.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: dt }));
+    })()`);
+    check('ターミナルの行を作業の行に落としてもまとめられる', await wait(`${section(a)}?.contains(window.__terp.sessions.get(${tp}).li) && window.__terp.sessions.get(${tp}).workPath === ${JSON.stringify(a)}`));
+    await js(`window.__terp.sessions.get(${tp}).li.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 60, clientY: 300 }))`);
+    await sleep(200);
+    await js(`[...document.querySelectorAll('.menu:popover-open .menu__item')].find((el) => el.textContent.startsWith('リポジトリにまとめる')).click()`);
+    await sleep(200);
+    await js(`[...document.querySelectorAll('.menu:popover-open .menu__item')].find((el) => el.textContent.startsWith('まとめを外す')).click()`);
+    check('「まとめを外す」で作業場所の置き場所に戻る', await wait(`document.getElementById('loose').contains(window.__terp.sessions.get(${tp}).li) && !window.__terp.sessions.get(${tp}).workPath`));
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

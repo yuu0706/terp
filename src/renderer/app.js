@@ -10,7 +10,7 @@ import { initFilesPanel, refreshFiles, setFilesVisible, markActiveFile } from '.
 import { renderFileView, applyEditorConfig } from './fileview.js';
 import { createPathLinkProvider } from './pathlinks.js';
 import { initSettings, openSettings, applySettingsConfig, agentIcon } from './settings.js';
-import { createPane, paneList, splitPane, closePane, replacePane, setPaneLocked, openPaneFor, restoreLayout, createPaneView, makeTabDraggable, paneTitle, MAX_PANES } from './panes.js';
+import { createPane, paneList, splitPane, closePane, replacePane, setPaneLocked, openPaneFor, restoreLayout, createPaneView, makeTabDraggable, paneTitle, MAX_PANES, TAB_DRAG_TYPE } from './panes.js';
 import { terminalPaths, pathDropTarget, pathsFromTransfer } from './droppaths.js';
 import { withAlpha, favoriteText } from './favcolor.js';
 import { STAR_ICON, draftLabel, createMenu, createWorkspaceUI } from './workspaceui.js';
@@ -809,6 +809,52 @@ async function removeSessionFromDraft(s) {
   await setSessionDraft(s.id, false);
 }
 
+// ターミナルをリポジトリ（の作業）にまとめる。シェルの作業場所は変えず、terp の一覧の上での置き場所（workPath）だけを変える。
+// 開き直しても残るよう常駐のプロセスと控えに預ける。workPath が null ならまとめを外し、作業場所で決まる置き場所に戻す
+async function gatherSession(id, workPath) {
+  const s = sessions.get(id);
+  if (!s) return;
+  s.workPath = workPath;
+  terp.setMeta(id, { workPath });
+  const repo = workPath ? workOfPath(workPath, s.workspace)?.repo : null;
+  if (repo && !repoDrafted(repo)) await setProjectDraft(repo, true);
+  renderAll();
+  refreshGit(true);
+  refreshFiles(false);
+}
+
+// 右クリックのメニューの「リポジトリにまとめる」。同じワークスペースの作業を並べる
+function gatherMenu(s) {
+  const current = workOf(s)?.path || null;
+  const children = projects.filter((p) => p.workspace === s.workspace).flatMap((p) => p.worktrees.map((w) => ({
+    label: w.main ? p.name : `${p.name} / ${workLabel(w)}`, checked: w.path === current, run: () => gatherSession(s.id, w.path),
+  })));
+  if (s.workPath) children.push({ separator: true }, { label: 'まとめを外す（作業場所に戻す）', run: () => gatherSession(s.id, null) });
+  return { label: 'リポジトリにまとめる', children: children.length ? children : [{ label: '登録したリポジトリがありません', reason: '「すべて」でリポジトリを追加する', run: () => {} }] };
+}
+
+// ターミナルの行を作業の行やリポジトリのカードに落としても、まとめられる
+function acceptTerminalDrop(el, workPath) {
+  el.addEventListener('dragover', (e) => {
+    if (!e.dataTransfer?.types.includes(TAB_DRAG_TYPE) || draggingProject) return;
+    e.preventDefault();
+    e.stopPropagation();
+    e.dataTransfer.dropEffect = 'move';
+    el.dataset.dropTerminal = 'true';
+  });
+  el.addEventListener('dragleave', (e) => {
+    if (!el.contains(e.relatedTarget)) delete el.dataset.dropTerminal;
+  });
+  el.addEventListener('drop', (e) => {
+    delete el.dataset.dropTerminal;
+    const key = e.dataTransfer?.getData(TAB_DRAG_TYPE) || '';
+    if (!key.startsWith('t:')) return;
+    e.preventDefault();
+    e.stopPropagation();
+    gatherSession(Number(key.slice(2)), workPath());
+  });
+}
+
 function repoDrafted(repo) {
   return projects.some((p) => p.path === repo && p.draft);
 }
@@ -917,6 +963,8 @@ function renderProjects() {
       continue;
     }
     section.querySelector('[data-action="new-work"]').addEventListener('click', () => openWorkDialog(p.path));
+    // カードの見出しに落としたら、リポジトリの本体の作業にまとめる
+    acceptTerminalDrop(headEl, () => (p.worktrees.find((w) => w.main) || p.worktrees[0])?.path || p.path);
     // 見出しを押すと、作業とターミナルを畳む・開く
     if (collapsedRepos.has(p.path)) section.dataset.collapsed = 'true';
     headEl.addEventListener('click', (e) => {
@@ -969,6 +1017,7 @@ function renderProjects() {
         if (summary.sessions.length) activate(summary.sessions[0].id);
       });
       work.querySelector('[data-action="remove"]')?.addEventListener('click', () => openRemoveDialog({ ...w, repo: p.path }));
+      acceptTerminalDrop(work, () => w.path);
       section.appendChild(work);
     }
     projectsEl.appendChild(section);
@@ -1829,6 +1878,7 @@ function createItem(s) {
     e.preventDefault();
     rowMenu.open([
       { label: draftLabel(true), run: () => removeSessionFromDraft(s) },
+      gatherMenu(s),
       { label: '名前を変更', run: () => startRename(s) },
       moveWorkspaceMenu(s.workspace, (id) => moveSessionWorkspace(s.id, id)),
     ], { x: e.clientX, y: e.clientY, target: li });
