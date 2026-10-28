@@ -3555,13 +3555,13 @@ exports.run = (win) => {
     await send(id2, 'codex --version\r');
     check('2枚目で codex が動く', await waitFor(id2, /codex-cli/));
 
-    // ⌘T 相当: 表示中（2枚目）と同じ作業場所で開く
+    // ⌘T 相当: 表示中（2枚目）の場所に関わらず、ホームで開く
     win.webContents.send('menu', 'new');
     await sleep(1500);
     const id3 = await js('window.__terp.activeId');
     await send(id3, 'pwd; cd /tmp\r');
     await sleep(2500);
-    check('新規は表示中と同じ作業場所', (await buffer(id3)).includes('claude-tools/terp'));
+    check('新しいターミナルは表示中の場所に関わらずホームで開く', id3 !== id2 && (await buffer(id3)).split('\n').some((line) => line.trim() === os.homedir()), (await buffer(id3)).split('\n').slice(-4).join(' | '));
     check('cd が一覧に反映される', (await sidebar()).includes('/tmp'), (await sidebar()).replace(/\n/g, ' | '));
 
     // 裏で出力があったものは未読になる
