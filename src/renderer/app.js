@@ -17,6 +17,17 @@ import { STAR_ICON, draftLabel, createMenu, createWorkspaceUI } from './workspac
 import { createOverview } from './overview.js';
 import { createTermSearch } from './termsearch.js';
 
+// xterm.js の WebGL の描画は blendFunc(SRC_ALPHA, ONE_MINUS_SRC_ALPHA) で重ねるため、透明な面に描いた画素の透明度が
+// a×a になる。窓を透かすと薄い文字（\e[2m）や文字の縁が後ろの色で白く抜け、明るいテーマで文字が読みにくくなった
+// （2026-10-28 利用者の指摘）。色は同じ式のまま、透明度だけは足し合わせる式にする
+{
+  const blendFunc = WebGL2RenderingContext.prototype.blendFunc;
+  WebGL2RenderingContext.prototype.blendFunc = function (src, dst) {
+    if (src === this.SRC_ALPHA && dst === this.ONE_MINUS_SRC_ALPHA) return this.blendFuncSeparate(src, dst, this.ONE, dst);
+    return blendFunc.call(this, src, dst);
+  };
+}
+
 const terp = window.terp;
 // 枠の外でも Finder のファイルで窓が遷移しないよう、既定の動作を止める。
 for (const type of ['dragover', 'drop']) document.addEventListener(type, (event) => {
@@ -101,8 +112,11 @@ let config = await terp.getConfig();
 let focusForTest = null;
 
 // 背景は奥の面（body の --surface-term）1枚で塗る。端末側でも塗ると、透過のときに2枚重なって濃くなる
+// 端末の面は枠の側で塗るため、xterm には透明な背景を渡す。色はテーマの背景のまま透明度だけ 0 にする。
+// 最小のコントラストは xterm がこの色を背景として計算する。黒の透明を渡すと、明るいテーマで
+// 濃い文字が黒地に合わせて薄められ、読みにくくなった（2026-10-28 利用者の指摘）
 function terminalTheme(c) {
-  return { ...c.terminal, background: 'rgba(0, 0, 0, 0)' };
+  return { ...c.terminal, background: withAlpha(c.terminal.background, 0) };
 }
 
 function bufferText(id, { visible = false } = {}) {

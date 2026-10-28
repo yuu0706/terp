@@ -3341,6 +3341,40 @@ async function runThemeTest({ win, js, send, check, outDir }) {
   const custom = await js('window.__terp.config.chrome.accent');
   check('強調色だけ上書きできる', custom === '#ff69b4', custom);
 
+  // 明るいテーマでは、最小のコントラストが明るい背景を基準に効くこと。黒の透明を渡すと、濃い文字が薄められていた
+  const { CONFIG_DIR } = require('./config');
+  fs.mkdirSync(path.join(CONFIG_DIR, 'themes'), { recursive: true });
+  const lightPalette = ['#383a42', '#e45649', '#50a14f', '#c18401', '#0184bc', '#a626a4', '#0997b3', '#fafafa',
+    '#a0a1a7', '#e45649', '#50a14f', '#c18401', '#0184bc', '#a626a4', '#0997b3', '#ffffff'];
+  fs.writeFileSync(path.join(CONFIG_DIR, 'themes', 'Selftest Light'), [...lightPalette.map((c, i) => `palette = ${i}=${c}`),
+    'background = #fafafa', 'foreground = #383a42', 'cursor-color = #526fff', 'cursor-text = #fafafa',
+    'selection-background = #e5e5e6', 'selection-foreground = #383a42'].join('\n') + '\n');
+  await writeConfig({ theme: 'Selftest Light', backgroundOpacity: 0.75, minimumContrast: 3 });
+  const lightBg = await js(`(() => {
+    const t = window.__terp.sessions.get(${id}).term;
+    return { option: t.options.theme.background, rgba: (t._core._themeService.colors.background.rgba >>> 0).toString(16).padStart(8, '0') };
+  })()`);
+  check('明るいテーマで端末の背景の基準がテーマの背景色になる', lightBg.option === 'rgba(250, 250, 250, 0)' && lightBg.rgba === 'fafafa00', JSON.stringify(lightBg));
+  await send(await js('window.__terp.activeId'), "printf '\\e[90mgray \\e[2mdim\\e[0m plain\\n'\r");
+  await sleep(800);
+  await shoot('5-light-contrast');
+  // 薄い文字の色を画素で測る。WebGL の重ね方のままだと、薄い灰色は後ろの白に抜けていた（期待はおよそ #cdcdd0）
+  const lightId = await js('window.__terp.activeId');
+  await send(lightId, "clear; printf '\\e[2;90m\u2588\u2588\u2588\u2588\u2588\u2588\\e[0m\\n'\r");
+  await sleep(1000);
+  const cell = await js(`(() => {
+    const s = window.__terp.sessions.get(${lightId});
+    const screen = s.el.querySelector('.xterm-screen').getBoundingClientRect();
+    const dim = s.term._core._renderService.dimensions.css.cell;
+    return { x: Math.round(screen.left + dim.width * 2.5), y: Math.round(screen.top + dim.height * 0.5), webgl: Boolean(s.webgl) };
+  })()`);
+  const image = await win.webContents.capturePage();
+  const scale = image.getSize().width / win.getContentBounds().width;
+  const bitmap = image.toBitmap();
+  const at = (Math.round(cell.y * scale) * image.getSize().width + Math.round(cell.x * scale)) * 4;
+  const pixel = [bitmap[at + 2], bitmap[at + 1], bitmap[at]];
+  check('明るいテーマで薄い灰色の文字が白く抜けない', cell.webgl && pixel.every((v) => v >= 180 && v <= 225), `${JSON.stringify(cell)} rgb(${pixel.join(', ')})`);
+
   await writeConfig('{ "theme": ');
   const brokenMsg = await js(`document.getElementById('config-error').hidden ? '' : document.getElementById('config-error').textContent`);
   check('JSON の誤りを画面に出す', brokenMsg.includes('config.json'), brokenMsg);
