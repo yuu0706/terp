@@ -349,6 +349,8 @@ ipcMain.handle('files:root', safe((_e, dir) => files.root(dir)));
 ipcMain.handle('files:list', safe((_e, dir) => files.list(dir)));
 ipcMain.handle('files:read', safe((_e, file) => files.read(file)));
 ipcMain.handle('files:stat', safe((_e, file) => files.stat(file)));
+// 場所を含む git のリポジトリの一番上（worktree なら元のリポジトリ）。git でなければ null
+ipcMain.handle('repos:root', safe((_e, dir) => gitops.repoRoot(dir).catch(() => null)));
 ipcMain.handle('repos:find-new', safe((_e, dir, since) => newrepos.findNewRepos(dir, since)));
 ipcMain.handle('files:write', safe((_e, { file, text, mtime, force }) => files.write(file, text, mtime, force)));
 // 既定のアプリで開く・Finder で見せる

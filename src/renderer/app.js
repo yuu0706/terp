@@ -171,8 +171,9 @@ function displayName(s) {
   if (isAgent(s) && s.agentTitle) return s.agentTitle;
   const w = workOf(s);
   // 作業の行に名前が出ているため、ターミナルの行で同じ名前を繰り返さない
-  if (w) return isAgent(s) ? s.program : 'シェル';
-  if (!s.cwd || s.cwd === terp.home) return '~';
+  // シェルは「ターミナル」と出す。~ だけでは何の行か分かりにくかった（2026-10-28 利用者の指示）
+  if (w) return isAgent(s) ? s.program : 'ターミナル';
+  if (!s.cwd || s.cwd === terp.home) return 'ターミナル';
   return s.cwd.split('/').pop();
 }
 
@@ -328,10 +329,28 @@ function activeCwd() {
   return s?.workspace === activeWorkspace ? s.workPath || s.cwd : null;
 }
 
+const TERMINAL_ROW_ICON = '<svg class="icon agent-icon session__terminal-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 17l6-6-6-6M12 19h8" /></svg>';
+
+// 動いているエージェントの登録（アイコンを出すため）。登録に無いプログラムやシェルなら null
+function runningAgent(s) {
+  if (!isAgent(s)) return null;
+  return agentRegistry.find((a) => a.command === s.program) || null;
+}
+
 function renderItem(s, index = visibleKeys().indexOf(termKey(s.id))) {
   const li = s.li;
   const state = stateOf(s);
   renderStatus(li, s, state);
+  // 名前の前に、動いているエージェントのアイコンを出す。エージェントでなければターミナルのアイコン。変わったときだけ描き直す
+  const agent = runningAgent(s);
+  const iconEl = li.querySelector('.session__agent');
+  const kind = agent?.command || 'terminal';
+  if (iconEl.dataset.command !== kind) {
+    iconEl.dataset.command = kind;
+    iconEl.innerHTML = agent ? agentIcon(agent) : TERMINAL_ROW_ICON;
+    iconEl.title = agent?.label || 'ターミナル';
+    li.dataset.agentIcon = kind;
+  }
   li.setAttribute('aria-current', String(activeKey === termKey(s.id)));
   li.title = [s.title, shortPath(s.cwd)].filter(Boolean).join('\n');
   const nameEl = li.querySelector('.session__name');
@@ -342,7 +361,6 @@ function renderItem(s, index = visibleKeys().indexOf(termKey(s.id))) {
   li.querySelector('.session__sub').textContent = [program, placeLabel(s)].filter(Boolean).join(' · ');
   // 番号は上のタブに出ているものだけに付ける（⌘1〜⌘9 はタブの順）
   li.querySelector('.session__key').textContent = index >= 0 && index < 9 ? `⌘${index + 1}` : '';
-  li.querySelector('.session__bypass').hidden = !s.bypass;
 }
 
 function renderAll() {
@@ -657,7 +675,7 @@ const overview = createOverview({
         return { id: s.id, workspace: s.workspace, name: displayName(s),
           requirement: isAgent(s) ? s.agentTitle : '', customName: s.customName || '',
           open: s.workspace === activeWorkspace && openKeys.has(termKey(s.id)),
-          program: isAgent(s) ? s.program : 'シェル', place: work ? placeInWork(s, work) : shortPath(s.cwd),
+          program: isAgent(s) ? s.program : 'ターミナル', place: work ? placeInWork(s, work) : shortPath(s.cwd),
           repoPath: repo?.path || null, repoName: repo?.name || '', branch: work?.branch || '',
           cwd: s.cwd, workPath: work?.path || '', current: s.workspace === activeWorkspace && terminalVisible(s) };
       }),
@@ -1756,10 +1774,10 @@ function createItem(s) {
   makeTabDraggable(li, termKey(s.id));
   li.innerHTML = `
     <span class="session__dot" role="img"></span>
+    <span class="session__agent"></span>
     <span class="session__name"></span>
     <span class="session__key"></span>
     <span class="session__line2">
-      <span class="session__bypass" title="ファイルの読み書きやコマンドの実行の確認を飛ばして起動しています" hidden>確認なし</span>
       <span class="session__sub"></span>
     </span>
     <button class="session__draft icon-btn draft-star" type="button" data-action="draft" aria-pressed="true" aria-label="${draftLabel(true)}" title="${draftLabel(true)}（上のタブと ⌘M には残る）">${STAR_ICON}</button>
@@ -2741,7 +2759,27 @@ const offeredRepos = new Set();
 const repoOffers = [];
 let shownOffer = null;
 
+// その他のターミナルのうち、git のリポジトリの中で開いているものは、そのリポジトリを一覧に足してドラフトに入れる
+// （2026-10-28 利用者の指示）。ほかのワークスペースに登録済みのリポジトリは動かさない。
+// 調べた場所は覚え、同じ場所を何度も git に聞かない
+const checkedLoosePlaces = new Set();
+async function adoptLooseRepos() {
+  let added = false;
+  for (const s of [...sessions.values()].filter((item) => !workOf(item) && (item.workPath || item.cwd) && !item.draftOut)) {
+    const place = s.workPath || s.cwd;
+    const key = `${s.workspace}\n${place}`;
+    if (checkedLoosePlaces.has(key)) continue;
+    checkedLoosePlaces.add(key);
+    const res = await terp.repoRoot(place);
+    if (!res.ok || !res.value || !sessions.has(s.id) || projects.some((p) => p.path === res.value)) continue;
+    const addRes = await terp.addProject(res.value, s.workspace);
+    if (addRes.ok) added = true;
+  }
+  if (added) await refreshProjects();
+}
+
 async function scanNewRepos() {
+  await adoptLooseRepos();
   const loose = [...sessions.values()].filter((s) => !workOf(s) && s.cwd);
   for (const cwd of new Set(loose.map((s) => s.cwd))) {
     const here = loose.filter((s) => s.cwd === cwd);

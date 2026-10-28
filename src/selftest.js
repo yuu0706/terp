@@ -855,7 +855,7 @@ async function runFilesTest({ win, js, check, outDir }) {
   await sleep(2000);
   const t2 = await tabs();
   // 起動したときの ~ のターミナルも作業の外のため、同じまとまりに並ぶ
-  check('作業の外のターミナルではタブが切り替わる', !t2.includes('a.js') && t2.every((n) => n === '~'), t2.join(', '));
+  check('作業の外のターミナルではタブが切り替わる', !t2.includes('a.js') && t2.every((n) => n === 'ターミナル'), t2.join(', '));
   // 作業の行を押すと、その作業のタブに戻る
   await js(`document.querySelector('.work[data-path=${JSON.stringify(repo)}] .work__row').click()`);
   await sleep(800);
@@ -1518,8 +1518,8 @@ async function runAgentsTest({ win, js, check, outDir }) {
   const text = await js(`window.__terp.bufferText(${id})`);
   check('空白を含むパスでも引数付きで起動する', /fake-agent-started --hello/.test(text), text.split('\n').slice(-1)[0]);
   check('普段は確認を飛ばす引数を付けて起動する', /fake-agent-started --hello --skip-checks/.test(text));
-  const tag = await js(`!window.__terp.sessions.get(${id}).li.querySelector('.session__bypass').hidden`);
-  check('確認なしのターミナルに印が付く', tag === true);
+  const tag = await js(`({ bypass: window.__terp.sessions.get(${id}).bypass, badge: Boolean(window.__terp.sessions.get(${id}).li.querySelector('.session__bypass')) })`);
+  check('確認なしで起動したことを覚え、一覧の行には「確認なし」を出さない', tag.bypass === true && !tag.badge, JSON.stringify(tag));
   const claudeTitle = await js(`document.querySelector('#agents [data-command="claude"]').title`);
   check('claude は Orca と同じ引数で確認を飛ばす', claudeTitle.includes('--dangerously-skip-permissions'), claudeTitle);
 
@@ -1529,8 +1529,8 @@ async function runAgentsTest({ win, js, check, outDir }) {
   const altId = await js('window.__terp.activeId');
   const altText = await js(`window.__terp.bufferText(${altId})`);
   check('⌥ を押しながらだと確認ありで起動する', /fake-agent-started --hello$/m.test(altText) && !/--skip-checks\n?$/.test(altText.trim()), altText.split('\n').slice(-1)[0]);
-  const altTag = await js(`window.__terp.sessions.get(${altId}).li.querySelector('.session__bypass').hidden`);
-  check('確認ありのターミナルには印が付かない', altTag === true);
+  const altTag = await js(`window.__terp.sessions.get(${altId}).bypass`);
+  check('確認ありで起動したものは確認なしとして覚えない', altTag === false);
   const newCwd = await js(`window.__terp.sessions.get(${id}).cwd`);
   check('表示中と同じ作業場所で開く', newCwd === cwd, newCwd);
 
@@ -2033,6 +2033,22 @@ async function runDraftTest({ win, js, check, outDir }) {
     check('案内のボタンで「すべて」を開く', await wait(`window.__terp.sidebarView === 'all' && document.getElementById('draft-empty').hidden`));
     await js(`window.__terp.setSidebarView('draft')`);
     for (const id of ids) await js(`window.__terp.setSessionDraft(${id}, true)`);
+
+    // その他のターミナルが git のリポジトリの中にあれば、そのリポジトリを足してドラフトに入れる
+    const d = path.join(dir, 'repo-d');
+    fs.mkdirSync(path.join(d, 'src'), { recursive: true });
+    execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: d });
+    const plainDir = path.join(dir, 'plain');
+    fs.mkdirSync(plainDir);
+    const td = await js(`window.__terp.open(${JSON.stringify(path.join(d, 'src'))})`);
+    const tp = await js(`window.__terp.open(${JSON.stringify(plainDir)})`);
+    await wait(`window.__terp.sessions.get(${td}).cwd === ${JSON.stringify(path.join(d, 'src'))} && window.__terp.sessions.get(${tp}).cwd === ${JSON.stringify(plainDir)}`);
+    await js('window.__terp.scanNewRepos()');
+    check('その他のターミナルの場所が git のリポジトリなら、一覧に足してドラフトに入れる', await wait(`Boolean(${section(d)}) && ${section(d)}.contains(window.__terp.sessions.get(${td}).li)
+      && window.__terp.projects.find((p) => p.path === ${JSON.stringify(d)})?.draft === true`));
+    check('git でない場所のターミナルはその他のターミナルのまま', await js(`document.getElementById('loose').contains(window.__terp.sessions.get(${tp}).li)`));
+    await sleep(300);
+    check('足したリポジトリが projects.json に残る', stored().some((p) => p.path === d && p.draft === true));
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -2940,6 +2956,14 @@ async function runOverviewTest({ win, js, check, outDir }) {
     const quote = (value) => "'" + value.replace(/'/g, "'\\''") + "'";
     await js(`window.terp.write(${c}, ${JSON.stringify(`${quote(fake)} ${quote(script)}\r`)})`);
     await wait(() => js(`window.__terp.sessions.get(${c}).program === 'claude' && window.__terp.bufferText(${c}).includes('overview-agent-ready')`));
+    check('エージェントの行にはそのアイコン、シェルの行にはターミナルのアイコンを出す', await js(`(() => {
+      const li = window.__terp.sessions.get(${c}).li, shell = window.__terp.sessions.get(${a}).li;
+      const icon = li.querySelector('.session__agent .agent-icon');
+      const name = li.querySelector('.session__name').getBoundingClientRect(), mark = icon?.getBoundingClientRect();
+      return li.dataset.agentIcon === 'claude' && Boolean(icon) && mark.right <= name.left + parseFloat(getComputedStyle(li.querySelector('.session__name')).paddingLeft) + 1 && Math.abs((mark.top + mark.bottom) / 2 - (name.top + name.bottom) / 2) <= 4
+        && li.getBoundingClientRect().height < 60
+        && shell.dataset.agentIcon === 'terminal' && Boolean(shell.querySelector('.session__agent .session__terminal-icon'));
+    })()`));
     await js(`window.__terp.switchWorkspace(${JSON.stringify(first)}); window.__terp.activate(${a})`);
     check('メニューに ⌘M が割り当てられている', item.accelerator === 'CmdOrCtrl+M');
     check('一覧のボタンに ⌘M が見える', await js('document.getElementById("overview-open").textContent.includes("⌘M")'));
@@ -3568,12 +3592,15 @@ exports.run = (win) => {
     const doneState = await stateOf(id2);
     check('応答が終わったら通知の印が付く', doneState === 'notify', doneState);
     // 作業場所とプログラム名は 1.5 秒ごとに拾うため、抜けたのが伝わるまで待つ
+    // git のリポジトリの中は一覧に足されて作業の下に入るため、名前は「ターミナル」になる（作業の行に名前が出る）
     let shellName = '';
-    for (let t = 0; t < 40 && shellName !== 'terp'; t++) {
+    let expected = 'terp';
+    for (let t = 0; t < 40 && shellName !== expected; t++) {
       await sleep(250);
       shellName = await nameOf(id2);
+      expected = (await js(`Boolean(window.__terp.workOf(${id2}))`)) ? 'ターミナル' : 'terp';
     }
-    check('claude を抜けたらフォルダ名に戻る', shellName === 'terp', shellName);
+    check('claude を抜けたらフォルダ名（作業の下ならターミナル）に戻る', shellName === expected, `${shellName} / ${expected}`);
 
     // ⌘W 相当で3枚目を閉じる
     await js(`window.__terp.activate(${id3})`);
