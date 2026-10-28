@@ -1071,7 +1071,9 @@ require('readline').createInterface({ input: process.stdin }).on('line', (comman
   check('左右の枠がそれぞれの名前を出す', await name(first) === longTitle && await name(second) === '右の端末');
   check('分割中の操作中の帯の線を強調色に揃える', await js(`(() => {
     const p = document.querySelector('.pane[data-active="true"]');
-    return getComputedStyle(p.querySelector('.pane__title')).borderBottomColor === getComputedStyle(p).outlineColor;
+    const other = document.querySelector('.pane:not([data-active="true"])');
+    return getComputedStyle(p.querySelector('.pane__title')).borderBottomColor === getComputedStyle(p).borderTopColor
+      && getComputedStyle(p).borderTopColor !== getComputedStyle(other).borderTopColor;
   })()`));
   check('× は帯の中に収まり文字と重ならず押せる', await js(`[...document.querySelectorAll('#panes .pane__title')].every((h) => {
     const b = h.querySelector('.pane__close'), r = b.getBoundingClientRect(), t = h.getBoundingClientRect();

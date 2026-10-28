@@ -807,7 +807,7 @@ button.subagent:hover,
   min-width: 0;
   height: 100%;
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   gap: 2px;
   overflow-x: auto;
   scrollbar-width: none;
@@ -827,8 +827,7 @@ button.subagent:hover,
   height: 32px;
   padding: 0 var(--space-1) 0 var(--space-3);
   border: 1px solid transparent;
-  border-bottom: 0;
-  border-radius: var(--radius) var(--radius) 0 0;
+  border-radius: var(--radius);
   color: var(--color-text-muted);
   font-size: var(--text-md);
   cursor: pointer;
@@ -1381,12 +1380,15 @@ button.subagent:hover,
 .diff {
   position: absolute;
   top: var(--titlebar-height);
-  left: 0;
-  right: 0;
-  bottom: 0;
+  left: var(--space-2);
+  right: var(--space-2);
+  bottom: var(--space-2);
   z-index: 2;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
   background: var(--color-term-bg);
 }
 
@@ -1761,7 +1763,7 @@ button.subagent:hover,
   display: block;
   max-width: calc(100% - 32px);
   margin: 16px;
-  background: repeating-conic-gradient(#8882 0 25%, transparent 0 50%) 0 0 / 16px 16px;
+  background: repeating-conic-gradient(#8882 0 25%, transparent 0 50%) 0 0 / 16px 16px;  border-radius: var(--radius);
 }
 
 .fileview__notice {
@@ -2334,10 +2336,11 @@ button.subagent:hover,
 }
 
 
-/* 枠の中の重なりはここに閉じ込め、差分（2）とメニュー（10）の下に置く。 */
+/* 枠の中の重なりはここに閉じ込め、差分（2）とメニュー（10）の下に置く。
+   枠は角の丸いカードにし、窓の端との間を空ける（2026-10-28 利用者の指示。最背面の面のほかは丸角にする） */
 .panes {
   position: absolute;
-  inset: var(--titlebar-height) 0 0;
+  inset: var(--titlebar-height) var(--space-2) var(--space-2);
   overflow: auto;
   isolation: isolate;
   z-index: 0;
@@ -2362,16 +2365,14 @@ button.subagent:hover,
   min-width: 0;
   min-height: 0;
   overflow: hidden;
+  box-sizing: border-box;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
 }
 
-.panes[data-split='true'] .pane[data-active='true'] {
-  outline: 1px solid var(--color-accent);
-  outline-offset: -1px;
-}
-
+.panes[data-split='true'] .pane[data-active='true'],
 .pane[data-drop-paths] {
-  outline: 1px solid var(--color-accent);
-  outline-offset: -1px;
+  border-color: var(--color-accent);
 }
 
 .pane__title {
@@ -2448,16 +2449,22 @@ button.subagent:hover,
 
 .pane__close[hidden] { display: none; }
 
+/* 枠の間は隙間にし、つかんでいる間だけ真ん中に強調色の線を出す */
 .pane-gutter {
   flex: 0 0 calc(var(--space-1) + 1px);
-  background: var(--color-border);
   cursor: col-resize;
   touch-action: none;
 }
 
 .pane-split[data-dir='column'] > .pane-gutter { cursor: row-resize; }
 .pane-gutter:hover,
-.panes[data-resizing] .pane-gutter { background: var(--color-accent); }
+.panes[data-resizing] .pane-gutter {
+  background: linear-gradient(to right, transparent calc(50% - 1px), var(--color-accent) calc(50% - 1px), var(--color-accent) calc(50% + 1px), transparent calc(50% + 1px));
+}
+.pane-split[data-dir='column'] > .pane-gutter:hover,
+.panes[data-resizing] .pane-split[data-dir='column'] > .pane-gutter {
+  background: linear-gradient(to bottom, transparent calc(50% - 1px), var(--color-accent) calc(50% - 1px), var(--color-accent) calc(50% + 1px), transparent calc(50% + 1px));
+}
 .panes[data-resizing] { user-select: none; }
 .panes[data-resizing] .pane__body { pointer-events: none; }
 
@@ -2469,6 +2476,7 @@ button.subagent:hover,
   pointer-events: none;
   background: color-mix(in srgb, var(--color-accent) 25%, transparent);
   border: 1px solid var(--color-accent);
+  border-radius: calc(var(--radius) - 1px);
 }
 
 .pane[data-drop='left']::after { right: 50%; }
@@ -2885,7 +2893,12 @@ button.subagent:hover,
   grid-column: 2;
   grid-row: 2 / -1;
   min-height: 0;
-  border-left: 1px solid var(--color-border);
+  /* 履歴の列も角の丸いカードにする（2026-10-28 利用者の指示） */
+  margin: var(--space-3) var(--space-3) var(--space-3) 0;
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--color-bg-hover) 40%, transparent);
 }
 
 .overview__history > h2 {
