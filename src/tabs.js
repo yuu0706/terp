@@ -28,17 +28,19 @@ function load() {
       fontDelta: Number.isInteger(data?.fontDelta) ? data.fontDelta : 0,
       sidebarWidth: Number.isInteger(data?.sidebarWidth) ? data.sidebarWidth : null,
       sidebarView: ['draft', 'all'].includes(data?.sidebarView) ? data.sidebarView : 'draft',
+      collapsedRepos: Array.isArray(data?.collapsedRepos) ? data.collapsedRepos.filter((repo) => typeof repo === 'string') : [],
     };
   } catch {
     return { files: [], order: [], active: null, layout: null };
   }
 }
 
-function save({ files, order, active, layout, workspaces, fileWorkspaces, sidebarHidden, fontDelta, sidebarWidth, sidebarView }) {
+function save({ files, order, active, layout, workspaces, fileWorkspaces, sidebarHidden, fontDelta, sidebarWidth, sidebarView, collapsedRepos }) {
   fs.mkdirSync(CONFIG_DIR, { recursive: true });
   const body = JSON.stringify({ files, order, active, layout, workspaces, fileWorkspaces, sidebarHidden: sidebarHidden === true,
     fontDelta: Number.isInteger(fontDelta) ? fontDelta : 0, sidebarWidth: Number.isInteger(sidebarWidth) ? sidebarWidth : null,
-    sidebarView: sidebarView === 'all' ? 'all' : 'draft' }, null, 2) + '\n';
+    sidebarView: sidebarView === 'all' ? 'all' : 'draft',
+    collapsedRepos: Array.isArray(collapsedRepos) ? collapsedRepos.filter((repo) => typeof repo === 'string') : [] }, null, 2) + '\n';
   // 書きかけのファイルを読まれないよう、別名で書いてから置き換える
   const tmp = `${TABS_PATH}.tmp`;
   fs.writeFileSync(tmp, body);

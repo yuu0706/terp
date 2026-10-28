@@ -730,6 +730,8 @@ function moveSessionWorkspace(id, workspace) {
 // どの作業にも入らないターミナルを出す。ターミナルを開けるのはドラフトだけ。
 // 「すべて」は追加したリポジトリの控えで、名前だけを並べ、押すとドラフトに出し入れする（2026-10-27 利用者の指示）
 let sidebarView = 'draft';
+// ドラフトで畳んだリポジトリ。tabs.json の collapsedRepos に残す
+const collapsedRepos = new Set();
 
 async function setProjectDraft(repo, draft) {
   projectRevision++;
@@ -782,8 +784,8 @@ function setSidebarView(view, { save = true, animate = true } = {}) {
   renderProjects();
   if (animate && before !== view && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
     // すべては左、ドラフトは右の面として、滑らせて入れ替える
-    const from = view === 'draft' ? 24 : -24;
-    document.getElementById('tree').animate([{ transform: `translateX(${from}px)`, opacity: 0 }, { transform: 'none', opacity: 1 }], { duration: 140, easing: 'ease-out' });
+    const from = view === 'draft' ? 16 : -16;
+    document.getElementById('tree').animate([{ transform: `translateX(${from}px)`, opacity: 0 }, { transform: 'none', opacity: 1 }], { duration: 90, easing: 'ease-out' });
   }
   if (save) saveTabs();
 }
@@ -808,25 +810,29 @@ function renderProjects() {
   projectsEl.innerHTML = '';
   shownSignature = shownProjectsSignature();
   const all = sidebarView === 'all';
-  for (const p of currentProjects().filter(projectShown)) {
+  // 「すべて」は名前の辞書順（2026-10-28 利用者の指示）。並べ替えはドラフトの並びにだけ効く
+  const shownProjects = currentProjects().filter(projectShown);
+  if (all) shownProjects.sort((x, y) => x.name.localeCompare(y.name, 'ja', { numeric: true, sensitivity: 'base' }));
+  for (const p of shownProjects) {
     const section = document.createElement('section');
     section.className = 'project';
     section.dataset.path = p.path;
     const name = escapeHtml(p.name);
     const head = all
-      ? `<div class="project__head" data-draft="${p.draft}" role="button" aria-pressed="${p.draft}" title="${escapeHtml(shortPath(p.path))}&#10;押すとドラフトに${p.draft ? 'から外す' : '入れる'}。ドラッグか ⌥↑ / ⌥↓ で並べ替え" draggable="true" tabindex="0">
+      ? `<div class="project__head" data-draft="${p.draft}" role="button" aria-pressed="${p.draft}" title="${escapeHtml(shortPath(p.path))}&#10;押すとドラフト${p.draft ? 'から外す' : 'に入れる'}" tabindex="0">
           <span class="project__name">${name}</span>
           <button class="icon-btn draft-star" type="button" data-action="draft" aria-pressed="${p.draft}" aria-label="${name} を${draftLabel(p.draft)}" title="${draftLabel(p.draft)}">${STAR_ICON}</button>
           <button class="icon-btn icon-btn--hover" type="button" data-action="forget" aria-label="${name} を一覧から外す" title="一覧から外す（ファイルは消さない）">${CLOSE_ICON}</button>
         </div>`
-      : `<div class="project__head" title="${escapeHtml(shortPath(p.path))}&#10;ドラッグか ⌥↑ / ⌥↓ で並べ替え" draggable="true" tabindex="0">
+      : `<div class="project__head" aria-expanded="${!collapsedRepos.has(p.path)}" title="${escapeHtml(shortPath(p.path))}&#10;押すと畳む・開く。ドラッグか ⌥↑ / ⌥↓ で並べ替え" draggable="true" tabindex="0">
           <span class="project__name">${name}</span>
+          <button class="work__status" type="button" hidden><span class="session__dot"></span><span class="work__status-count"></span></button>
           <button class="icon-btn icon-btn--hover draft-star" type="button" data-action="draft" aria-pressed="true" aria-label="${name} を${draftLabel(true)}" title="${draftLabel(true)}（「すべて」に残る）">${STAR_ICON}</button>
           <button class="icon-btn" type="button" data-action="new-work" aria-label="${name} に新しい作業を作る" title="新しい作業">${PLUS_ICON}</button>
         </div>`;
     section.innerHTML = head;
     const headEl = section.querySelector('.project__head');
-    setupProjectDrag(section, p.path);
+    if (!all) setupProjectDrag(section, p.path);
     section.querySelector('[data-action="draft"]').addEventListener('click', (e) => {
       e.stopPropagation();
       setProjectDraft(p.path, !p.draft);
@@ -857,6 +863,21 @@ function renderProjects() {
       continue;
     }
     section.querySelector('[data-action="new-work"]').addEventListener('click', () => openWorkDialog(p.path));
+    // 見出しを押すと、作業とターミナルを畳む・開く
+    if (collapsedRepos.has(p.path)) section.dataset.collapsed = 'true';
+    headEl.addEventListener('click', (e) => {
+      if (e.target.closest('button')) return;
+      toggleRepoCollapsed(p.path);
+    });
+    headEl.addEventListener('keydown', (e) => {
+      if (e.target !== headEl || e.altKey || (e.key !== 'Enter' && e.key !== ' ')) return;
+      e.preventDefault();
+      toggleRepoCollapsed(p.path);
+    });
+    headEl.querySelector('.work__status').addEventListener('click', () => {
+      const summary = urgentAgentSessions(sessionsInListOrder().filter((s) => workOf(s)?.repo === p.path));
+      if (summary.sessions.length) activate(summary.sessions[0].id);
+    });
     if (p.error) {
       const err = document.createElement('p');
       err.className = 'project__error';
@@ -991,8 +1012,32 @@ function urgentAgentSessions(list, now = Date.now()) {
   return { state: 'idle', sessions: [] };
 }
 
+function toggleRepoCollapsed(repo) {
+  if (collapsedRepos.has(repo)) collapsedRepos.delete(repo);
+  else collapsedRepos.add(repo);
+  const section = projectsEl.querySelector(`.project[data-path="${CSS.escape(repo)}"]`);
+  if (section) {
+    section.dataset.collapsed = String(collapsedRepos.has(repo));
+    section.querySelector('.project__head').setAttribute('aria-expanded', String(!collapsedRepos.has(repo)));
+  }
+  renderWorkStatuses();
+  saveTabs();
+}
+
 function renderWorkStatuses() {
   const list = sessionsInListOrder();
+  // 畳んだリポジトリは、中の許可待ちなどを見出しにまとめて出す
+  for (const head of projectsEl.querySelectorAll('.project > .project__head')) {
+    const button = head.querySelector('.work__status');
+    if (!button) continue;
+    const repo = head.parentElement.dataset.path;
+    const summary = head.parentElement.dataset.collapsed === 'true' ? urgentAgentSessions(list.filter((s) => workOf(s)?.repo === repo)) : { sessions: [] };
+    button.hidden = summary.sessions.length === 0;
+    if (button.hidden) continue;
+    renderStatus(button, summary.sessions[0], summary.state);
+    button.querySelector('.work__status-count').textContent = summary.sessions.length > 1 ? summary.sessions.length : '';
+    button.setAttribute('aria-label', `${STATE_LABELS[summary.state]} ${summary.sessions.length}件の先頭を表示`);
+  }
   for (const work of projectsEl.querySelectorAll('.work')) {
     const summary = urgentAgentSessions(list.filter((s) => workOf(s)?.path === work.dataset.path));
     const button = work.querySelector('.work__status');
@@ -2024,7 +2069,7 @@ function savedTabState() {
   }));
   const active = persistent(activeKey) ? activeKey : recent.find((key) => persistent(key) && workspaceOfKey(key) === activeWorkspace) || null;
   return { files: [...fileViews.keys()], order, active, layout: restoreLayout(layout, order), workspaces: states,
-    fileWorkspaces: Object.fromEntries([...fileViews].map(([path, view]) => [path, view.workspace])), sidebarHidden, fontDelta, sidebarWidth, sidebarView };
+    fileWorkspaces: Object.fromEntries([...fileViews].map(([path, view]) => [path, view.workspace])), sidebarHidden, fontDelta, sidebarWidth, sidebarView, collapsedRepos: [...collapsedRepos] };
 }
 
 function saveTabs() {
@@ -2044,6 +2089,7 @@ async function restoreTabs() {
     if (data.sidebarHidden) setSidebarHidden(true, { save: false });
     if (data.fontDelta) setFontDelta(data.fontDelta, { save: false });
     if (data.sidebarWidth) setSidebarWidth(data.sidebarWidth, { save: false });
+    for (const repo of data.collapsedRepos || []) collapsedRepos.add(repo);
     if (data.sidebarView) setSidebarView(data.sidebarView, { save: false, animate: false });
     const legacyWorkspace = workspaces.find((w) => w.id === 'default')?.id || workspaces[0].id;
     for (const path of data.files) {
@@ -2989,7 +3035,7 @@ document.querySelector('[data-show-view="all"]').addEventListener('click', () =>
 // 指を左へ滑らせると右の面（ドラフト）、右へ滑らせると左の面（すべて）。滑らせている間は一覧を指に合わせて動かし、
 // SWIPE_DISTANCE を超えたら切り替える。指を離した後も慣性の横スクロールが届くため、切り替えた後は勢いが落ちていく間を無視し、
 // 勢いが強まったときか向きが変わったときに新しい滑らせとして受ける（待たずに切り替え直せるように）
-const SWIPE_DISTANCE = 50;
+const SWIPE_DISTANCE = 30;
 const tree = document.getElementById('tree');
 const freshSwipe = () => ({ dx: 0, done: false, sign: 0, last: 0, timer: null });
 let swipe = freshSwipe();

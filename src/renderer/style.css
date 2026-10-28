@@ -274,14 +274,34 @@ body[data-sidebar='hidden'] .topbar {
   display: none;
 }
 
-/* リポジトリの境目に、強調色（テーマの色）の線を引く（2026-10-23 利用者の指示） */
-.project + .project,
-#projects:not(:empty) ~ .project:not([hidden]),
-#projects:not(:empty) ~ .draft-out:not([hidden]),
-.project:not([hidden]) ~ .draft-out:not([hidden]) {
-  margin-top: var(--space-2);
-  padding-top: var(--space-2);
-  border-top: 1px solid var(--color-accent);
+/* リポジトリごと（その他のターミナルも）を角の丸い枠のカードで囲み、カードの間の隙間で分ける（2026-10-28 利用者の指示。
+   以前の強調色の境目の線はやめた）。「すべて」のカードは見出しだけで、ドラフト済みは見出しの背景をぼかしにする */
+#tree .project:not([hidden]) {
+  margin: 0 0 var(--space-2);
+  padding: var(--space-1);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--color-bg-hover) 55%, transparent);
+}
+
+/* ドラフトの見出しは押すと畳む・開く。載せたら明るくして、押せることを示す（印は付けない） */
+#sidebar[data-view='draft'] #projects .project__head {
+  border-radius: calc(var(--radius) - 2px);
+  cursor: pointer;
+}
+
+#sidebar[data-view='draft'] #projects .project__head:hover {
+  background: color-mix(in srgb, var(--color-text) 10%, transparent);
+  color: var(--color-text);
+}
+
+#sidebar[data-view='draft'] .project[data-collapsed='true'] > :not(.project__head) {
+  display: none;
+}
+
+#sidebar[data-view='all'] #tree .project:not([hidden]) {
+  padding: 0;
+  overflow: hidden;
 }
 
 .project__head {
@@ -3213,6 +3233,16 @@ button.subagent:hover,
 
 #sidebar[data-view='all'] .project__head[data-draft='true'] .icon-btn {
   color: var(--draft-text);
+}
+
+/* 「すべて」では、載せたときだけ出す × の場所を空けたままにし、星の位置が動かないようにする */
+#sidebar[data-view='all'] .project__head .icon-btn--hover {
+  display: grid;
+  visibility: hidden;
+}
+
+#sidebar[data-view='all'] .project__head:is(:hover, :focus-within) .icon-btn--hover {
+  visibility: visible;
 }
 
 #sidebar[data-view='all'] .project__head:not([data-draft='true']) .draft-star {

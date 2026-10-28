@@ -1911,7 +1911,34 @@ async function runDraftTest({ win, js, check, outDir }) {
     check('外したリポジトリのターミナルは「外したターミナル」の1行にまとまる', await wait(`!document.getElementById('draft-out').hidden && document.querySelector('.draft-out__count').textContent === '1'`));
     await sleep(300);
     check('ドラフトから外したことが projects.json に残る', stored().find((p) => p.path === b).draft === false);
+    const cards = await js(`[...document.querySelectorAll('#projects .project, #loose:not([hidden])')].map((el) => {
+      const style = getComputedStyle(el);
+      return { radius: parseFloat(style.borderTopLeftRadius), border: style.borderTopWidth, bottom: el.getBoundingClientRect().bottom, top: el.getBoundingClientRect().top };
+    })`);
+    check('ドラフトではリポジトリごとに角の丸いカードで分ける', cards.length >= 2 && cards.every((c) => c.radius > 0 && c.border === '1px')
+      && cards.slice(1).every((c, i) => c.top - cards[i].bottom >= 4), JSON.stringify(cards));
     fs.writeFileSync(path.join(outDir, 'draft-view.png'), (await win.webContents.capturePage()).toPNG());
+    // 畳む: 見出しに載せると明るくなり、押すと作業とターミナルを畳む。畳んだことは tabs.json に残す
+    const headA = `${section(a)}.querySelector('.project__head')`;
+    const point = await js(`(() => { const r = ${headA}.querySelector('.project__name').getBoundingClientRect(); return { x: Math.round(r.left + 10), y: Math.round(r.top + r.height / 2) }; })()`);
+    const plainBg = await js(`getComputedStyle(${headA}).backgroundColor`);
+    const cdp = win.webContents.debugger;
+    if (!cdp.isAttached()) cdp.attach('1.3');
+    await cdp.sendCommand('Input.dispatchMouseEvent', { type: 'mouseMoved', x: point.x, y: point.y });
+    await sleep(200);
+    const hoverBg = await js(`getComputedStyle(${headA}).backgroundColor`);
+    check('ドラフトの見出しに載せると明るくなる', hoverBg !== plainBg && (await js(`getComputedStyle(${headA}).cursor`)) === 'pointer', `${plainBg} → ${hoverBg}`);
+    for (const type of ['mousePressed', 'mouseReleased']) await cdp.sendCommand('Input.dispatchMouseEvent', { type, x: point.x, y: point.y, button: 'left', buttons: type === 'mousePressed' ? 1 : 0, clickCount: 1 });
+    await cdp.sendCommand('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 5, y: 900 });
+    cdp.detach();
+    check('見出しを押すと作業とターミナルを畳む', await wait(`${section(a)}.dataset.collapsed === 'true' && ${headA}.getAttribute('aria-expanded') === 'false'
+      && !${section(a)}.querySelector('.work').getClientRects().length && !window.__terp.sessions.get(${ta}).li.getClientRects().length`));
+    await sleep(400);
+    check('畳んだことが tabs.json に残る', JSON.parse(fs.readFileSync(path.join(CONFIG_DIR, 'tabs.json'), 'utf8')).collapsedRepos.includes(a));
+    await js(`window.__terp.renderAll()`);
+    check('描き直しても畳んだまま', await js(`${section(a)}.dataset.collapsed === 'true'`));
+    await js(`(() => { const head = ${headA}; head.focus(); head.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); })()`);
+    check('Enter でも開く', await wait(`${section(a)}.dataset.collapsed === 'false' && window.__terp.sessions.get(${ta}).li.getClientRects().length > 0`));
 
     await js(`document.querySelector('.sidebar-views__tab[data-view="all"]').click()`);
     await wait(`window.__terp.sidebarView === 'all'`);
@@ -1923,8 +1950,24 @@ async function runDraftTest({ win, js, check, outDir }) {
       newTerminal: getComputedStyle(document.getElementById('new-terminal')).display, newWork: getComputedStyle(document.getElementById('new-work')).display,
       drafted: getComputedStyle(${section(a)}.querySelector('.project__head')).backgroundImage,
       plain: getComputedStyle(${section(b)}.querySelector('.project__head')).backgroundImage })`);
+    // ドラフトの並びを c, a, b に変えても、「すべて」は名前の順に並ぶ
+    await js(`window.terp.reorderProjects(${JSON.stringify([c, a, b])})`);
+    await js('window.__terp.refreshProjects()');
+    const sorted = await js(`[...document.querySelectorAll('#projects .project')].map((el) => el.dataset.path)`);
+    check('「すべて」はドラフトの並びに関わらず名前の辞書順', sorted.join() === repos.join() && JSON.parse(fs.readFileSync(path.join(CONFIG_DIR, 'projects.json'), 'utf8')).projects[0].path === c, JSON.stringify(sorted));
+    check('「すべて」ではドラッグで並べ替えない', await js(`${section(a)}.querySelector('.project__head').draggable === false`));
     check('「すべて」には追加したリポジトリを全部、名前だけで並べる', all.repos.join() === repos.join() && all.sessions === 0 && all.works === 0 && !all.out, JSON.stringify(all));
     check('「すべて」にはターミナルを開くボタンを出さない', all.newTerminal === 'none' && all.newWork === 'none', JSON.stringify(all));
+    const allCards = await js(`(() => {
+      const box = (el) => el.getBoundingClientRect();
+      const heads = [...document.querySelectorAll('#projects .project')].map((el) => ({ radius: parseFloat(getComputedStyle(el).borderTopLeftRadius), border: getComputedStyle(el).borderTopWidth, top: box(el).top, bottom: box(el).bottom }));
+      const star = ${section(b)}.querySelector('.draft-star');
+      const before = box(star).left;
+      ${section(b)}.querySelector('.project__head').dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+      return { heads, before, forgetWidth: box(${section(b)}.querySelector('[data-action="forget"]')).width };
+    })()`);
+    check('「すべて」もドラフトかどうかに関わらずカードで分け、区切り線は引かない', allCards.heads.every((c) => c.radius > 0 && c.border === '1px') && allCards.heads.slice(1).every((c, i) => c.top - allCards.heads[i].bottom >= 4), JSON.stringify(allCards));
+    check('「すべて」の × は隠れていても場所を取り、星の位置が動かない', allCards.forgetWidth > 0, JSON.stringify(allCards));
     check('「すべて」ではドラフト済みのリポジトリを強調色のぼかしの背景にする', all.draft.join() === 'true,false,true' && all.drafted.startsWith('linear-gradient') && all.plain === 'none', JSON.stringify(all));
     await sleep(400);
     fs.writeFileSync(path.join(outDir, 'all-view.png'), (await win.webContents.capturePage()).toPNG());
@@ -1937,11 +1980,11 @@ async function runDraftTest({ win, js, check, outDir }) {
 
     const swipe = (dx) => js(`document.getElementById('tree').dispatchEvent(new WheelEvent('wheel', { deltaX: ${dx}, deltaY: 0, cancelable: true }))`);
     await sleep(300);
-    await swipe(30);
-    check('滑らせている間は一覧が指に合わせて動く', await js(`document.getElementById('tree').style.transform === 'translateX(-15px)' && window.__terp.sidebarView === 'all'`));
-    await swipe(30);
+    await swipe(20);
+    check('滑らせている間は一覧が指に合わせて動く', await js(`document.getElementById('tree').style.transform === 'translateX(-10px)' && window.__terp.sidebarView === 'all'`));
+    await swipe(14);
     check('2本指で左へ滑らせると「ドラフト」に切り替わる', await wait(`window.__terp.sidebarView === 'draft' && !document.getElementById('tree').style.transform`));
-    for (const dx of [30, 20, 12, 6]) await swipe(dx);
+    for (const dx of [12, 8, 4, 2]) await swipe(dx);
     check('指を離した後の慣性では切り替えない', await js(`window.__terp.sidebarView === 'draft'`));
     for (const dx of [-20, -40]) await swipe(dx);
     check('待たずに逆へ滑らせると、すぐに切り替え直す', await wait(`window.__terp.sidebarView === 'all'`));
@@ -1949,7 +1992,7 @@ async function runDraftTest({ win, js, check, outDir }) {
     for (const dx of [8, 20, 40]) await swipe(dx);
     check('慣性の途中でも、逆へ滑らせれば新しい滑らせとして受ける', await wait(`window.__terp.sidebarView === 'draft'`));
     await sleep(300);
-    for (const dx of [-20, -20]) await swipe(dx);
+    for (const dx of [-12, -12]) await swipe(dx);
     await sleep(300);
     check('切り替えに届かずに離すと元の位置へ戻る', await js(`window.__terp.sidebarView === 'draft' && !document.getElementById('tree').style.transform`));
     await swipe(-90);
