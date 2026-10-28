@@ -2482,6 +2482,8 @@ function togglePanel(tab) {
 
 function handleKey(s, event) {
   if (event.type !== 'keydown') return true;
+  // 日本語入力の変換中のキーは入力方式に任せる（⇧Enter・⌥← などを横取りすると、未確定の文字があるままシェルに送ってしまう）
+  if (event.isComposing || event.keyCode === 229) return true;
   // claude の改行。VS Code の /terminal-setup と同じく ESC + CR を送る。
   // 既定の動きを止めないと続く keypress を xterm.js が Enter として扱い、CR も送って実行してしまう
   if (event.key === 'Enter' && event.shiftKey && !event.metaKey && !event.ctrlKey && !event.altKey) {

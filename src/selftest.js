@@ -2568,6 +2568,11 @@ async function runKeysTest({ win, js, check }) {
   await type('R');
   check('⌃← は xterm の既定のまま（単語の移動に変えない）', !(await line()).endsWith('echo Rq'), await line());
   await type('\x15');
+  await type('echo q');
+  await key('ArrowLeft', { altKey: true, isComposing: true });
+  await type('R');
+  check('日本語入力の変換中の ⌥← は横取りしない', (await line()).endsWith('echo qR'), await line());
+  await type('\x15');
   // Shift+Enter は本物の押下（keydown の後に keypress も来る）で確かめる。
   // keypress まで端末に渡ると CR も送ってしまい、改行ではなく実行になる
   await js(`window.__terp.sessions.get(${id}).term.focus()`);
