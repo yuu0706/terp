@@ -2007,6 +2007,13 @@ async function runDraftTest({ win, js, check, outDir }) {
     check('切り替えに届かずに離すと元の位置へ戻る', await js(`window.__terp.sidebarView === 'draft' && !document.getElementById('tree').style.transform`));
     await swipe(-90);
     check('右へ滑らせると「すべて」に切り替わる', await wait(`window.__terp.sidebarView === 'all'`));
+    // 慣性の勢いは揺らぐため、強まっても端の合図で一覧をずらさない（数秒ずれたままになっていた）
+    const shifted = [];
+    for (const dx of [-2, -8, -3, -12, -5, -2]) {
+      await swipe(dx);
+      shifted.push(await js(`document.getElementById('tree').style.transform`));
+    }
+    check('切り替えた後の慣性で一覧が横にずれない', shifted.every((t) => !t) && await js(`window.__terp.sidebarView === 'all'`), JSON.stringify(shifted));
     await sleep(300);
     await js(`(() => { const tab = document.querySelector('.sidebar-views__tab[aria-selected="true"]'); tab.focus(); tab.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })); })()`);
     check('切り替えは ← → でもできる', await wait(`window.__terp.sidebarView === 'draft'`));

@@ -3199,11 +3199,13 @@ viewTabs.addEventListener('keydown', (e) => {
 });
 document.querySelector('[data-show-view="all"]').addEventListener('click', () => setSidebarView('all'));
 // 指を左へ滑らせると右の面（ドラフト）、右へ滑らせると左の面（すべて）。滑らせている間は一覧を指に合わせて動かし、
-// SWIPE_DISTANCE を超えたら切り替える。指を離した後も慣性の横スクロールが届くため、切り替えた後は勢いが落ちていく間を無視し、
-// 勢いが強まったときか向きが変わったときに新しい滑らせとして受ける（待たずに切り替え直せるように）
+// SWIPE_DISTANCE を超えたら切り替える。指を離した後も慣性の横スクロールが届くため、切り替えた後は届かなくなるまで無視し、
+// 向きが変わったときだけ新しい滑らせとして受ける（待たずに切り替え直せるように）。
+// 同じ向きの勢いの強まりも新しい滑らせとして受けていたときは、慣性の揺らぎで端の合図が出て、一覧が数秒ずれたままになった
+// （2026-10-28 利用者の指摘）。そのため、その先に面が無い向きでは一覧を動かさない
 const SWIPE_DISTANCE = 30;
 const tree = document.getElementById('tree');
-const freshSwipe = () => ({ dx: 0, done: false, sign: 0, last: 0, timer: null });
+const freshSwipe = () => ({ dx: 0, done: false, sign: 0, timer: null });
 let swipe = freshSwipe();
 function settleSwipe() {
   if (!swipe.done && tree.style.transform) {
@@ -3215,22 +3217,19 @@ function settleSwipe() {
 tree.addEventListener('wheel', (e) => {
   if (Math.abs(e.deltaX) <= Math.abs(e.deltaY)) return;
   e.preventDefault();
-  const abs = Math.abs(e.deltaX);
   const sign = Math.sign(e.deltaX);
-  if (swipe.done && (sign !== swipe.sign || abs > swipe.last + 4)) {
+  if (swipe.done && sign !== swipe.sign) {
     clearTimeout(swipe.timer);
     swipe = freshSwipe();
   }
-  swipe.last = abs;
   clearTimeout(swipe.timer);
   swipe.timer = setTimeout(settleSwipe, 120);
   if (swipe.done) return;
   swipe.dx += e.deltaX;
   const target = swipe.dx > 0 ? 'draft' : 'all';
-  // その先に面が無い向きは、少しだけ動かして端であることを示す
   if (target === sidebarView) {
-    swipe.dx = Math.sign(swipe.dx) * Math.min(Math.abs(swipe.dx), 40);
-    tree.style.transform = `translateX(${-swipe.dx * 0.2}px)`;
+    swipe.dx = 0;
+    tree.style.transform = '';
     return;
   }
   if (Math.abs(swipe.dx) < SWIPE_DISTANCE) {
