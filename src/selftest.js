@@ -2463,6 +2463,74 @@ async function runMarkdownPreviewTest({ win, js, check, outDir }) {
   }
 }
 
+// TERP_SELFTEST_EDITREPO は、その他のターミナルのエージェントが git のリポジトリの中のファイルを編集したら、
+// 「リポジトリとして表示しますか？」と案内し、受けるとそのリポジトリの下へ移すことを確かめる。会話の記録は一時フォルダの偽物を使う
+async function runEditRepoTest({ win, js, check, outDir }) {
+  const { execFileSync } = require('child_process');
+  const agentreply = require('./agentreply');
+  const wait = async (code, tries = 80) => {
+    for (let i = 0; i < tries; i++) {
+      if (await js(code)) return true;
+      await sleep(100);
+    }
+    return false;
+  };
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'terp-editrepo-')));
+  const repo = path.join(dir, 'repo-e');
+  fs.mkdirSync(path.join(repo, 'src'), { recursive: true });
+  execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repo });
+  const plain = path.join(dir, 'plain');
+  fs.mkdirSync(plain);
+  const fakeDir = path.join(dir, 'fake');
+  fs.mkdirSync(path.join(fakeDir, 'projects', 'p'), { recursive: true });
+  const row = (name, input) => JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', name, input }] } });
+  fs.writeFileSync(path.join(fakeDir, 'projects', 'p', 'edit-session.jsonl'), [
+    row('Read', { file_path: path.join(plain, 'notes.txt') }),
+    row('Write', { file_path: path.join(plain, 'notes.txt') }),
+    row('Edit', { file_path: path.join(repo, 'src', 'x.js') }),
+  ].join('\n') + '\n');
+  const previousFake = process.env.TERP_REPLY_FAKE_DIR;
+  process.env.TERP_REPLY_FAKE_DIR = fakeDir;
+  agentreply.__test.setLookup(() => ({ kind: 'claude', sessionId: 'edit-session' }));
+  const section = `document.querySelector('.project[data-path=${JSON.stringify(JSON.stringify(repo)).slice(1, -1)}]')`;
+  try {
+    const codexPaths = agentreply.editedPaths([
+      { type: 'event_msg', payload: { type: 'patch_apply_begin', changes: { '/a/one.js': {}, '/a/two.js': {} } } },
+      { type: 'event_msg', payload: { type: 'patch_apply_begin', changes: { '/a/one.js': {} } } },
+    ], 'codex');
+    check('codex の記録からも編集したファイルを新しい順に拾う', JSON.stringify(codexPaths) === JSON.stringify(['/a/one.js', '/a/two.js']), JSON.stringify(codexPaths));
+    await sleep(800);
+    const id = await js(`window.__terp.open(${JSON.stringify(plain)})`);
+    await wait(`window.__terp.sessions.get(${id}).cwd === ${JSON.stringify(plain)}`);
+    await js(`window.__terp.offerEditedRepos({ only: [${id}] })`);
+    check('git のリポジトリの中のファイルを編集していたら案内を出す', await wait(`!document.getElementById('repo-toast').hidden && document.querySelector('.repo-toast__title').textContent === 'repo-e は git のリポジトリです'`),
+      await js(`document.querySelector('.repo-toast__title').textContent`));
+    check('案内の本文とボタン', await js(`document.querySelector('.repo-toast__body').textContent.includes('repo-e のファイルを編集しています。git のリポジトリとして一覧に表示しますか？')
+      && document.querySelector('#repo-toast [data-action="accept"]').textContent === 'リポジトリとして表示'`));
+    check('git でない場所の編集は案内しない', await js(`window.__terp.repoOffers.length === 0`));
+    check('案内は窓の中に見える位置に出る', await js(`(() => { const r = document.getElementById('repo-toast').getBoundingClientRect(); return r.width > 0 && r.height > 0 && r.right <= innerWidth && r.bottom <= innerHeight && r.top >= 0; })()`));
+    await sleep(400);
+    fs.writeFileSync(path.join(outDir, 'edit-repo-offer.png'), (await win.webContents.capturePage()).toPNG());
+    await js(`document.querySelector('#repo-toast [data-action="accept"]').click()`);
+    check('受けるとリポジトリを足し、ターミナルをその下へ移してドラフトに入れる', await wait(`Boolean(${section}) && ${section}.contains(window.__terp.sessions.get(${id}).li)
+      && window.__terp.sessions.get(${id}).workPath === ${JSON.stringify(repo)} && window.__terp.projects.find((p) => p.path === ${JSON.stringify(repo)})?.draft === true`));
+    check('ターミナルのシェルの場所は変えない', await js(`window.__terp.sessions.get(${id}).cwd === ${JSON.stringify(plain)}`));
+    const id2 = await js(`window.__terp.open(${JSON.stringify(plain)})`);
+    await wait(`window.__terp.sessions.get(${id2}).cwd === ${JSON.stringify(plain)}`);
+    await js(`window.__terp.offerEditedRepos({ only: [${id2}] })`);
+    await wait(`!document.getElementById('repo-toast').hidden`);
+    await js(`document.querySelector('#repo-toast [data-action="dismiss"]').click()`);
+    await js(`window.__terp.offerEditedRepos({ only: [${id2}] })`);
+    await sleep(500);
+    check('「今はしない」の後は、同じターミナルに同じリポジトリを聞き直さない', await js(`document.getElementById('repo-toast').hidden`));
+  } finally {
+    agentreply.__test.setLookup(null);
+    if (previousFake === undefined) delete process.env.TERP_REPLY_FAKE_DIR;
+    else process.env.TERP_REPLY_FAKE_DIR = previousFake;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 // TERP_SELFTEST_KEYS は、行の編集のキー（⌥←→・⌘←→・⌘⌫）と Shift+Enter が zsh で効くことを確かめる
 async function runKeysTest({ win, js, check }) {
   const id = await js('window.__terp.activeId');
@@ -3419,6 +3487,12 @@ exports.run = (win) => {
     }
     if (process.env.TERP_SELFTEST_MDPREVIEW) {
       await runMarkdownPreviewTest({ win, js, check, outDir });
+      fs.writeFileSync(path.join(outDir, 'result.txt'), log.join('\n') + '\n');
+      await finish();
+      return;
+    }
+    if (process.env.TERP_SELFTEST_EDITREPO) {
+      await runEditRepoTest({ win, js, check, outDir });
       fs.writeFileSync(path.join(outDir, 'result.txt'), log.join('\n') + '\n');
       await finish();
       return;

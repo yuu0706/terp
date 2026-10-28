@@ -2864,8 +2864,30 @@ async function adoptLooseRepos() {
   if (added) await refreshProjects();
 }
 
+// その他のターミナルで動くエージェントが git のリポジトリの中のファイルを編集していたら、
+// 「リポジトリとして表示しますか？」と案内する（2026-10-28 利用者の指示）。ターミナルとリポジトリの組ごとに1回だけ聞く。
+// 会話の記録を読むため、見回りの3回に1回（15秒ごと）にする
+const offeredEdits = new Set();
+let editScanTurn = 0;
+// only は自己診断用。エージェントかどうかを問わず、渡したターミナルだけを調べる
+async function offerEditedRepos({ only = null } = {}) {
+  const loose = [...sessions.values()].filter((s) => s.workspace === activeWorkspace && !workOf(s) && !s.draftOut && (only ? only.includes(s.id) : isAgent(s)));
+  for (const s of loose) {
+    const res = await terp.editedRepos(s.id);
+    if (!res.ok || !sessions.has(s.id) || workOf(s)) continue;
+    for (const root of res.value) {
+      const key = `${s.id}\n${root}`;
+      if (offeredEdits.has(key)) continue;
+      offeredEdits.add(key);
+      repoOffers.push({ sessionId: s.id, path: root, kind: 'edited' });
+    }
+  }
+  showNextOffer();
+}
+
 async function scanNewRepos() {
   await adoptLooseRepos();
+  if (editScanTurn++ % 3 === 0) await offerEditedRepos();
   const loose = [...sessions.values()].filter((s) => !workOf(s) && s.cwd);
   for (const cwd of new Set(loose.map((s) => s.cwd))) {
     const here = loose.filter((s) => s.cwd === cwd);
@@ -2895,12 +2917,19 @@ function renderOffer() {
   repoToast.hidden = !shownOffer;
   if (!shownOffer) return;
   const name = shownOffer.path.split('/').pop();
-  repoToast.querySelector('.repo-toast__title').textContent = `${name} が git の管理を始めました`;
   const s = sessions.get(shownOffer.sessionId);
   const keep = s && isAgent(s) ? `${s.program} の会話はそのまま続きます。` : '端末は閉じずにそのまま使えます。';
   const sample = shownOffer.sample ? '（試しの案内のため、押しても登録しません）' : '';
-  repoToast.querySelector('.repo-toast__body').textContent = `この端末（${s ? displayName(s) : '~'}）を ${name} にまとめますか？ ${keep}${sample}`;
-  repoToast.querySelector('[data-action="accept"]').textContent = `${name} にまとめる`;
+  const who = s ? displayName(s) : 'ターミナル';
+  if (shownOffer.kind === 'edited') {
+    repoToast.querySelector('.repo-toast__title').textContent = `${name} は git のリポジトリです`;
+    repoToast.querySelector('.repo-toast__body').textContent = `この端末（${who}）は ${name} のファイルを編集しています。git のリポジトリとして一覧に表示しますか？ ${keep}`;
+    repoToast.querySelector('[data-action="accept"]').textContent = 'リポジトリとして表示';
+  } else {
+    repoToast.querySelector('.repo-toast__title').textContent = `${name} が git の管理を始めました`;
+    repoToast.querySelector('.repo-toast__body').textContent = `この端末（${who}）を ${name} にまとめますか？ ${keep}${sample}`;
+    repoToast.querySelector('[data-action="accept"]').textContent = `${name} にまとめる`;
+  }
   repoToast.querySelector('.repo-toast__error').hidden = true;
 }
 
@@ -2926,12 +2955,9 @@ async function acceptOffer() {
     error.hidden = false;
     return;
   }
-  s.workPath = res.value || offer.path;
-  terp.setMeta(s.id, { workPath: s.workPath });
   closeOffer();
-  renderAll();
-  refreshGit(true);
-  refreshFiles(false);
+  // 一覧の上の置き場所だけをリポジトリに移す。ドラフトに無ければ入れる
+  await gatherSession(s.id, res.value || offer.path);
 }
 
 function closeOffer() {
@@ -3249,6 +3275,8 @@ window.__terp = {
   overview,
   addDroppedRepos,
   scanNewRepos,
+  offerEditedRepos,
+  get repoOffers() { return repoOffers.map((o) => ({ ...o })); },
   showSampleOffer,
   get repoOffer() { return shownOffer; },
   workspaceDeleteReason,

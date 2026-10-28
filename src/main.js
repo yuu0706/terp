@@ -349,6 +349,21 @@ ipcMain.handle('files:root', safe((_e, dir) => files.root(dir)));
 ipcMain.handle('files:list', safe((_e, dir) => files.list(dir)));
 ipcMain.handle('files:read', safe((_e, file) => files.read(file)));
 ipcMain.handle('files:stat', safe((_e, file) => files.stat(file)));
+// エージェントが編集したファイルを含む git のリポジトリ（元のリポジトリの場所）を、新しく編集した順に返す
+ipcMain.handle('agent:edited-repos', safe(async (_e, id) => {
+  const entry = known.get(id);
+  if (!entry || (!process.env.TERP_SELFTEST && !['claude', 'codex'].includes(entry.program))) return [];
+  const roots = [];
+  for (const file of await agentreply.editedFiles({ pid: entry.pid, program: entry.program })) {
+    const dir = path.dirname(file);
+    // 同じフォルダを何度も git に聞かない
+    if (!editedRepoRoots.has(dir)) editedRepoRoots.set(dir, await gitops.repoRoot(dir).catch(() => null));
+    const root = editedRepoRoots.get(dir);
+    if (root && !roots.includes(root)) roots.push(root);
+  }
+  return roots;
+}));
+const editedRepoRoots = new Map();
 // 場所を含む git のリポジトリの一番上（worktree なら元のリポジトリ）。git でなければ null
 ipcMain.handle('repos:root', safe((_e, dir) => gitops.repoRoot(dir).catch(() => null)));
 ipcMain.handle('repos:find-new', safe((_e, dir, since) => newrepos.findNewRepos(dir, since)));

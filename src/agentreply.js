@@ -62,33 +62,84 @@ function extract(rows, kind) {
   return { text: '', found: true };
 }
 
+// 会話の記録の末尾 limit バイトを行ごとの JSON にする。whole は先頭まで読めたか
+async function readTailRows(fd, size, limit) {
+  const start = Math.max(0, size - limit);
+  const buffer = Buffer.alloc(Math.min(size, limit) + (start > 0 ? 1 : 0));
+  const { bytesRead } = await fd.read(buffer, 0, buffer.length, start > 0 ? start - 1 : 0);
+  const text = buffer.subarray(start > 0 ? 1 : 0, bytesRead).toString('utf8');
+  const lines = text.split('\n');
+  if (start > 0 && buffer[0] !== 10) lines.shift();
+  const rows = [];
+  for (const line of lines) {
+    try {
+      const row = JSON.parse(line);
+      if (row && typeof row === 'object') rows.push(row);
+    } catch { /* 書きかけと壊れた行は次の読み直しに任せる */ }
+  }
+  return { rows, whole: start === 0 };
+}
+
+async function openRecord(file) {
+  if (process.env.TERP_SELFTEST && (!process.env.TERP_REPLY_FAKE_DIR || !await within(file, process.env.TERP_REPLY_FAKE_DIR))) return null;
+  const fd = await fs.promises.open(file, 'r');
+  const stat = await fd.stat();
+  if (stat.isFile()) return { fd, size: stat.size };
+  await fd.close().catch(() => {});
+  return null;
+}
+
 async function readReply(file, kind) {
-  let fd;
+  let record;
   try {
-    if (process.env.TERP_SELFTEST && (!process.env.TERP_REPLY_FAKE_DIR || !await within(file, process.env.TERP_REPLY_FAKE_DIR))) return '';
-    fd = await fs.promises.open(file, 'r');
-    const stat = await fd.stat();
-    if (!stat.isFile()) return '';
+    record = await openRecord(file);
+    if (!record) return '';
     for (const limit of [TAIL_BYTES, MAX_BYTES]) {
-      const start = Math.max(0, stat.size - limit);
-      const buffer = Buffer.alloc(Math.min(stat.size, limit) + (start > 0 ? 1 : 0));
-      const { bytesRead } = await fd.read(buffer, 0, buffer.length, start > 0 ? start - 1 : 0);
-      const text = buffer.subarray(start > 0 ? 1 : 0, bytesRead).toString('utf8');
-      const lines = text.split('\n');
-      if (start > 0 && buffer[0] !== 10) lines.shift();
-      const rows = [];
-      for (const line of lines) {
-        try {
-          const row = JSON.parse(line);
-          if (row && typeof row === 'object') rows.push(row);
-        } catch { /* 書きかけと壊れた行は次の読み直しに任せる */ }
-      }
+      const { rows, whole } = await readTailRows(record.fd, record.size, limit);
       const reply = extract(rows, kind);
-      if (reply.found || start === 0) return reply.text;
+      if (reply.found || whole) return reply.text;
     }
   } catch { /* 読めなくても通知の本文は従来のものを使う */ }
-  finally { await fd?.close().catch(() => {}); }
+  finally { await record?.fd.close().catch(() => {}); }
   return '';
+}
+
+// 会話の記録から、エージェントが編集したファイルの絶対パスを新しい順に重ねずに拾う。
+// claude は Edit・Write・MultiEdit・NotebookEdit の道具、codex は patch_apply_begin の changes の鍵
+const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
+function editedPaths(rows, kind) {
+  const paths = [];
+  for (const row of rows) {
+    if (kind === 'codex') {
+      const changes = row.type === 'event_msg' && row.payload?.type === 'patch_apply_begin' ? row.payload.changes : null;
+      if (changes && typeof changes === 'object') paths.push(...Object.keys(changes));
+      continue;
+    }
+    if (row.type !== 'assistant' || !Array.isArray(row.message?.content)) continue;
+    for (const block of row.message.content) {
+      if (block?.type !== 'tool_use' || !EDIT_TOOLS.has(block.name)) continue;
+      paths.push(block.input?.file_path || block.input?.notebook_path);
+    }
+  }
+  return [...new Set(paths.filter((p) => typeof p === 'string' && path.isAbsolute(p)).reverse())].slice(0, 20);
+}
+
+async function editedFiles(entry) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), WAIT_MS);
+  let record;
+  try {
+    const source = await lookup(entry, controller.signal);
+    if (!source?.file) return [];
+    record = await openRecord(source.file);
+    if (!record) return [];
+    return editedPaths((await readTailRows(record.fd, record.size, MAX_BYTES)).rows, source.kind);
+  } catch {
+    return [];
+  } finally {
+    clearTimeout(timer);
+    await record?.fd.close().catch(() => {});
+  }
 }
 
 async function within(file, root) {
@@ -286,7 +337,7 @@ async function find(entry, id) {
 }
 
 module.exports = {
-  formatReply, find, rememberSessions, codexFile,
+  formatReply, find, rememberSessions, codexFile, editedFiles, editedPaths,
   remember: (id, reply) => used.set(id, reply.signature),
   forget: (id) => used.delete(id),
   __test: process.env.TERP_SELFTEST ? {
