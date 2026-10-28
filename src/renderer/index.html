@@ -349,6 +349,18 @@
       </form>
     </dialog>
 
+    <dialog id="draft-dialog" class="dialog" aria-labelledby="draft-dialog-title">
+      <form method="dialog" class="dialog__body">
+        <h2 id="draft-dialog-title" class="dialog__title"></h2>
+        <p class="dialog__note" data-field="message"></p>
+        <label class="dialog__check"><input type="checkbox" name="skip" /> 今後は確認しない</label>
+        <p class="dialog__note">確認は、設定の「通知」でいつでも戻せます。</p>
+        <div class="dialog__actions">
+          <button class="btn" value="cancel">キャンセル</button>
+          <button class="btn btn--primary" value="accept" autofocus>外す</button>
+        </div>
+      </form>
+    </dialog>
     <dialog id="file-dialog" class="dialog" aria-labelledby="file-dialog-title">
       <form method="dialog" class="dialog__body">
         <h2 id="file-dialog-title" class="dialog__title"></h2>

@@ -773,6 +773,42 @@ async function setSessionDraft(id, inDraft) {
   renderAll();
 }
 
+// ドラフトから外す前に確かめる。「今後は確認しない」を選んで外すと、設定の confirmDraftRemove を切る
+// （2026-10-28 利用者の指示。設定の「通知」でいつでも戻せる）
+function confirmDraftRemove({ title, message }) {
+  if (config.confirmDraftRemove === false) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const dialog = document.getElementById('draft-dialog');
+    dialog.querySelector('.dialog__title').textContent = title;
+    dialog.querySelector('[data-field="message"]').textContent = message;
+    const skip = dialog.querySelector('[name="skip"]');
+    skip.checked = false;
+    dialog.returnValue = 'cancel';
+    dialog.addEventListener('close', () => {
+      const accepted = dialog.returnValue === 'accept';
+      if (accepted && skip.checked) terp.updateConfig({ confirmDraftRemove: false });
+      resolve(accepted);
+    }, { once: true });
+    dialog.showModal();
+  });
+}
+
+async function toggleProjectDraft(p) {
+  if (p.draft && !(await confirmDraftRemove({
+    title: `${p.name} をドラフトから外しますか？`,
+    message: '中のターミナルも一覧から外れます。シェルは止まりません。「すべて」からいつでも戻せます。',
+  }))) return;
+  await setProjectDraft(p.path, !p.draft);
+}
+
+async function removeSessionFromDraft(s) {
+  if (!(await confirmDraftRemove({
+    title: `${displayName(s)} をドラフトから外しますか？`,
+    message: 'シェルは止まらず、上のタブと ⌘M の一覧には残ります。一覧の下の「外したターミナル」から戻せます。',
+  }))) return;
+  await setSessionDraft(s.id, false);
+}
+
 function repoDrafted(repo) {
   return projects.some((p) => p.path === repo && p.draft);
 }
@@ -853,24 +889,24 @@ function renderProjects() {
     if (!all) setupProjectDrag(section, p.path);
     section.querySelector('[data-action="draft"]').addEventListener('click', (e) => {
       e.stopPropagation();
-      setProjectDraft(p.path, !p.draft);
+      toggleProjectDraft(p);
     });
     headEl.addEventListener('contextmenu', (e) => {
       e.preventDefault();
       rowMenu.open([
-        { label: draftLabel(p.draft), run: () => setProjectDraft(p.path, !p.draft) },
+        { label: draftLabel(p.draft), run: () => toggleProjectDraft(p) },
         moveWorkspaceMenu(p.workspace, (id) => moveProjectWorkspace(p.path, id)),
       ], { x: e.clientX, y: e.clientY, target: e.currentTarget });
     });
     if (all) {
       headEl.addEventListener('click', (e) => {
         if (e.target.closest('button')) return;
-        setProjectDraft(p.path, !p.draft);
+        toggleProjectDraft(p);
       });
       headEl.addEventListener('keydown', (e) => {
         if (e.target !== headEl || e.altKey || (e.key !== 'Enter' && e.key !== ' ')) return;
         e.preventDefault();
-        setProjectDraft(p.path, !p.draft);
+        toggleProjectDraft(p);
       });
       section.querySelector('[data-action="forget"]').addEventListener('click', async (e) => {
         e.stopPropagation();
@@ -1787,12 +1823,12 @@ function createItem(s) {
   li.addEventListener('click', () => activate(s.id));
   li.querySelector('[data-action="draft"]').addEventListener('click', (e) => {
     e.stopPropagation();
-    setSessionDraft(s.id, false);
+    removeSessionFromDraft(s);
   });
   li.addEventListener('contextmenu', (e) => {
     e.preventDefault();
     rowMenu.open([
-      { label: draftLabel(true), run: () => setSessionDraft(s.id, false) },
+      { label: draftLabel(true), run: () => removeSessionFromDraft(s) },
       { label: '名前を変更', run: () => startRename(s) },
       moveWorkspaceMenu(s.workspace, (id) => moveSessionWorkspace(s.id, id)),
     ], { x: e.clientX, y: e.clientY, target: li });

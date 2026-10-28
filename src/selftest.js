@@ -1906,8 +1906,18 @@ async function runDraftTest({ win, js, check, outDir }) {
     const tb = await js(`window.__terp.open(${JSON.stringify(b)})`);
     await wait(`window.__terp.workOf(${tb}) === ${JSON.stringify(b)}`);
     await js(`window.__terp.activate(${ta})`);
+    // 外す前に確かめる。キャンセルなら外さない。「今後は確認しない」で外すと、次からは聞かない
+    const dialogOpen = `document.getElementById('draft-dialog').open`;
     await js(`${section(b)}.querySelector('[data-action="draft"]').click()`);
+    check('ドラフトから外す前に確認を出す', await wait(`${dialogOpen} && document.getElementById('draft-dialog-title').textContent === 'repo-b をドラフトから外しますか？'`));
+    fs.writeFileSync(path.join(outDir, 'draft-confirm.png'), (await win.webContents.capturePage()).toPNG());
+    await js(`document.querySelector('#draft-dialog [value="cancel"]').click()`);
+    check('キャンセルすると外さない', await wait(`!${dialogOpen}`) && await js(`Boolean(${section(b)}) && window.__terp.projects.find((p) => p.path === ${JSON.stringify(b)}).draft`));
+    await js(`${section(b)}.querySelector('[data-action="draft"]').click()`);
+    await wait(dialogOpen);
+    await js(`document.querySelector('#draft-dialog [name="skip"]').click(); document.querySelector('#draft-dialog [value="accept"]').click()`);
     check('見出しの星でリポジトリをドラフトから外す', await wait(`!${section(b)} && !${shown(tb)}`));
+    check('「今後は確認しない」で外すと、設定の確認が切れる', await wait(`window.__terp.config.confirmDraftRemove === false`) && JSON.parse(fs.readFileSync(require('./config').CONFIG_PATH, 'utf8')).confirmDraftRemove === false);
     check('外したリポジトリのターミナルは「外したターミナル」の1行にまとまる', await wait(`!document.getElementById('draft-out').hidden && document.querySelector('.draft-out__count').textContent === '1'`));
     await sleep(300);
     check('ドラフトから外したことが projects.json に残る', stored().find((p) => p.path === b).draft === false);
@@ -2004,6 +2014,15 @@ async function runDraftTest({ win, js, check, outDir }) {
     await js(`window.__terp.activate(${ta})`);
     await js(`window.__terp.sessions.get(${ta}).li.querySelector('[data-action="draft"]').click()`);
     check('ターミナルの星でドラフトから外す（表示中でも消える）', await wait(`!${shown(ta)} && document.querySelector('.draft-out__count').textContent === '2'`));
+    check('確認を切った後は、確認を出さずに外す', !(await js(`document.getElementById('draft-dialog').open`)));
+    await js(`window.__terp.openSettings('notifications')`);
+    const toggle = `document.querySelector('.settings__field[data-key="confirmDraftRemove"] input')`;
+    check('設定の「通知」に、ドラフトから外すときの確認の切り替えがあり、切れている', await wait(`Boolean(${toggle}) && ${toggle}.checked === false`));
+    await js(`${toggle}.click()`);
+    check('設定で確認を戻せる', await wait(`window.__terp.config.confirmDraftRemove === true`));
+    await js(`window.terp.updateConfig({ confirmDraftRemove: false })`);
+    await wait(`window.__terp.config.confirmDraftRemove === false`);
+    await js(`document.getElementById('settings-close').click()`);
     check('外したターミナルも上のタブには残る', await js(`window.__terp.tabOrder.includes('t:${ta}')`));
     await js(`document.getElementById('overview-open').click()`);
     await sleep(500);

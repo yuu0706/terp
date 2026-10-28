@@ -42,6 +42,8 @@ const DEFAULT_CONFIG = {
   notifyWhenVisible: false,
   notifySound: true,
   notifyMessage: true,
+  // ドラフトから外すときに確認するか。確認の画面の「今後は確認しない」で切れる
+  confirmDraftRemove: true,
 };
 
 // テーマを指定しないときの色（Catppuccin Mocha 相当）
@@ -230,6 +232,7 @@ function loadConfig() {
     notifyWhenVisible: config.notifyWhenVisible === true,
     notifySound: config.notifySound === true,
     notifyMessage: config.notifyMessage === true,
+    confirmDraftRemove: config.confirmDraftRemove !== false,
   };
 }
 
