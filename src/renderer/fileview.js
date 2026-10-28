@@ -1,5 +1,15 @@
-// タブで開いたファイル。文字は編集し、画像などは閲覧する
+// タブで開いたファイル。文字は編集し、画像などは閲覧する。Markdown は編集とプレビューを切り替えられる
+import { isMarkdown, renderMarkdown, linkTarget } from './mdpreview.js';
+
 const terp = window.terp;
+// Markdown を最後にどちらで見たか。次に開く Markdown もそれで開く
+const PREVIEW_KEY = 'terp.markdownPreview';
+function previewPreferred() {
+  try { return localStorage.getItem(PREVIEW_KEY) === '1'; } catch { return false; }
+}
+function rememberPreview(on) {
+  try { localStorage.setItem(PREVIEW_KEY, on ? '1' : '0'); } catch { /* 覚えられなくても切り替えは効く */ }
+}
 let monacoPromise = null;
 let editorConfig = null;
 const views = new Set();
@@ -96,9 +106,9 @@ function notice(text, file) {
 }
 
 // 状態はこの戻り値に集め、タブ側は dirty と editor を参照する
-export function renderFileView(el, file, root, { confirm, onChange, isActive, onHistory }) {
+export function renderFileView(el, file, root, { confirm, onChange, isActive, onHistory, openFile }) {
   const rel = root && file.startsWith(root + '/') ? file.slice(root.length + 1) : file;
-  const view = { editor: null, dirty: false, mtime: null, ready: null, get saving() { return saving; }, reveal, reload, save, checkExternal, dispose };
+  const view = { editor: null, dirty: false, mtime: null, ready: null, get saving() { return saving; }, get previewing() { return previewing; }, setPreview, reveal, reload, save, checkExternal, dispose };
   views.add(view);
   let savedText = '';
   let disposed = false;
@@ -109,6 +119,9 @@ export function renderFileView(el, file, root, { confirm, onChange, isActive, on
   let observedMtime = null;
   let missing = false;
   let changeListener = null;
+  const markdown = isMarkdown(file);
+  let previewing = false;
+  let previewSerial = 0;
   const head = document.createElement('div');
   head.className = 'fileview__head';
   const title = document.createElement('span');
@@ -117,7 +130,13 @@ export function renderFileView(el, file, root, { confirm, onChange, isActive, on
   title.title = file;
   const meta = document.createElement('span');
   meta.className = 'fileview__meta';
-  head.append(title, meta,
+  const previewButton = markdown ? button('プレビュー', () => setPreview(!previewing)) : null;
+  if (previewButton) {
+    previewButton.classList.add('fileview__preview-toggle');
+    previewButton.setAttribute('aria-pressed', 'false');
+    previewButton.title = 'Markdown を整えた見た目で表示する（⇧⌘V）';
+  }
+  head.append(title, meta, ...(previewButton ? [previewButton] : []),
     button('再読み込み', () => reload()),
     button('Finder で表示', () => terp.revealFile(file)),
     button('既定のアプリで開く', () => terp.openExternalFile(file)),
@@ -131,9 +150,68 @@ export function renderFileView(el, file, root, { confirm, onChange, isActive, on
   body.tabIndex = 0;
   el.replaceChildren(head, banner, body);
   body.append(notice('読み込み中…', file));
+  // プレビューはエディタの隣に置き、切り替えで出し分ける。エディタは残すため、未保存の変更も消えない
+  const preview = document.createElement('article');
+  preview.className = 'fileview__preview markdown-body';
+  preview.tabIndex = 0;
+  preview.hidden = true;
+  preview.setAttribute('aria-label', `${rel} のプレビュー`);
+  if (markdown) {
+    preview.addEventListener('click', onPreviewClick);
+    // Monaco より先に受け取るため、捕捉の段階で拾う
+    el.addEventListener('keydown', (e) => {
+      if (e.key.toLowerCase() !== 'v' || !e.metaKey || !e.shiftKey || e.altKey || e.ctrlKey) return;
+      e.preventDefault();
+      e.stopPropagation();
+      setPreview(!previewing);
+    }, true);
+  }
+
+  async function renderPreview() {
+    if (!view.editor) return;
+    const serial = ++previewSerial;
+    const text = view.editor.getValue();
+    try {
+      const content = await renderMarkdown(text, file);
+      if (disposed || serial !== previewSerial) return;
+      preview.replaceChildren(content);
+    } catch (err) {
+      if (!disposed) preview.replaceChildren(notice(`プレビューを作れません: ${err.message}`, file));
+    }
+  }
+
+  async function setPreview(on, { remember = true } = {}) {
+    if (!markdown || !view.editor) return;
+    previewing = on;
+    if (remember) rememberPreview(on);
+    previewButton.setAttribute('aria-pressed', String(on));
+    previewButton.textContent = on ? '編集' : 'プレビュー';
+    previewButton.title = on ? 'エディタに戻す（⇧⌘V）' : 'Markdown を整えた見た目で表示する（⇧⌘V）';
+    el.dataset.preview = String(on);
+    if (on) await renderPreview();
+    if (disposed || previewing !== on) return;
+    preview.hidden = !on;
+    view.editor.getDomNode().parentElement.hidden = on;
+    if (!isActive()) return;
+    if (on) preview.focus({ preventScroll: true });
+    else view.editor.focus();
+  }
+
+  // 外のリンクは既定のブラウザ、ページ内は見出しへ、ファイルは terp のタブで開く
+  function onPreviewClick(e) {
+    const a = e.target.closest('a[href]');
+    if (!a) return;
+    e.preventDefault();
+    const target = linkTarget(a.getAttribute('href'), file);
+    if (!target) return;
+    if (target.kind === 'external') terp.openExternal(target.url);
+    else if (target.kind === 'anchor') preview.querySelector(`[id="${CSS.escape(target.id)}"]`)?.scrollIntoView({ block: 'start' });
+    else if (target.kind === 'file') openFile?.(target.path);
+  }
 
   function reveal(line, column = 1) {
     if (disposed || !view.editor || !Number.isFinite(line)) return;
+    if (previewing) setPreview(false, { remember: false });
     const model = view.editor.getModel();
     const lineNumber = Math.max(1, Math.min(model.getLineCount(), Math.trunc(line)));
     const col = Number.isFinite(column) ? Math.trunc(column) : 1;
@@ -198,9 +276,12 @@ export function renderFileView(el, file, root, { confirm, onChange, isActive, on
           ariaLabel: rel,
         });
         changeListener = view.editor.onDidChangeModelContent(updateDirty);
+        body.append(preview);
       }
       savedText = view.editor.getValue({ preserveBOM: true });
-      if (newlyCreated && isActive() && !document.querySelector('dialog[open]')) view.editor.focus();
+      if (newlyCreated && markdown && previewPreferred()) await setPreview(true, { remember: false });
+      else if (previewing) await renderPreview();
+      else if (newlyCreated && isActive() && !document.querySelector('dialog[open]')) view.editor.focus();
     } else {
       disposeEditor();
       body.textContent = '';

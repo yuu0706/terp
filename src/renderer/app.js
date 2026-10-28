@@ -2091,6 +2091,7 @@ async function openFile(path, { line, column, show = true, workspace = activeWor
     onChange: () => renderTabs(visibleKeys()),
     isActive: () => activeKey === key,
     onHistory: (file) => { filterFileHistory(file); setPanel('history'); },
+    openFile: (file) => openFile(file),
   });
   await f.view.ready;
   if (line !== undefined && activeKey === key) f.view.reveal(line, column);

@@ -2295,6 +2295,73 @@ async function runAgentHistoryTest({ win, js, check, outDir }) {
   }
 }
 
+// TERP_SELFTEST_MDPREVIEW は、Markdown のファイルを編集とプレビューで切り替えられることを確かめる
+async function runMarkdownPreviewTest({ win, js, check, outDir }) {
+  const wait = async (code, tries = 80) => {
+    for (let i = 0; i < tries; i++) {
+      if (await js(code)) return true;
+      await sleep(100);
+    }
+    return false;
+  };
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'terp-mdpreview-')));
+  fs.mkdirSync(path.join(dir, 'docs'));
+  // 1x1 の赤い PNG
+  fs.writeFileSync(path.join(dir, 'docs', 'dot.png'), Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==', 'base64'));
+  fs.writeFileSync(path.join(dir, 'docs', 'other.md'), '# 別の資料\n');
+  const readme = path.join(dir, 'README.md');
+  fs.writeFileSync(readme, [
+    '# 見出し', '', '本文の**太字**と`コード`。', '', '## 使い方', '', '- 一つ目', '- [x] 済んだこと', '',
+    '| 列 | 値 |', '| --- | --- |', '| a | 1 |', '', '```js', 'const x = 1;', '```', '',
+    '[使い方へ](#使い方) [別の資料](docs/other.md) [外のページ](https://example.com/)', '',
+    '![点](docs/dot.png)', '', '<script>window.__mdInjected = true</script>', '<img src="x" onerror="window.__mdInjected = true">', '',
+  ].join('\n'));
+  const plain = path.join(dir, 'notes.txt');
+  fs.writeFileSync(plain, 'text\n');
+  const view = (file) => `[...document.querySelectorAll('.fileview')].find((el) => el.querySelector('.fileview__title').title === ${JSON.stringify(file)})`;
+  const toggle = (file) => `${view(file)}.querySelector('.fileview__preview-toggle')`;
+  const previewEl = (file) => `${view(file)}?.querySelector('.fileview__preview')`;
+  try {
+    await sleep(800);
+    await js(`window.__terp.openFile(${JSON.stringify(plain)})`);
+    check('Markdown 以外にはプレビューのボタンを出さない', await wait(`Boolean(${view(plain)}) && !${toggle(plain)}`));
+    await js(`window.__terp.openFile(${JSON.stringify(readme)})`);
+    await wait(`Boolean(${view(readme)}) && Boolean(window.__terp.editorOf(${JSON.stringify(readme)}))`);
+    check('Markdown は初めはエディタで開き、プレビューのボタンを出す', await js(`${toggle(readme)}.textContent === 'プレビュー' && ${previewEl(readme)}.hidden`));
+    await js(`${toggle(readme)}.click()`);
+    check('ボタンでプレビューに切り替わる', await wait(`!${previewEl(readme)}.hidden && ${view(readme)}.querySelector('.fileview__editor').hidden && ${toggle(readme)}.textContent === '編集'`));
+    const rendered = await js(`(() => {
+      const p = ${previewEl(readme)};
+      return { h1: p.querySelector('h1')?.textContent, h2id: p.querySelector('h2')?.id, strong: p.querySelector('strong')?.textContent,
+        table: p.querySelectorAll('td').length, code: p.querySelector('pre code')?.textContent, task: p.querySelector('input[type=checkbox]')?.disabled,
+        script: Boolean(p.querySelector('script')), onerror: [...p.querySelectorAll('img')].some((img) => img.hasAttribute('onerror')) };
+    })()`);
+    check('見出し・太字・表・コード・チェックの項目を描く', rendered.h1 === '見出し' && rendered.strong === '太字' && rendered.table === 2 && rendered.code === 'const x = 1;\n' && rendered.task === true, JSON.stringify(rendered));
+    check('スクリプトと on* 属性は取り除く', !rendered.script && !rendered.onerror && !(await js('Boolean(window.__mdInjected)')), JSON.stringify(rendered));
+    check('相対パスの画像を Markdown の場所から読む', await wait(`(() => { const img = ${previewEl(readme)}.querySelector('img[alt="点"]'); return img && img.complete && img.naturalWidth === 1; })()`));
+    check('見出しに GitHub と同じ形の id を付ける', rendered.h2id === '使い方', rendered.h2id);
+    fs.writeFileSync(path.join(outDir, 'markdown-preview.png'), (await win.webContents.capturePage()).toPNG());
+    await js(`[...${previewEl(readme)}.querySelectorAll('a')].find((a) => a.textContent === '別の資料').click()`);
+    check('相対パスのリンクは terp のタブで開く', await wait(`window.__terp.activeKey === ${JSON.stringify('f:' + path.join(dir, 'docs', 'other.md'))}`));
+    check('前に選んだプレビューで次の Markdown も開く', await wait(`${previewEl(path.join(dir, 'docs', 'other.md'))}?.hidden === false && ${previewEl(path.join(dir, 'docs', 'other.md'))}.querySelector('h1')?.textContent === '別の資料'`));
+    await js(`window.__terp.activateKey(${JSON.stringify('f:' + readme)})`);
+    await sleep(300);
+    await js(`(() => { const e = new KeyboardEvent('keydown', { key: 'V', metaKey: true, shiftKey: true, bubbles: true, cancelable: true }); ${previewEl(readme)}.dispatchEvent(e); })()`);
+    check('⇧⌘V でエディタに戻る', await wait(`${previewEl(readme)}.hidden && !${view(readme)}.querySelector('.fileview__editor').hidden`));
+    await js(`window.__terp.editorOf(${JSON.stringify(readme)}).setValue('# 保存前の見出し\\n')`);
+    await js(`(() => { const e = new KeyboardEvent('keydown', { key: 'v', metaKey: true, shiftKey: true, bubbles: true, cancelable: true }); ${view(readme)}.querySelector('.fileview__editor textarea, .fileview__editor').dispatchEvent(e); })()`);
+    check('エディタの中でも ⇧⌘V で切り替わり、保存前の内容をプレビューする', await wait(`!${previewEl(readme)}.hidden && ${previewEl(readme)}.querySelector('h1')?.textContent === '保存前の見出し'`));
+    check('プレビューにしても未保存の変更は残る', await js(`window.__terp.editorOf(${JSON.stringify(readme)}).getValue() === '# 保存前の見出し\\n'`));
+    await js(`${toggle(readme)}.click()`);
+    await wait(`${previewEl(readme)}.hidden`);
+    // 終わるときに保存の確認が出ないよう、元の内容に戻す
+    await js(`window.__terp.editorOf(${JSON.stringify(readme)}).setValue(${JSON.stringify(fs.readFileSync(readme, 'utf8'))})`);
+  } finally {
+    await js(`(() => { try { localStorage.removeItem('terp.markdownPreview'); } catch {} })()`);
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 // TERP_SELFTEST_KEYS は、行の編集のキー（⌥←→・⌘←→・⌘⌫）と Shift+Enter が zsh で効くことを確かめる
 async function runKeysTest({ win, js, check }) {
   const id = await js('window.__terp.activeId');
@@ -3237,6 +3304,12 @@ exports.run = (win) => {
     }
     if (process.env.TERP_SELFTEST_AGENTHISTORY) {
       await runAgentHistoryTest({ win, js, check, outDir });
+      fs.writeFileSync(path.join(outDir, 'result.txt'), log.join('\n') + '\n');
+      await finish();
+      return;
+    }
+    if (process.env.TERP_SELFTEST_MDPREVIEW) {
+      await runMarkdownPreviewTest({ win, js, check, outDir });
       fs.writeFileSync(path.join(outDir, 'result.txt'), log.join('\n') + '\n');
       await finish();
       return;
