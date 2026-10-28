@@ -312,6 +312,15 @@ export function createOverview({ host, snapshot, preview, renderStatus, activate
       if (origin?.isConnected && origin !== document.body) origin.focus({ preventScroll: true });
       else restoreFocus();
     }
+    // 閉じた直後に戻したフォーカスでは、macOS の日本語入力が端末に付かず英字だけになることがあった（2026-10-28 利用者の指摘。
+    // フォーカスを移し直すと戻った）。選んだ端末へ移す処理（choose）も済んだ後に、一度外して付け直す
+    setTimeout(() => {
+      const el = document.activeElement;
+      if (!el || el === document.body || dialog.open) return;
+      el.blur();
+      // 窓が裏にあると requestAnimationFrame は回らず、外したままになるため setTimeout で戻す
+      setTimeout(() => { if (!dialog.open && document.activeElement === document.body) el.focus({ preventScroll: true }); });
+    });
   }
 
   function toggle() {

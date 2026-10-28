@@ -2587,6 +2587,32 @@ async function runKeysTest({ win, js, check }) {
   const lines = (await js(`window.__terp.bufferText(${id})`)).split('\n').map((l) => l.trim());
   check('Shift+Enter は実行せず改行を入れる', !lines.includes('SHIFTENTER1') && lines.some((l) => l.endsWith('echo SHIFTENTER2')), lines.slice(-4).join(' | '));
   await type('\x03');
+
+  // 日本語入力（変換）が端末に届くか。⌘M の一覧を閉じた後に、表示中の端末でだけ変換が効かなくなっていた
+  const cdp = win.webContents.debugger;
+  if (!cdp.isAttached()) cdp.attach('1.3');
+  const composes = async () => {
+    await js(`(() => { window.__imeSeen = false; const t = document.activeElement; t?.addEventListener('compositionstart', () => { window.__imeSeen = t.closest('.xterm') ? 'xterm' : t.id || t.tagName; }, { once: true }); })()`);
+    await cdp.sendCommand('Input.imeSetComposition', { text: 'あ', selectionStart: 1, selectionEnd: 1 });
+    await sleep(200);
+    await cdp.sendCommand('Input.insertText', { text: 'あ' });
+    await sleep(200);
+    const seen = await js('window.__imeSeen');
+    await type('\x15');
+    return seen;
+  };
+  await js(`window.__terp.sessions.get(${id}).term.focus()`);
+  check('端末で日本語の変換が効く', (await composes()) === 'xterm');
+  const menuItem = require('electron').Menu.getApplicationMenu().items.find((item) => item.label === '移動')?.submenu.items.find((entry) => entry.label === '全体の一覧');
+  const press = (keyCode) => { win.webContents.sendInputEvent({ type: 'keyDown', keyCode }); win.webContents.sendInputEvent({ type: 'keyUp', keyCode }); };
+  for (const [how, keyCode] of [['Enter で選んで', 'Return'], ['Esc で', 'Escape']]) {
+    menuItem.click();
+    await sleep(500);
+    press(keyCode);
+    await sleep(500);
+    const seen = await composes();
+    check(`⌘M の一覧を${how}閉じた後も、端末で日本語の変換が効く`, seen === 'xterm', String(seen));
+  }
 }
 
 async function runWallpaperTest({ win, js, check, outDir }) {
