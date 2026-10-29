@@ -25,7 +25,7 @@ const notify = require('./notify');
 const wallpaper = require('./wallpaper');
 const agentreply = require('./agentreply');
 const agenthistory = require('./agenthistory');
-const { PtyClient } = require('./ptyclient');
+const { PtyClient, SOCKET } = require('./ptyclient');
 const { createDockIcon } = require('./dockicon');
 // 起動時の貼り付けより先に、自己診断専用の空のアプリを用意する
 if (process.env.TERP_SELFTEST && process.env.TERP_SELFTEST_THEMEICON === '1') require('./selftest').prepareThemeIconTarget();
@@ -36,6 +36,10 @@ const client = new PtyClient();
 let connecting = null;
 // 作業場所と前面のプログラム名の最新の値。控え（snapshot）にも使う
 const known = new Map();
+// 控えを書き直さない間。常駐のプロセスを入れ替えている間と、控えから開き直している間は、途中の一覧で控えを上書きしない
+let snapshotHold = false;
+// 常駐のプロセスを入れ替えている間。止めたシェルの終わりを画面へ伝えない
+let replacingHost = false;
 let win = null;
 let dockAttentionCount = 0;
 let lastDockBadge = '';
@@ -105,6 +109,7 @@ client.on('data', (id, data) => toWindow('pty:data', id, data));
 // 終わったシェルを控えから消すのは、閉じる操作（pty:kill）と定期の保存に任せる。
 // 常駐のプロセスごと止まるとき（Mac の終了など）はシェルが1つずつ終わるため、ここで書くと控えが空になる
 client.on('exit', (id, code) => {
+  if (replacingHost) return;
   notify.close(id);
   agentreply.forget(id);
   known.delete(id);
@@ -112,6 +117,7 @@ client.on('exit', (id, code) => {
 });
 // 常駐のプロセスが落ちたら、そのシェルはすべて終わったものとして扱う
 client.on('disconnect', () => {
+  if (replacingHost) return;
   for (const id of known.keys()) {
     notify.close(id);
     agentreply.forget(id);
@@ -153,13 +159,17 @@ async function restoreInfo() {
     e.meta = { ...e.meta, workspace };
     client.send({ t: 'meta', id: e.id, meta: { workspace } });
   }
-  return { existing, snapshot: existing.length === 0 ? snapshot.load().map((s) => ({ ...s, workspace: sessionWorkspace(s, state) })) : [] };
+  const saved = existing.length === 0 ? snapshot.load().map((s) => ({ ...s, workspace: sessionWorkspace(s, state) })) : [];
+  // 開き直し終わる（pty:restored）まで、途中の一覧で控えを上書きしない
+  snapshotHold = saved.length > 0;
+  return { existing, snapshot: saved };
 }
 
 // 書いている最中に呼ばれたら、その書き込みの終わりを待つ
 let saving = null;
 let saveAgain = false;
 function saveSnapshot() {
+  if (snapshotHold) return Promise.resolve();
   if (saving) { saveAgain = true; return saving; }
   saving = (async () => {
     do {
@@ -173,45 +183,71 @@ function saveSnapshot() {
 async function writeSnapshot() {
   if (!client.socket || client.socket.destroyed) return;
   try {
-    const list = await client.request({ t: 'list' });
-    const sessions = await snapshot.claudeSessions(
-      list.filter((e) => known.get(e.id)?.program === 'claude').map((e) => e.pid),
-    );
-    agentreply.rememberSessions(sessions);
-    snapshot.save(
-      list.map((e) => ({
-        id: e.id,
-        cwd: known.get(e.id)?.cwd || e.cwd,
-        workspace: e.meta.workspace || null,
-        draftOut: Boolean(e.meta.draftOut),
-        customName: e.meta.customName || null,
-        workPath: e.meta.workPath || null,
-        claudeSession: sessions.get(e.pid) || null,
-      })),
-    );
-    await recordAgentHistory(list, sessions);
+    const { list, entries, found } = await snapshotEntries();
+    if (snapshotHold) return;
+    snapshot.save(entries);
+    recordAgentHistory(list, found);
   } catch {
     // 控えが書けなくても、動いているシェルには影響しない
   }
 }
 
-// 動いている会話を履歴に書き足す。claude は会話の ID を claude agents から、codex は開いている記録のファイル名から拾う。
+// 控えに書く各ターミナルの中身と、動いている会話。fresh なら作業場所と前面のプログラムを今の値で拾い直す。
+// claude は会話の ID を claude agents から、codex は開いている記録のファイル名から拾う
+async function snapshotEntries({ fresh = false } = {}) {
+  const list = await client.request({ t: 'list' });
+  if (fresh) {
+    const procs = await client.request({ t: 'info' });
+    const cwds = await readCwds(list.map((e) => e.pid));
+    for (const e of list) {
+      const entry = known.get(e.id);
+      if (!entry) continue;
+      entry.cwd = cwds.get(e.pid) || entry.cwd;
+      const proc = procs.find((p) => p.id === e.id);
+      if (proc) entry.program = programName(proc.program);
+    }
+  }
+  const claudeSessions = await snapshot.claudeSessionDetails(
+    list.filter((e) => known.get(e.id)?.program === 'claude').map((e) => e.pid),
+  );
+  agentreply.rememberSessions(new Map([...claudeSessions].map(([pid, found]) => [pid, found.sessionId])));
+  const found = new Map();
+  for (const e of list) {
+    const program = known.get(e.id)?.program;
+    let agent = null;
+    if (historyTestLookup) agent = historyTestLookup(e);
+    else if (program === 'claude' && claudeSessions.get(e.pid)) agent = { agent: 'claude', ...claudeSessions.get(e.pid) };
+    else if (program === 'codex') {
+      const sessionId = agenthistory.codexSessionId(await agentreply.codexFile(e.pid, new AbortController().signal, { thorough: fresh }).catch(() => null));
+      if (sessionId) agent = { agent: 'codex', sessionId };
+    }
+    if (agent) found.set(e.id, agent);
+  }
+  const entries = list.map((e) => ({
+    id: e.id,
+    cwd: known.get(e.id)?.cwd || e.cwd,
+    workspace: e.meta.workspace || null,
+    draftOut: Boolean(e.meta.draftOut),
+    customName: e.meta.customName || null,
+    agentTitle: e.meta.agentTitle || null,
+    workPath: e.meta.workPath || null,
+    agent: found.get(e.id)?.agent || null,
+    agentSession: found.get(e.id)?.sessionId || null,
+    configDir: found.get(e.id)?.configDir || null,
+    bypass: Boolean(e.meta.bypass),
+  }));
+  return { list, entries, found };
+}
+
+// 動いている会話を履歴に書き足す。
 // 会話の ID ごとに、今それを動かしているターミナルを覚え、履歴から選んだときはそのターミナルへ移る
 let liveAgentSessions = new Map();
 let historyTestLookup = null;
-async function recordAgentHistory(list, claudeSessions) {
+function recordAgentHistory(list, found) {
   const seen = [];
   for (const e of list) {
-    const program = known.get(e.id)?.program;
-    let found = null;
-    if (historyTestLookup) found = historyTestLookup(e);
-    else if (program === 'claude' && claudeSessions.get(e.pid)) found = { agent: 'claude', sessionId: claudeSessions.get(e.pid) };
-    else if (program === 'codex') {
-      const sessionId = agenthistory.codexSessionId(await agentreply.codexFile(e.pid, new AbortController().signal).catch(() => null));
-      if (sessionId) found = { agent: 'codex', sessionId };
-    }
-    if (!found) continue;
-    seen.push({ ...found, terminalId: e.id, cwd: known.get(e.id)?.cwd || e.cwd, workspace: e.meta.workspace,
+    if (!found.has(e.id)) continue;
+    seen.push({ ...found.get(e.id), terminalId: e.id, cwd: known.get(e.id)?.cwd || e.cwd, workspace: e.meta.workspace,
       title: e.meta.agentTitle, name: e.meta.customName });
   }
   liveAgentSessions = new Map(seen.map((item) => [`${item.agent}:${item.sessionId}`, item.terminalId]));
@@ -243,7 +279,7 @@ function readCwds(pids) {
 
 // 各シェルの作業場所と前面のプログラム名をまとめて拾う。
 async function pollInfo() {
-  if (!win || win.isDestroyed() || known.size === 0 || !client.socket || client.socket.destroyed) return;
+  if (replacingHost || !win || win.isDestroyed() || known.size === 0 || !client.socket || client.socket.destroyed) return;
   const procs = await client.request({ t: 'info' }).catch(() => []);
   if (procs.length === 0) return;
   const cwdByPid = await readCwds(procs.map((p) => p.pid));
@@ -461,6 +497,82 @@ ipcMain.handle('pty:shutdown-host', async () => {
   await saveSnapshot();
   return client.request({ t: 'shutdown' });
 });
+// 控えから開き直し終わったら、控えの書き直しを戻して今の一覧で書く
+ipcMain.on('pty:restored', () => {
+  snapshotHold = false;
+  saveSnapshot();
+});
+
+// 常駐のプロセスを新しい版に入れ替える。控えを書いてからシェルごと止め、窓を読み直して控えから開き直す。
+// claude・codex は同じ会話を同じ起動の仕方で再開する。画面の中身と、ほかに動いていたプログラムは戻らない。
+// 確かめは画面の右下のトーストで行う（pty:replace-plan で中身を見せ、pty:replace-host で入れ替える）
+const SHELL_PROGRAMS = new Set(['', 'zsh', '-zsh', 'bash', '-bash', 'fish', 'sh', 'login']);
+const AGENT_PROGRAMS = new Set(['claude', 'codex']);
+
+async function replacePlan() {
+  const { entries } = await snapshotEntries({ fresh: true });
+  const program = (e) => known.get(e.id)?.program || '';
+  const item = (e) => ({ id: e.id, name: e.customName || e.agentTitle || e.cwd.replace(os.homedir(), '~'), program: program(e), agent: e.agent });
+  return {
+    entries,
+    count: entries.length,
+    resumed: entries.filter((e) => e.agentSession).map(item),
+    // 会話の ID が見つからない claude・codex。入れ替えると会話を再開できない
+    missing: entries.filter((e) => AGENT_PROGRAMS.has(program(e)) && !e.agentSession).map(item),
+    stopped: entries.filter((e) => !e.agentSession && !AGENT_PROGRAMS.has(program(e)) && !SHELL_PROGRAMS.has(program(e))).map(item),
+  };
+}
+
+const publicPlan = ({ entries, ...plan }) => plan;
+
+ipcMain.handle('pty:replace-plan', safe(async () => {
+  if (replacingHost || snapshotHold) throw new Error('入れ替えか開き直しの最中です');
+  await ensureClient();
+  return publicPlan(await replacePlan());
+}));
+
+// acceptMissing は、会話を再開せずに開き直すと利用者が選んだターミナルの ID。
+// 確かめた後に、会話の ID が見つからないターミナルが増えていたら入れ替えず、新しい中身を返す
+ipcMain.handle('pty:replace-host', safe(async (_e, { acceptMissing = [] } = {}) => {
+  if (replacingHost || snapshotHold) throw new Error('入れ替えか開き直しの最中です');
+  await ensureClient();
+  await saving;
+  snapshotHold = true;
+  let plan;
+  try {
+    plan = await replacePlan();
+  } catch (err) {
+    snapshotHold = false;
+    throw err;
+  }
+  if (plan.missing.some((m) => !acceptMissing.includes(m.id))) {
+    snapshotHold = false;
+    return { replaced: false, plan: publicPlan(plan) };
+  }
+  snapshot.save(plan.entries);
+  replacingHost = true;
+  try {
+    await client.request({ t: 'shutdown' });
+    // 常駐のプロセスは終わるときにソケットのファイルを消す
+    for (let t = 0; t < 100 && fs.existsSync(SOCKET); t++) await new Promise((r) => setTimeout(r, 100));
+    if (fs.existsSync(SOCKET)) throw new Error('古い常駐のプロセスが終わりませんでした');
+  } catch (err) {
+    replacingHost = false;
+    snapshotHold = false;
+    throw err;
+  }
+  for (const id of known.keys()) {
+    notify.close(id);
+    agentreply.forget(id);
+  }
+  known.clear();
+  client.socket?.destroy();
+  replacingHost = false;
+  // 控えから開き直し終わるまで snapshotHold を保つ（pty:restored で戻す）
+  if (win && !win.isDestroyed()) win.webContents.reload();
+  return { replaced: true, count: plan.count };
+}));
+
 ipcMain.on('open-external', (_e, url) => {
   if (/^https?:\/\//.test(url)) shell.openExternal(url);
 });
@@ -562,6 +674,7 @@ function buildMenu() {
         { type: 'separator' },
         { label: 'ターミナルの表示を検査', click: send('check-screen') },
         { label: 'ターミナルの表示を作り直す', click: send('redraw-terminal') },
+        { label: '常駐のプロセスを入れ替える…', click: send('replace-host') },
         { type: 'separator' },
         { role: 'toggleDevTools', label: '開発者ツール' },
         { role: 'togglefullscreen', label: 'フルスクリーン' },

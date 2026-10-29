@@ -290,7 +290,7 @@ function rememberSessions(map) {
   for (const [pid, sessionId] of map) sessions.set(pid, { at: now, sessionId });
 }
 
-async function codexFile(shellPid, signal) {
+async function codexFile(shellPid, signal, { thorough = false } = {}) {
   const output = await run('/bin/ps', ['-A', '-o', 'pid=,ppid=,comm='], signal);
   const procs = new Map();
   for (const line of output.split('\n')) {
@@ -317,7 +317,54 @@ async function codexFile(shellPid, signal) {
     const checked = await within(file, path.join(os.homedir(), '.codex', 'sessions'));
     if (checked) return checked;
   }
-  return recentRollout(pids, signal);
+  return (await recentRollout(pids, signal)) || (thorough ? startedRollout(pids, signal) : null);
+}
+
+// 開き直した会話などで直近5分に書かれていないときの、時間のかかる探し方。常駐のプロセスを入れ替える前にだけ使う。
+// 過去30日の記録のうち、codex の起動より後に書かれ、同じ作業場所で始まった対話の会話（サブエージェントと codex exec は除く）を探す。
+// 1つに絞れたときだけ使い、2つ以上なら決めつけない
+async function startedRollout(pids, signal) {
+  if (pids.length !== 1) return null;
+  const started = await require('./snapshot').processStart(pids[0]);
+  const cwds = new Set();
+  const out = await run('/usr/sbin/lsof', ['-a', '-d', 'cwd', '-p', String(pids[0]), '-Fn'], signal);
+  for (const line of out.split('\n')) if (line.startsWith('n')) cwds.add(line.slice(1));
+  if (!started || !cwds.size || signal.aborted) return null;
+  const root = path.join(os.homedir(), '.codex', 'sessions');
+  const pad = (n) => String(n).padStart(2, '0');
+  const matches = [];
+  for (let back = 0; back < 30; back++) {
+    const d = new Date(Date.now() - back * 86400000);
+    const dir = path.join(root, String(d.getFullYear()), pad(d.getMonth() + 1), pad(d.getDate()));
+    for (const name of await fs.promises.readdir(dir).catch(() => [])) {
+      if (signal.aborted) return null;
+      if (!/^rollout-.+\.jsonl$/.test(name)) continue;
+      const file = path.join(dir, name);
+      const stat = await fs.promises.stat(file).catch(() => null);
+      if (!stat?.isFile() || stat.mtimeMs < started) continue;
+      const meta = await firstLine(file);
+      const payload = meta?.type === 'session_meta' ? meta.payload : null;
+      if (!payload || !cwds.has(payload.cwd)) continue;
+      if (payload.source?.subagent || payload.originator === 'codex_exec' || /desktop/i.test(payload.originator || '')) continue;
+      matches.push(file);
+    }
+  }
+  return matches.length === 1 ? within(matches[0], root) : null;
+}
+
+async function firstLine(file) {
+  let fd;
+  try {
+    fd = await fs.promises.open(file, 'r');
+    const buffer = Buffer.alloc(256 * 1024);
+    const { bytesRead } = await fd.read(buffer, 0, buffer.length, 0);
+    return JSON.parse(buffer.subarray(0, bytesRead).toString('utf8').split('\n')[0]);
+  } catch {
+    // 先頭の行が長すぎる・壊れているものは使わない
+    return null;
+  } finally {
+    await fd?.close().catch(() => {});
+  }
 }
 
 // 対話の codex は記録のファイルを開いたままにしないことがある。

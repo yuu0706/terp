@@ -2506,6 +2506,123 @@ async function runAgentHistoryTest({ win, js, check, outDir }) {
   }
 }
 
+// TERP_SELFTEST_REPLACEHOST は、常駐のプロセスを入れ替えたときに、控えからターミナルを同じ状態で開き直すことを確かめる。
+// 名前・題名・作業場所・ワークスペース・ドラフトから外したか・枠とタブの並び・会話の再開（起動の仕方を含む）を見る。
+// 本物の claude・codex は動かさず、引数を書き出すだけの偽物を設定に書く
+async function runReplaceHostTest({ win, js, check, outDir }) {
+  const { CONFIG_DIR } = require('./config');
+  if (!process.env.TERP_CONFIG_DIR || path.resolve(CONFIG_DIR) === path.join(os.homedir(), '.config/terp')) throw new Error('入れ替えの自己診断には一時フォルダの TERP_CONFIG_DIR が必要');
+  const wait = async (code, tries = 100) => {
+    for (let i = 0; i < tries; i++) {
+      if (await js(code).catch(() => false)) return true;
+      await sleep(100);
+    }
+    return false;
+  };
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'terp-replacehost-')));
+  const bin = path.join(dir, 'bin');
+  fs.mkdirSync(bin);
+  fs.writeFileSync(path.join(bin, 'claude'), '#!/bin/sh\necho "FAKE-CLAUDE dir=[$CLAUDE_CONFIG_DIR] $*"\n', { mode: 0o755 });
+  fs.writeFileSync(path.join(bin, 'codex'), '#!/bin/sh\necho "FAKE-CODEX $*"\n', { mode: 0o755 });
+  // 前面のプログラムの名前が claude なのに会話の ID が見つからない端末を作るため、node を claude の名前で写す
+  const stuck = path.join(dir, 'stuck');
+  fs.mkdirSync(stuck);
+  fs.copyFileSync(fs.realpathSync(require('child_process').execFileSync('/bin/zsh', ['-lc', 'command -v node'], { encoding: 'utf8' }).trim()), path.join(stuck, 'claude'));
+  fs.chmodSync(path.join(stuck, 'claude'), 0o755);
+  const configDir = path.join(dir, 'claude2');
+  const work = path.join(dir, 'work');
+  fs.mkdirSync(work);
+  const claudeId = '11111111-2222-4333-8444-555555555555';
+  const codexId = '66666666-7777-4888-9999-aaaaaaaaaaaa';
+  const snapshotFile = path.join(CONFIG_DIR, 'sessions.json');
+  const snapshots = () => { try { return JSON.parse(fs.readFileSync(snapshotFile, 'utf8')).sessions; } catch { return []; } };
+  const state = `[...window.__terp.sessions.values()].map((s) => ({ id: s.id, cwd: s.cwd, name: s.li.querySelector('.session__name').textContent,
+    workspace: s.workspace, draftOut: Boolean(s.draftOut), bypass: Boolean(s.bypass), agentTitle: s.agentTitle, text: window.__terp.bufferText(s.id) }))`;
+  try {
+    await sleep(800);
+    const res = await js(`window.terp.updateConfig({ agents: [{ command: 'claude', path: ${JSON.stringify(path.join(bin, 'claude'))} }, { command: 'codex', path: ${JSON.stringify(path.join(bin, 'codex'))} }] })`);
+    check('偽の claude・codex を設定に書ける', res.ok, res.error);
+    await sleep(1200);
+    const a = await js(`window.__terp.open(${JSON.stringify(work)})`);
+    const b = await js(`window.__terp.open(${JSON.stringify(work)})`);
+    const c = await js(`window.__terp.open(${JSON.stringify(work)})`);
+    const d = await js(`window.__terp.open(${JSON.stringify(work)})`);
+    const e = await js(`window.__terp.open(${JSON.stringify(work)})`);
+    await js(`window.__terp.rename(${e}, 'ID の無い claude')`);
+    await js(`window.terp.write(${e}, ${JSON.stringify(`${path.join(stuck, 'claude')} -e 'setInterval(() => {}, 1000)'\r`)})`);
+    await js(`window.terp.setMeta(${a}, { agentTitle: 'ログインの不具合を調べる', bypass: true }); window.__terp.sessions.get(${a}).bypass = true`);
+    await js(`window.__terp.rename(${b}, 'codex の作業')`);
+    await js(`window.terp.write(${c}, ${JSON.stringify('export TERP_MARK=old-shell; cd /tmp\r')})`);
+    await js(`window.__terp.rename(${c}, '入れ替えテスト')`);
+    const workspace = await js("window.__terp.createWorkspace('入れ替え用')");
+    await js(`window.__terp.moveSessionWorkspace(${c}, ${JSON.stringify(workspace.id)})`);
+    await js(`window.__terp.setSessionDraft(${c}, false)`);
+    await js(`window.terp.write(${d}, ${JSON.stringify('sleep 600\r')})`);
+    await js(`window.__terp.activate(${b})`);
+    await js(`window.__terp.dropTab('t:${a}', window.__terp.layout().id, 'right')`);
+    await js(`window.terp.setAgentHistoryTestSessions({ ${a}: { agent: 'claude', sessionId: '${claudeId}', configDir: ${JSON.stringify(configDir)} }, ${b}: { agent: 'codex', sessionId: '${codexId}' } })`);
+    // 作業場所と前面のプログラムを拾うまで待つ（1.5 秒ごと）
+    await sleep(3500);
+    const before = await js(state);
+    const count = before.length;
+    const names = (list) => list.map((s) => s.name).sort();
+    const layoutNames = `(() => { const names = []; const walk = (n) => n.type === 'pane' ? names.push(n.key.startsWith('t:') ? window.__terp.sessions.get(Number(n.key.slice(2)))?.li.querySelector('.session__name').textContent : n.key) : n.children.forEach(walk); walk(window.__terp.layout()); return names; })()`;
+    const layoutBefore = await js(layoutNames);
+    const orderNames = `window.__terp.tabOrder.map((k) => k.startsWith('t:') ? window.__terp.sessions.get(Number(k.slice(2)))?.li.querySelector('.session__name').textContent : k)`;
+    const orderBefore = await js(orderNames);
+    const workspaceBefore = await js('window.__terp.activeWorkspace');
+
+    // 古い版の知らせから入る。確かめ（作業場所・会話の ID の拾い直し）を待たずに、その間の表示を見る
+    win.webContents.send('host-stale');
+    check('古い版の知らせを右下のトーストに出す', await wait(`!document.getElementById('host-toast').hidden && document.getElementById('host-toast-title').textContent.includes('古い版')
+      && document.querySelector('#host-toast [data-action="accept"]').textContent === '入れ替える…' && document.querySelector('#host-toast [data-action="cancel"]').textContent === '今はしない'`));
+    check('左の一覧の下には知らせを出さない', await js(`!document.getElementById('host-notice')`));
+    await sleep(500);
+    const staleBox = await js(`(() => { const r = document.getElementById('host-toast').getBoundingClientRect(); return { right: Math.round(innerWidth - r.right), bottom: Math.round(innerHeight - r.bottom), width: Math.round(r.width), height: Math.round(r.height), display: getComputedStyle(document.getElementById('host-toast')).display }; })()`);
+    check('古い版の知らせは窓の右下に出る', staleBox.display !== 'none' && staleBox.width > 200 && staleBox.height > 50 && staleBox.right < 40 && staleBox.bottom < 40, JSON.stringify(staleBox));
+    fs.writeFileSync(path.join(outDir, 'replace-host-stale.png'), (await win.webContents.capturePage()).toPNG());
+    await js(`document.querySelector('#host-toast [data-action="accept"]').click(), true`);
+    check('確かめている間は、入れ替えるボタンを出さない', await js(`getComputedStyle(document.querySelector('#host-toast [data-action="accept"]')).display === 'none'`));
+    check('右下のトーストで確かめる', await wait(`!document.getElementById('host-toast').hidden && document.querySelector('#host-toast [data-action="accept"]').textContent !== ''`, 200));
+    const toast = await js(`document.getElementById('host-toast').innerText`);
+    check('トーストに再開する会話・ID の無い claude・止まる sleep を名前付きで出す', toast.includes(`ターミナル ${count} 枚`) && toast.includes('会話を再開する（2）')
+      && /会話の ID が見つからない（1）[\s\S]*ID の無い claude/.test(toast) && /止まって戻らない（1）[\s\S]*sleep/.test(toast), toast);
+    check('ID の無い会話があるときは、会話を再開せずに入れ替える', (await js(`document.querySelector('#host-toast [data-action="accept"]').textContent`)) === '会話を再開せずに入れ替える');
+    fs.writeFileSync(path.join(outDir, 'replace-host-toast.png'), (await win.webContents.capturePage()).toPNG());
+    js(`document.querySelector('#host-toast [data-action="accept"]').click()`).catch(() => {});
+    // 読み直した後の画面は、前の端末の ID を持たない新しい一覧から始まる
+    await sleep(1500);
+    check('入れ替えた後、同じ枚数のターミナルで開き直す', await wait(`window.__terp && window.__terp.sessions.size === ${count}`, 200), String(await js('window.__terp.sessions.size').catch(() => 'なし')));
+    await js(`window.terp.setAgentHistoryTestSessions(null)`);
+    await sleep(2500);
+    const after = await js(state);
+    check('名前（題名を含む）が戻る', JSON.stringify(names(after)) === JSON.stringify(names(before)), `${names(before)} → ${names(after)}`);
+    const restoredC = after.find((s) => s.name === '入れ替えテスト');
+    check('作業場所・ワークスペース・ドラフトから外したことが戻る', restoredC && /\/tmp$/.test(restoredC.cwd) && restoredC.workspace === workspace.id && restoredC.draftOut, JSON.stringify(restoredC && { ...restoredC, text: undefined }));
+    await js(`window.terp.write(${restoredC?.id}, ${JSON.stringify('echo "mark=[$TERP_MARK]"\r')})`);
+    check('シェルは新しい常駐のプロセスのもの（前の変数は無い）', await wait(`window.__terp.bufferText(${restoredC?.id}).includes('mark=[]')`, 50), await js(`window.__terp.bufferText(${restoredC?.id})`));
+    const restoredA = after.find((s) => s.agentTitle === 'ログインの不具合を調べる');
+    check('claude の題名が戻る', Boolean(restoredA), JSON.stringify(after.map((s) => s.agentTitle)));
+    check('claude は確認を飛ばす起動のまま同じ会話を再開する', restoredA?.bypass
+      && await wait(`[...window.__terp.sessions.values()].some((s) => window.__terp.bufferText(s.id).replace(/\\n/g, '').includes(${JSON.stringify(`FAKE-CLAUDE dir=[${configDir}] --dangerously-skip-permissions --resume ${claudeId}`)}))`), restoredA?.text);
+    check('codex は確認ありの起動のまま同じ会話を再開する', await wait(`[...window.__terp.sessions.values()].some((s) => window.__terp.bufferText(s.id).replace(/\\n/g, '').includes('FAKE-CODEX resume ${codexId}'))`)
+      && !after.find((s) => s.name === 'codex の作業')?.bypass);
+    const restoredE = after.find((s) => s.name === 'ID の無い claude');
+    check('ID の無い claude の端末は、同じ場所でシェルだけ開き直す', restoredE && restoredE.cwd === work && !restoredE.text.includes('setInterval'), JSON.stringify(restoredE && { ...restoredE, text: undefined }));
+    check('ほかのプログラム（sleep）は動いていない', !(await js(`[...window.__terp.sessions.values()].some((s) => s.program === 'sleep')`)));
+    if (workspaceBefore !== (await js('window.__terp.activeWorkspace'))) await js(`window.__terp.switchWorkspace(${JSON.stringify(workspaceBefore)})`);
+    await sleep(500);
+    check('枠の並びが戻る', JSON.stringify(await js(layoutNames)) === JSON.stringify(layoutBefore), `${JSON.stringify(layoutBefore)} → ${JSON.stringify(await js(layoutNames))}`);
+    check('タブの並びが戻る', JSON.stringify(await js(orderNames)) === JSON.stringify(orderBefore), `${JSON.stringify(orderBefore)} → ${JSON.stringify(await js(orderNames))}`);
+    await sleep(11000);
+    check('開き直した後、控えを今の一覧で書き直す', snapshots().length === count && snapshots().every((e) => after.some((s) => s.id === e.id)), JSON.stringify(snapshots().map((e) => e.id)));
+    fs.writeFileSync(path.join(outDir, 'replace-host.png'), (await win.webContents.capturePage()).toPNG());
+  } finally {
+    await js(`window.terp.setAgentHistoryTestSessions(null)`).catch(() => {});
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 // TERP_SELFTEST_REDRAW は、terp を開き直したとき（画面を読み直してつなぎ直す）と表示し直したときに、
 // claude のような「前の枠を消してから描き直す」プログラムの画面が崩れないかを確かめる。
 // 本物の claude は動かさず、Ink と同じ消し方（1行ずつ上へ戻って消す）で入力欄の枠を描く偽物を使う
@@ -4134,6 +4251,12 @@ exports.run = (win) => {
     }
     if (process.env.TERP_SELFTEST_AGENTHISTORY) {
       await runAgentHistoryTest({ win, js, check, outDir });
+      fs.writeFileSync(path.join(outDir, 'result.txt'), log.join('\n') + '\n');
+      await finish();
+      return;
+    }
+    if (process.env.TERP_SELFTEST_REPLACEHOST) {
+      await runReplaceHostTest({ win, js, check, outDir });
       fs.writeFileSync(path.join(outDir, 'result.txt'), log.join('\n') + '\n');
       await finish();
       return;

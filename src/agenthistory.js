@@ -18,12 +18,17 @@ function valid(entry) {
   return entry && AGENTS.has(entry.agent) && SESSION_ID.test(entry.sessionId || '') && typeof entry.cwd === 'string' && path.isAbsolute(entry.cwd);
 }
 
+// claude を既定以外の設定のフォルダ（CLAUDE_CONFIG_DIR）で動かしたときだけ残す。再開するときに同じフォルダを渡す
+function configDir(value) {
+  return typeof value === 'string' && path.isAbsolute(value) ? value : null;
+}
+
 function load() {
   try {
     const data = JSON.parse(fs.readFileSync(HISTORY_PATH, 'utf8'));
     return (Array.isArray(data.entries) ? data.entries : []).filter(valid).map((e) => ({
       agent: e.agent, sessionId: e.sessionId, cwd: e.cwd, workspace: text(e.workspace) || null,
-      title: text(e.title), name: text(e.name),
+      title: text(e.title), name: text(e.name), configDir: configDir(e.configDir),
       startedAt: Number.isFinite(e.startedAt) ? e.startedAt : 0, lastUsed: Number.isFinite(e.lastUsed) ? e.lastUsed : 0,
     }));
   } catch {
@@ -52,13 +57,13 @@ function record(seen, now = Date.now()) {
     const title = text(item.title);
     const name = text(item.name);
     if (found) {
-      const next = { ...found, cwd: item.cwd, workspace: text(item.workspace) || found.workspace,
+      const next = { ...found, cwd: item.cwd, workspace: text(item.workspace) || found.workspace, configDir: configDir(item.configDir),
         title: title || found.title, name: name || found.name, lastUsed: now };
       if (JSON.stringify(next) !== JSON.stringify(found)) changed = true;
       Object.assign(found, next);
     } else {
       entries.push({ agent: item.agent, sessionId: item.sessionId, cwd: item.cwd, workspace: text(item.workspace) || null,
-        title, name, startedAt: now, lastUsed: now });
+        title, name, configDir: configDir(item.configDir), startedAt: now, lastUsed: now });
       changed = true;
     }
   }

@@ -3454,6 +3454,13 @@ button.subagent:hover,
 
 .repo-toast[hidden] { display: none; }
 
+/* 常駐のプロセスの入れ替えの確かめ。ほかの案内より手前に出し、端末が多くても窓に収める */
+.host-toast { z-index: 22; }
+.host-toast [hidden] { display: none; }
+.host-toast__body { max-height: 50vh; overflow-y: auto; margin-bottom: var(--space-2); }
+.host-toast__body p { margin: 0 0 var(--space-1); }
+.host-toast__body ul { margin: 0 0 var(--space-2); padding-left: var(--space-3); }
+
 /* AI の手伝いの失敗（上限・切ってある・claude が無い）を数秒だけ出す */
 .ai-toast { z-index: 21; border-color: var(--color-border); }
 

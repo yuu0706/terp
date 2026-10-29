@@ -1755,14 +1755,23 @@ async function resumeAgentSession(entry) {
   }
   const workspace = workspaces.some((w) => w.id === entry.workspace) ? entry.workspace : activeWorkspace;
   if (workspace !== activeWorkspace) await switchWorkspace(workspace);
-  const a = agentRegistry.find((item) => item.command === entry.agent && item.found) || { command: entry.agent };
-  const bypass = wantsBypass(a);
   const s = await openTerminal({ cwd: entry.cwd, workspace });
-  markBypass(s, bypass);
-  const resume = entry.agent === 'codex' ? `resume ${entry.sessionId}` : `--resume ${entry.sessionId}`;
-  // シェルは起動前の入力をためておくため、すぐ送ってよい
-  terp.write(s.id, `${agentCommandLine(a, bypass)} ${resume}\r`);
+  resumeAgentIn(s, entry.agent, entry.sessionId, wantsBypass(registeredAgent(entry.agent)), entry.configDir);
   return s;
+}
+
+function registeredAgent(command) {
+  return agentRegistry.find((item) => item.command === command && item.found) || { command };
+}
+
+// 開いたばかりのターミナルで会話を再開する。シェルは起動前の入力をためておくため、すぐ送ってよい
+// configDir は、claude を既定以外の設定のフォルダ（CLAUDE_CONFIG_DIR）で動かしていたときのフォルダ。会話はそのフォルダにある
+function resumeAgentIn(s, agent, sessionId, bypass, configDir = null) {
+  markBypass(s, bypass);
+  const a = registeredAgent(agent);
+  const withDir = configDir ? { ...a, env: { ...a.env, CLAUDE_CONFIG_DIR: configDir } } : a;
+  const resume = agent === 'codex' ? `resume ${sessionId}` : `--resume ${sessionId}`;
+  terp.write(s.id, `${agentCommandLine(withDir, bypass)} ${resume}\r`);
 }
 
 // 利用者が設定で決めたコマンドを、表示中のターミナルと同じ作業場所の新しいターミナルで打つ
@@ -3030,10 +3039,17 @@ async function restoreSessions({ show = true } = {}) {
         s.workPath = snap.workPath;
         terp.setMeta(s.id, { workPath: snap.workPath });
       }
-      // シェルは起動前の入力をためておくため、すぐ送ってよい
-      if (snap.claudeSession) terp.write(s.id, `claude --resume ${snap.claudeSession}\r`);
+      if (snap.agentTitle) {
+        s.agentTitle = snap.agentTitle;
+        terp.setMeta(s.id, { agentTitle: snap.agentTitle });
+      }
+      // 会話は止める前と同じ起動の仕方（確認を飛ばすか）で再開する。claudeSession は前の版の控え
+      if (snap.agent && snap.agentSession) resumeAgentIn(s, snap.agent, snap.agentSession, Boolean(snap.bypass), snap.configDir);
+      else if (snap.claudeSession) terp.write(s.id, `claude --resume ${snap.claudeSession}\r`);
     }
     renderAll();
+    // 開き直し終わるまで、本体は控えを書き直さない
+    terp.restored();
     return;
   }
   await openTerminal();
@@ -3358,9 +3374,102 @@ terp.onWallpaper((url) => {
 terp.onNotification((id) => {
   if (sessions.has(id)) activateKey(termKey(id));
 });
+// 常駐のプロセスが古い版のままなら、右下のトーストで知らせ、入れ替えへ進めるようにする
 terp.onHostStale(() => {
-  const notice = document.getElementById('host-notice');
-  notice.hidden = false;
+  if (hostPlan || hostBusy) return;
+  hostStale = true;
+  showHostToast({
+    title: 'シェルを持つ常駐のプロセスが古い版のまま動いています',
+    lines: ['入れ替えると、ターミナルを同じ状態で開き直し、claude・codex の会話を再開します。'],
+    accept: '入れ替える…', cancel: '今はしない',
+  });
+});
+
+// 常駐のプロセスを入れ替える。右下のトーストで、開き直す枚数・再開する会話・止まるプログラムを見せて確かめる。
+// 会話の ID が見つからない claude・codex があれば、会話を再開せずに同じ場所でシェルだけ開き直すかを選ばせる。
+// 入れ替えは本体が行い、終わると窓を読み直して控えから開き直す。読み直す前にタブと枠の控えを書き切る
+const hostToast = document.getElementById('host-toast');
+let hostPlan = null;
+let hostBusy = false;
+// 古い版の知らせを出している間。「入れ替える…」で確かめへ進む
+let hostStale = false;
+
+async function replaceHost() {
+  if (hostBusy) return;
+  hostStale = false;
+  showHostToast({ title: '常駐のプロセスの入れ替え', lines: ['ターミナルの状態を確かめています…'] });
+  hostBusy = true;
+  const res = await terp.replacePlan();
+  hostBusy = false;
+  if (!res.ok) { showHostToast({ title: '常駐のプロセスを入れ替えられません', error: res.error }); return; }
+  showHostPlan(res.value);
+}
+
+function showHostPlan(plan) {
+  hostPlan = plan;
+  const label = (item) => item.program ? `${item.name}（${item.agent || item.program}）` : item.name;
+  const lists = [
+    [`会話を再開する（${plan.resumed.length}）`, plan.resumed],
+    [`会話の ID が見つからない（${plan.missing.length}）。止めて、同じ場所でシェルだけ開き直す`, plan.missing],
+    [`止まって戻らない（${plan.stopped.length}）`, plan.stopped],
+  ].filter(([, items]) => items.length).map(([heading, items]) => ({ heading, items: items.map(label) }));
+  showHostToast({
+    title: '常駐のプロセスを入れ替えますか？',
+    lines: [`ターミナル ${plan.count} 枚を、同じ作業場所・名前・ワークスペースで開き直します。画面に出ていた過去の出力と、返答を書いている途中の処理は戻りません。`],
+    lists,
+    accept: plan.missing.length ? '会話を再開せずに入れ替える' : '入れ替える',
+  });
+}
+
+function showHostToast({ title, lines = [], lists = [], error = '', accept = '', cancel = '' }) {
+  hostToast.querySelector('.repo-toast__title').textContent = title;
+  const body = hostToast.querySelector('.host-toast__body');
+  body.replaceChildren();
+  for (const line of lines) body.append(Object.assign(document.createElement('p'), { textContent: line }));
+  for (const { heading, items } of lists) {
+    body.append(Object.assign(document.createElement('p'), { textContent: heading }));
+    const ul = document.createElement('ul');
+    for (const item of items) ul.append(Object.assign(document.createElement('li'), { textContent: item }));
+    body.append(ul);
+  }
+  const errorEl = hostToast.querySelector('.repo-toast__error');
+  errorEl.textContent = error;
+  errorEl.hidden = !error;
+  const acceptBtn = hostToast.querySelector('[data-action="accept"]');
+  acceptBtn.textContent = accept;
+  acceptBtn.hidden = !accept;
+  acceptBtn.disabled = false;
+  hostToast.querySelector('[data-action="cancel"]').textContent = cancel || (accept ? 'やめる' : '閉じる');
+  hostToast.hidden = false;
+}
+
+async function acceptHostPlan() {
+  if (hostStale) { replaceHost(); return; }
+  if (!hostPlan || hostBusy) return;
+  hostBusy = true;
+  hostToast.querySelector('[data-action="accept"]').disabled = true;
+  if (!restoringTabs) {
+    clearTimeout(saveTabsTimer);
+    await terp.saveTabs(savedTabState());
+  }
+  const res = await terp.replaceHost({ acceptMissing: hostPlan.missing.map((item) => item.id) });
+  hostBusy = false;
+  // 入れ替えたときは窓が読み直される
+  if (res.ok && res.value.replaced) return;
+  if (!res.ok) { showHostToast({ title: '常駐のプロセスを入れ替えられませんでした', error: res.error }); return; }
+  // 確かめた後に、会話の ID が見つからないターミナルが増えた
+  showHostPlan(res.value.plan);
+  const errorEl = hostToast.querySelector('.repo-toast__error');
+  errorEl.textContent = '確かめた後に状態が変わりました。もう一度確かめてください。';
+  errorEl.hidden = false;
+}
+
+hostToast.querySelector('[data-action="accept"]').addEventListener('click', acceptHostPlan);
+hostToast.querySelector('[data-action="cancel"]').addEventListener('click', () => {
+  if (hostBusy) return;
+  hostPlan = null;
+  hostStale = false;
+  hostToast.hidden = true;
 });
 
 terp.onInfo((info) => {
@@ -3389,6 +3498,9 @@ terp.onMenu((action, arg) => {
       break;
     case 'redraw-terminal':
       redrawTerminal();
+      break;
+    case 'replace-host':
+      replaceHost();
       break;
     case 'workspace-index':
       if (workspaces[arg]) switchWorkspace(workspaces[arg].id);
@@ -3701,6 +3813,7 @@ window.__terp = {
   screenCheck: screenCheckOf,
   checkActiveScreen,
   redrawTerminal,
+  replaceHost,
 };
 
 applyConfig(config);
