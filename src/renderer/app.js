@@ -33,6 +33,7 @@ import { initTooltips } from './tooltip.js';
 }
 
 const terp = window.terp;
+const shortcuts = window.terpShortcuts;
 // 枠の外でも Finder のファイルで窓が遷移しないよう、既定の動作を止める。
 for (const type of ['dragover', 'drop']) document.addEventListener(type, (event) => {
   if (Array.from(event.dataTransfer?.types || []).includes('Files')) event.preventDefault();
@@ -156,8 +157,11 @@ function resizePty(s, cols, rows) {
 
 // 設定（色・フォント・透過）を、開いている端末・エディタ・枠に反映する
 function applyConfig(c) {
+  const keysChanged = JSON.stringify(config.keybindings) !== JSON.stringify(c.keybindings);
   config = c;
   applySettingsConfig(c);
+  refreshShortcutHints();
+  if (keysChanged) for (const session of sessions.values()) renderItem(session);
   applyEditorConfig(c);
   const root = document.documentElement.style;
   for (const [key, value] of Object.entries(c.chrome)) root.setProperty(`--color-${key}`, value);
@@ -187,6 +191,33 @@ function applyConfig(c) {
     s.term.options.cursorStyle = c.cursorStyle;
     s.term.options.cursorBlink = c.cursorBlink;
     if (!s.el.hidden) s.fit.fit();
+  }
+}
+
+function shortcutText(id) {
+  return shortcuts.formatAccelerator(shortcuts.acceleratorFor(id, config.keybindings));
+}
+
+function shortcutLabel(label, id) {
+  const key = shortcutText(id);
+  return key ? `${label}（${key}）` : label;
+}
+
+function refreshShortcutHints() {
+  for (const node of document.querySelectorAll('[data-shortcut-title]')) {
+    const label = shortcutLabel(node.dataset.shortcutLabel, node.dataset.shortcutTitle);
+    node.title = label;
+    node.setAttribute('aria-label', label);
+  }
+  // 設定の一覧の行は値の無い data-shortcut-key を持ち、自分で描き直す。ここで書くと空で上書きしてしまう
+  for (const node of document.querySelectorAll('[data-shortcut-key]:not([data-shortcut-key=""])')) node.textContent = shortcutText(node.dataset.shortcutKey);
+  // 別の画面部品が作るヒントも、同じ正本から更新する。
+  const overviewKey = document.querySelector('#overview-open .btn__key');
+  if (overviewKey) overviewKey.textContent = shortcutText('overview');
+  const next = document.querySelector('#term-search [data-dir="next"]');
+  if (next) {
+    next.title = `次へ（${['Enter', shortcutText('find-next')].filter(Boolean).join('・')}）`;
+    next.setAttribute('aria-label', next.title);
   }
 }
 
@@ -407,7 +438,7 @@ function renderItem(s, index = visibleKeys().indexOf(termKey(s.id))) {
   clash.hidden = !s.clashes?.length;
   if (s.clashes?.length) clash.title = clashText(s);
   // 番号は上のタブに出ているものだけに付ける（⌘1〜⌘9 はタブの順）
-  li.querySelector('.session__key').textContent = index >= 0 && index < 9 ? `⌘${index + 1}` : '';
+  li.querySelector('.session__key').textContent = index >= 0 && index < 9 ? shortcutText(`tab-${index + 1}`) : '';
 }
 
 function renderAll() {
@@ -470,7 +501,7 @@ function renderTabs(visible) {
       makeTabDraggable(tab, key);
       tab.setAttribute('role', 'tab');
       tab.innerHTML = `${key.startsWith('t:') ? '<span class="session__dot tab__dot"></span>' : key.startsWith('s:') ? AGENT_ICON : TAB_FILE_ICON}<span class="tab__name"></span>
-        <button class="tab__close" type="button" aria-label="閉じる" title="閉じる（⌘W）">${CLOSE_ICON}</button>`;
+        <button class="tab__close" type="button" aria-label="閉じる" data-shortcut-title="close" data-shortcut-label="閉じる" title="${escapeHtml(shortcutLabel('閉じる', 'close'))}">${CLOSE_ICON}</button>`;
       tab.addEventListener('click', (e) => {
         if (e.target.closest('.tab__close')) closeKey(key);
         else activateKey(key);
@@ -1596,7 +1627,7 @@ function openTabMenu() {
   tabMenu.textContent = '';
   // ターミナル・エージェント・利用者のコマンドの順に、まとまりの間を線で分ける
   const groups = [
-    [{ label: 'ターミナル', hint: '⌘T', run: () => newTerminal() }],
+    [{ label: 'ターミナル', hint: shortcutText('new'), run: () => newTerminal() }],
     agentList.map((a) => ({
       label: a.label,
       agent: a,
@@ -1861,8 +1892,7 @@ function createItem(s) {
       <span class="session__clash" hidden>同じファイル</span>
       <span class="session__sub"></span>
     </span>
-    <button class="session__draft icon-btn draft-star" type="button" data-action="draft" aria-pressed="true" aria-label="${draftLabel(true)}" title="${draftLabel(true)}（上のタブと ⌘M には残る）">${STAR_ICON}</button>
-    <button class="session__close" type="button" aria-label="閉じる" title="閉じる（⌘W）">
+    <button class="session__close" type="button" aria-label="閉じる" data-shortcut-title="close" data-shortcut-label="閉じる" title="${escapeHtml(shortcutLabel('閉じる', 'close'))}">
       <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
     </button>`;
   li.addEventListener('click', () => activate(s.id));
@@ -2693,7 +2723,7 @@ function handleKey(s, event) {
     renderAll();
     return false;
   }
-  if (event.key === 'Tab' && event.ctrlKey) {
+  if (shortcuts.matchesAccelerator(event, shortcuts.acceleratorFor('recent', config.keybindings))) {
     event.preventDefault();
     switchRecent();
     return false;
@@ -3092,6 +3122,7 @@ function openTermSearch(direction) {
   const host = panes.body(activePaneId);
   if (direction) termSearch.step(s, direction, host);
   else termSearch.open(s, host);
+  refreshShortcutHints();
 }
 
 function removeSession(id) {
@@ -3415,6 +3446,7 @@ terp.onInfo((info) => {
 });
 
 terp.onMenu((action, arg) => {
+  if (document.documentElement.dataset.shortcutCapture === 'true') return;
   if (action === 'overview') { overview.toggle(); return; }
   if (overview.open) {
     if (action === 'select-all') overview.selectAll();
@@ -3535,7 +3567,7 @@ terp.onMenu((action, arg) => {
 });
 
 document.addEventListener('keydown', (event) => {
-  if (event.key !== 'Tab' || !event.ctrlKey || event.metaKey || event.target.closest('.xterm')) return;
+  if (!shortcuts.matchesAccelerator(event, shortcuts.acceleratorFor('recent', config.keybindings)) || event.target.closest('.xterm')) return;
   if (document.querySelector('dialog[open]') || event.target.closest('.menu')) return;
   if (event.target.closest('input, textarea') && !event.target.closest('.fileview')) return;
   event.preventDefault();

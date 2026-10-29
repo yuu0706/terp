@@ -20,10 +20,10 @@
       <div id="sidebar-resize" role="separator" aria-orientation="vertical" aria-label="左の一覧の幅" aria-valuemin="200" aria-valuemax="520" tabindex="0" title="ドラッグで幅を変える。ダブルクリックで元の幅"></div>
       <div class="sidebar__head">
         <div class="sidebar__actions">
-          <button id="sidebar-hide" class="icon-btn" type="button" aria-label="左の一覧を隠す（⌘B）" title="左の一覧を隠す（⌘B）">
+          <button id="sidebar-hide" data-shortcut-title="toggle-sidebar" data-shortcut-label="左の一覧を隠す" class="icon-btn" type="button" aria-label="左の一覧を隠す" title="左の一覧を隠す">
             <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2" /><path d="M9 5v14" /></svg>
           </button>
-          <button id="settings-open" class="icon-btn" type="button" aria-label="設定（⌘,）" title="設定（⌘,）">
+          <button id="settings-open" data-shortcut-title="settings" data-shortcut-label="設定" class="icon-btn" type="button" aria-label="設定" title="設定">
             <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
               <path d="m10 3-.6 2.2-2 .9-2.1-.6-2 3.5 1.6 1.6v2.8L3.3 15l2 3.5 2.1-.6 2 .9.6 2.2h4l.6-2.2 2-.9 2.1.6 2-3.5-1.6-1.6v-2.8L20.7 9l-2-3.5-2.1.6-2-.9L14 3z" />
               <circle cx="12" cy="12" r="3" />
@@ -74,19 +74,19 @@
             <path d="M6 8v8M18 10c0 4-6 3-6 8" />
           </svg>
           <span>新しい作業</span>
-          <kbd class="btn__key">⌘N</kbd>
+          <kbd class="btn__key" data-shortcut-key="new-work"></kbd>
         </button>
         <div id="agents" class="agents" role="group" aria-label="AI エージェントを起動" hidden></div>
         <button id="new-terminal" class="btn btn--primary btn--block" type="button">
           <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
           <span>新しいターミナル</span>
-          <kbd class="btn__key">⌘T</kbd>
+          <kbd class="btn__key" data-shortcut-key="new"></kbd>
         </button>
       </div>
     </nav>
     <main id="terminals">
       <div class="topbar">
-        <button id="sidebar-show" class="icon-btn icon-btn--tab" type="button" aria-label="左の一覧を出す（⌘B）" title="左の一覧を出す（⌘B）" hidden>
+        <button id="sidebar-show" data-shortcut-title="toggle-sidebar" data-shortcut-label="左の一覧を出す" class="icon-btn icon-btn--tab" type="button" aria-label="左の一覧を出す" title="左の一覧を出す" hidden>
           <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2" /><path d="M9 5v14" /></svg>
         </button>
         <div id="tabs" class="tabs" role="tablist" aria-label="開いているターミナルとファイル"></div>
@@ -102,13 +102,13 @@
         <div class="topbar__spacer"></div>
         <div id="tab-menu" class="menu" role="menu" aria-label="新しいタブ" hidden></div>
         <div class="topbar__actions">
-          <button id="files-toggle" class="btn topbar__btn" type="button" aria-pressed="false" title="ファイル（⌘⇧E）">
+          <button id="files-toggle" data-shortcut-title="toggle-files" data-shortcut-label="ファイル" class="btn topbar__btn" type="button" aria-pressed="false" title="ファイル">
             <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
               <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
             </svg>
             <span>ファイル</span>
           </button>
-          <button id="git-toggle" class="btn topbar__btn" type="button" aria-pressed="false" title="変更の一覧（⌘⇧G）">
+          <button id="git-toggle" data-shortcut-title="toggle-git" data-shortcut-label="変更の一覧" class="btn topbar__btn" type="button" aria-pressed="false" title="変更の一覧">
             <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
               <circle cx="6" cy="6" r="2" /><circle cx="6" cy="18" r="2" /><circle cx="18" cy="8" r="2" />
               <path d="M6 8v8M18 10c0 4-6 3-6 8" />
@@ -116,7 +116,7 @@
             <span>変更</span>
             <span id="git-toggle-count" class="badge" hidden></span>
           </button>
-          <button id="history-toggle" class="btn topbar__btn" type="button" aria-pressed="false" title="履歴（⌘⇧H）">
+          <button id="history-toggle" data-shortcut-title="toggle-history" data-shortcut-label="履歴" class="btn topbar__btn" type="button" aria-pressed="false" title="履歴">
             <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></svg>
             <span>履歴</span>
           </button>
@@ -410,6 +410,7 @@
         </div>
       </form>
     </dialog>
+    <script src="../shortcuts.js"></script>
     <script src="../../node_modules/monaco-editor/min/vs/loader.js"></script>
     <div id="permission-cards" class="permission-cards" role="region" aria-label="許可待ち" hidden></div>
     <div id="ai-toast" class="repo-toast ai-toast" role="status" hidden><p class="ai-toast__body"></p></div>

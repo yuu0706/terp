@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld('terp', {
   replyClose: (id, answer) => ipcRenderer.send('window:close-reply', id, answer),
   getConfig: () => ipcRenderer.invoke('config:get'),
   rawConfig: () => ipcRenderer.invoke('config:raw'),
+  captureShortcut: (active) => ipcRenderer.invoke('shortcuts:capture', active),
   updateConfig: (patch) => ipcRenderer.invoke('config:update', patch),
   listThemes: () => ipcRenderer.invoke('config:themes'),
   ghosttyConfig: () => ipcRenderer.invoke('config:ghostty'),

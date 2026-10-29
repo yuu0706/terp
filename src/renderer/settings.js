@@ -1,3 +1,4 @@
+import { createShortcutEditor } from './shortcutsettings.js';
 // 設定の画面。左のメニューで項目を選び、右にその設定を出す。
 // 変えたらすぐ ~/.config/terp/config.json に書き、設定ファイルの監視を通して画面に反映する。
 //
@@ -6,6 +7,7 @@
 const terp = window.terp;
 
 const ICONS = {
+  shortcuts: '<rect x="3" y="6" width="18" height="12" rx="2" /><path d="M7 10h1m3 0h1m3 0h1M7 14h10" />',
   appearance: '<path d="M12 3a9 9 0 1 0 0 18c1.1 0 1.5-.8 1.5-1.5 0-1.2-1-1.5-1-2.5 0-.8.7-1.5 1.5-1.5H16a5 5 0 0 0 5-5c0-4.1-4-7.5-9-7.5z" /><circle cx="7.5" cy="11" r="1" /><circle cx="10.5" cy="7.5" r="1" /><circle cx="15" cy="8" r="1" />',
   agents: '<rect x="4" y="8" width="16" height="12" rx="2" /><path d="M12 4v4M9 13v2M15 13v2M2 14h2M20 14h2" />',
   commands: '<path d="M7 5l12 7-12 7z" />',
@@ -158,6 +160,11 @@ export const SECTIONS = [
     ],
   },
   {
+    id: 'shortcuts',
+    label: 'ショートカット',
+    fields: [{ key: 'keybindings', type: 'shortcuts' }],
+  },
+  {
     id: 'advanced',
     label: '詳しい設定',
     fields: [
@@ -185,6 +192,7 @@ let statusTimer = null;
 const themeColorCache = new Map();
 let refreshThemePreview = () => {};
 let cancelThemeAi = () => {};
+let shortcutEditor = null;
 
 export function initSettings(context) {
   ctx = context;
@@ -204,6 +212,8 @@ export function isSettingsOpen() {
 }
 
 export function applySettingsConfig(config) {
+  values.keybindings = config.keybindings || {};
+  shortcutEditor?.refresh();
   for (const field of SECTIONS.flatMap((s) => s.fields)) {
     if (field.type !== 'toggle' || typeof config[field.key] !== 'boolean') continue;
     values[field.key] = config[field.key];
@@ -244,6 +254,8 @@ export async function openSettings(sectionId) {
 }
 
 export function closeSettings() {
+  shortcutEditor?.dispose();
+  shortcutEditor = null;
   sectionRenderSerial++;
   flushRegistry();
   registrySession++;
@@ -280,7 +292,7 @@ async function save(key, value) {
   if (key === 'appBackground') values.appBackgroundTheme = value ? values.theme || '' : null;
   if (['accent', 'foreground', 'background', 'appBackground', 'palette'].includes(key)) refreshThemePreview();
   refreshDisabledFields();
-  showStatus('保存しました');
+  showStatus(key === 'keybindings' ? '保存した' : '保存しました');
   return true;
 }
 
@@ -305,6 +317,8 @@ function renderNav() {
 }
 
 async function renderSection() {
+  shortcutEditor?.dispose();
+  shortcutEditor = null;
   const serial = ++sectionRenderSerial;
   const section = SECTIONS.find((s) => s.id === current) || SECTIONS[0];
   flushRegistry();
@@ -327,6 +341,10 @@ async function renderSection() {
 
 // 種類ごとの部品。どれも { el, } を返し、変えたら save を呼ぶ
 const FIELD_TYPES = {
+  shortcuts() {
+    shortcutEditor = createShortcutEditor({ getBindings: () => values.keybindings || {}, saveBindings: (bindings) => save('keybindings', bindings) });
+    return shortcutEditor;
+  },
   ghostty: createGhosttyImport,
   theme: createThemePicker,
   registry: createAgentRegistry,
@@ -504,8 +522,8 @@ async function renderField(field) {
   const row = document.createElement('div');
   row.className = 'settings__field';
   const id = `setting-${field.key || field.label}`;
-  const control = await FIELD_TYPES[field.type](field, values[field.key], id);
-  if (!['action', 'registry', 'ghostty', 'commands'].includes(field.type)) {
+  const control = await FIELD_TYPES[field.type](field, fieldValue(field), id);
+  if (!['action', 'registry', 'ghostty', 'commands', 'shortcuts'].includes(field.type)) {
     const label = document.createElement('label');
     label.className = 'settings__label';
     label.htmlFor = id;

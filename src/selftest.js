@@ -176,7 +176,7 @@ async function runSettingsTest({ win, js, check, outDir }) {
   await sleep(800);
   check('⌘, で設定の画面が開く', (await js(`document.getElementById('settings').hidden`)) === false);
   const navs = await js(`[...document.querySelectorAll('#settings-nav .settings__nav-item')].map((b) => b.textContent)`);
-  check('左にメニューが並ぶ', navs.join() === '外観,AI エージェント,AI の手伝い,コマンド,通知,詳しい設定', navs.join());
+  check('左にメニューが並ぶ', navs.join() === '外観,AI エージェント,AI の手伝い,コマンド,通知,ショートカット,詳しい設定', navs.join());
   const themeCount = await js(`document.querySelectorAll('.theme-picker__row').length`);
   check('テーマを一覧から選べる', themeCount > 100, `${themeCount} 件`);
   await shot('1-appearance');
@@ -250,6 +250,7 @@ async function runSettingsTest({ win, js, check, outDir }) {
   await js(`document.getElementById('settings').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
   await sleep(300);
   check('Esc で閉じる', await js(`document.getElementById('settings').hidden`));
+  await require('./shortcutselftest').run({ win, js, check, outDir });
 }
 
 // TERP_SELFTEST_GHOSTTY は、一時フォルダの設定だけで差分・保存・端末への反映を確かめる
@@ -1879,7 +1880,7 @@ async function runSidebarTest({ win, js, check, outDir }) {
   check('リポジトリの見出しで、隠れたボタンが場所を取らない', await js(`[...document.querySelectorAll('.project__head .icon-btn--hover:not([aria-pressed="true"])')].every((el) => el.getBoundingClientRect().width === 0)`));
 }
 
-// TERP_SELFTEST_SHORTCUTS は、VS Code に倣って足したキー（⌘F・⌘G、⌘= / ⌘- / ⌘0、⇧⌘T）を確かめる
+// TERP_SELFTEST_SHORTCUTS は検索・文字サイズ・開き直しと、設定でのキー変更を確かめる。一時フォルダの TERP_CONFIG_DIR が必要
 async function runShortcutsTest({ win, js, check, outDir }) {
   const menu = async (label) => {
     const { Menu } = require('electron');
@@ -1952,6 +1953,7 @@ async function runShortcutsTest({ win, js, check, outDir }) {
   check('⇧⌘T で同じ名前・同じ場所の端末が開き、前に出る', reopened);
   check('開き直したものは覚えから消える', (await js('window.__terp.closedTabs.length')) === 0);
   fs.rmSync(dir, { recursive: true, force: true });
+  await require('./shortcutselftest').run({ win, js, check, outDir });
 }
 
 // TERP_SELFTEST_LOCK は、枠の固定（VS Code のグループのロック）を確かめる。固定した枠はタブを切り替えても中身が変わらない

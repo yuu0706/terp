@@ -5,6 +5,7 @@ const { pathToFileURL } = require('url');
 const fs = require('fs');
 const os = require('os');
 const config = require('./config');
+const shortcuts = require('./shortcuts');
 const ghostty = require('./ghostty');
 const { setBlur } = require('./blur');
 const projects = require('./projects');
@@ -577,112 +578,42 @@ ipcMain.on('open-external', (_e, url) => {
   if (/^https?:\/\//.test(url)) shell.openExternal(url);
 });
 
-// ⌘ の付くキーはメニューで受け、画面へ操作として送る
-function buildMenu() {
-  const send = (action, arg) => () => toWindow('menu', action, arg);
-  const selectItems = Array.from({ length: 9 }, (_, i) => ({
-    label: `タブ ${i + 1}`,
-    accelerator: `CmdOrCtrl+${i + 1}`,
-    click: send('select-index', i),
+// キーの定義を設定画面と共有し、ラベルの変更で設定の ID が変わらないようにする。
+let menuItems = [];
+let capturingShortcut = false;
+function runMenuItem(item) {
+  if (item.id === 'open-config') shell.openPath(config.CONFIG_PATH);
+  else toWindow('menu', item.action, item.arg);
+}
+function buildMenu(loaded = config.loadConfig()) {
+  menuItems = shortcuts.applyKeybindings(loaded.keybindings);
+  const effective = new Map(menuItems.map((item) => [item.id, item]));
+  const template = shortcuts.MENU_GROUPS.map((group) => ({
+    label: group.label,
+    ...(group.role ? { role: group.role } : {}),
+    submenu: group.items.map((entry) => {
+      if (!entry.id) return { ...entry };
+      const item = effective.get(entry.id);
+      // role の既定キーは macOS に任せる。null で上書きして標準操作を消さない。
+      if (item.role) return { id: item.id, role: item.role, label: item.label };
+      return {
+        id: item.id, label: item.label, accelerator: item.accelerator,
+        ...(item.visible === false ? { visible: false } : {}),
+        ...(item.registerAccelerator === false ? { registerAccelerator: false } : {}),
+        click: () => runMenuItem(item),
+      };
+    }),
   }));
-  const template = [
-    {
-      role: 'appMenu',
-      submenu: [
-        { role: 'about' },
-        { type: 'separator' },
-        { label: '設定…', accelerator: 'CmdOrCtrl+,', click: send('settings') },
-        { label: '設定ファイルを開く', click: () => shell.openPath(config.CONFIG_PATH) },
-        { type: 'separator' },
-        { role: 'hide' },
-        { role: 'hideOthers' },
-        { role: 'unhide' },
-        { type: 'separator' },
-        { role: 'quit' },
-      ],
-    },
-    {
-      label: 'ターミナル',
-      submenu: [
-        { label: '新しいターミナル', accelerator: 'CmdOrCtrl+T', click: send('new') },
-        { label: '右に分割', accelerator: 'CmdOrCtrl+\\', click: send('split-right') },
-        { label: '閉じたタブを開き直す', accelerator: 'CmdOrCtrl+Shift+T', click: send('reopen') },
-        { label: '新しい作業…', accelerator: 'CmdOrCtrl+N', click: send('new-work') },
-        { label: 'リポジトリを追加…', click: send('add-project') },
-        { label: 'タブを閉じる', accelerator: 'CmdOrCtrl+W', click: send('close') },
-        { label: '保存', accelerator: 'CmdOrCtrl+S', click: send('save') },
-        { type: 'separator' },
-        { label: '画面を消去', accelerator: 'CmdOrCtrl+K', click: send('clear') },
-      ],
-    },
-    {
-      label: 'ワークスペース',
-      submenu: [
-        ...Array.from({ length: 9 }, (_, i) => ({
-          label: `ワークスペース ${i + 1}`, accelerator: `Ctrl+Command+${i + 1}`, click: send('workspace-index', i),
-        })),
-        { type: 'separator' },
-        { label: '次のワークスペース', accelerator: 'Ctrl+Command+]', click: send('workspace-next') },
-        { label: '前のワークスペース', accelerator: 'Ctrl+Command+[', click: send('workspace-prev') },
-      ],
-    },
-    {
-      label: '編集',
-      submenu: [
-        { role: 'copy', label: 'コピー' },
-        { role: 'paste', label: '貼り付け' },
-        { label: 'すべて選択', accelerator: 'CmdOrCtrl+A', click: send('select-all') },
-        { type: 'separator' },
-        { label: '検索', accelerator: 'CmdOrCtrl+F', click: send('find') },
-        { label: '次を検索', accelerator: 'CmdOrCtrl+G', click: send('find-next') },
-        // ⇧⌘G は「変更の一覧」が先に使っている。前へは検索欄の ⇧Enter で
-        { label: '前を検索', click: send('find-prev') },
-      ],
-    },
-    {
-      label: '移動',
-      submenu: [
-        { label: '全体の一覧', accelerator: 'CmdOrCtrl+M', click: send('overview') },
-        // ⌃Tab は端末が先に受け取るため、画面側で処理し、メニューには表示だけする
-        { label: '直前のタブ', accelerator: 'Ctrl+Tab', registerAccelerator: false, click: send('recent') },
-        { label: '前のタブ', accelerator: 'CmdOrCtrl+Shift+[', click: send('prev') },
-        { label: '次のタブ', accelerator: 'CmdOrCtrl+Shift+]', click: send('next') },
-        { label: '次の要対応', accelerator: 'CmdOrCtrl+Shift+J', click: send('next-attention') },
-        { type: 'separator' },
-        { label: '左の枠', accelerator: 'CmdOrCtrl+Alt+Left', click: send('pane-left') },
-        { label: '右の枠', accelerator: 'CmdOrCtrl+Alt+Right', click: send('pane-right') },
-        { label: '上の枠', accelerator: 'CmdOrCtrl+Alt+Up', click: send('pane-up') },
-        { label: '下の枠', accelerator: 'CmdOrCtrl+Alt+Down', click: send('pane-down') },
-        { label: '今の枠を固定', click: send('toggle-lock') },
-        { type: 'separator' },
-        ...selectItems,
-      ],
-    },
-    {
-      label: '表示',
-      submenu: [
-        { label: '左の一覧', accelerator: 'CmdOrCtrl+B', click: send('toggle-sidebar') },
-        { label: 'ファイル', accelerator: 'CmdOrCtrl+Shift+E', click: send('toggle-files') },
-        { label: '変更の一覧', accelerator: 'CmdOrCtrl+Shift+G', click: send('toggle-git') },
-        { label: '履歴', accelerator: 'CmdOrCtrl+Shift+H', click: send('toggle-history') },
-        { type: 'separator' },
-        { label: '文字を大きく', accelerator: 'CmdOrCtrl+=', click: send('font-bigger') },
-        // ⇧ を押したまま ⌘+ と打っても効くように、隠した項目でも受ける
-        { label: '文字を大きく', accelerator: 'CmdOrCtrl+Plus', visible: false, click: send('font-bigger') },
-        { label: '文字を小さく', accelerator: 'CmdOrCtrl+-', click: send('font-smaller') },
-        { label: '文字を元の大きさに', accelerator: 'CmdOrCtrl+0', click: send('font-reset') },
-        { type: 'separator' },
-        { label: 'ターミナルの表示を検査', click: send('check-screen') },
-        { label: 'ターミナルの表示を作り直す', click: send('redraw-terminal') },
-        { label: '常駐のプロセスを入れ替える…', click: send('replace-host') },
-        { type: 'separator' },
-        { role: 'toggleDevTools', label: '開発者ツール' },
-        { role: 'togglefullscreen', label: 'フルスクリーン' },
-      ],
-    },
-  ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
+
+// 入力欄へ届く前にメニューが ⌘W などを実行するため、待ち受けの開始を本体と同期する。
+ipcMain.handle('shortcuts:capture', (event, active) => {
+  if (event.sender !== win?.webContents || typeof active !== 'boolean') return false;
+  capturingShortcut = active;
+  event.sender.setIgnoreMenuShortcuts(active);
+  return true;
+});
 
 let quitRequested = false;
 let allowClose = false;
@@ -727,6 +658,23 @@ function createWindow() {
       nodeIntegration: false,
     },
   });
+  const resetShortcutCapture = () => {
+    capturingShortcut = false;
+    if (!win.webContents.isDestroyed()) win.webContents.setIgnoreMenuShortcuts(false);
+  };
+  win.on('blur', resetShortcutCapture);
+  win.webContents.on('did-start-loading', resetShortcutCapture);
+  win.webContents.on('render-process-gone', resetShortcutCapture);
+  win.webContents.on('before-input-event', (event, input) => {
+    if (capturingShortcut || input.type !== 'keyDown' || input.isComposing) return;
+    // Control・Option の割り当てを端末へ流さない。recent は一覧内の ⌃Tab と区別するため画面で受ける。
+    const accelerator = shortcuts.acceleratorFromEvent(input);
+    if (!accelerator) return;
+    const item = menuItems.find((entry) => !entry.role && entry.id !== 'recent' && entry.accelerator === accelerator);
+    if (!item) return;
+    event.preventDefault();
+    runMenuItem(item);
+  });
   win.on('close', (event) => {
     if (allowClose) return;
     event.preventDefault();
@@ -765,6 +713,7 @@ app.whenReady().then(() => {
   createWindow();
   // 設定ファイルを保存したら、開いている端末にすぐ反映する
   config.watchConfig((loaded) => {
+    buildMenu(loaded);
     updateDockBadge();
     dockIcon.update(loaded);
     if (!win || win.isDestroyed()) return;

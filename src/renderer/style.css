@@ -2075,6 +2075,97 @@ button.subagent:hover,
   max-width: none;
 }
 
+.settings__field[data-key='keybindings'] {
+  max-width: none;
+  align-self: stretch;
+}
+
+.shortcut-settings {
+  width: 100%;
+  min-width: 0;
+  container-type: inline-size;
+  --shortcut-key-width: 12em;
+  --shortcut-row-height: calc(var(--control-h) + var(--space-2));
+}
+
+.shortcut-settings__toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  position: sticky;
+  /* 設定の枠の上の余白（.settings__content の padding-top）の分だけ上に貼り付け、その隙間から下の行が覗かないようにする */
+  top: calc(var(--space-3) * -1);
+  z-index: 1;
+  padding: var(--space-3) 0 var(--space-2);
+  background: var(--color-bg);
+}
+
+.shortcut-settings__toolbar .input {
+  flex: 1;
+  min-width: var(--shortcut-key-width);
+}
+
+.shortcut-settings__group {
+  margin-top: var(--space-3);
+}
+
+.shortcut-settings__row {
+  display: grid;
+  grid-template-columns: minmax(var(--shortcut-key-width), 1fr) var(--shortcut-key-width) auto;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--shortcut-row-height);
+  padding: var(--space-1) 0;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.shortcut-settings__row[hidden],
+.shortcut-settings__group[hidden] {
+  display: none;
+}
+
+.shortcut-settings__name {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  overflow-wrap: anywhere;
+}
+
+.shortcut-settings__key {
+  font: inherit;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.shortcut-settings__key[data-capturing='true'] {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+
+.shortcut-settings__actions {
+  display: flex;
+  gap: var(--space-1);
+}
+
+.shortcut-settings__error {
+  margin: var(--space-2) 0;
+  color: var(--color-warning);
+  font-size: var(--text-sm);
+}
+
+/* 左のナビを除いた幅で判定し、狭い設定欄でも操作を切り落とさない。 */
+@container (max-width: 640px) {
+  .shortcut-settings__row {
+    grid-template-columns: minmax(0, 1fr) var(--shortcut-key-width);
+  }
+
+  .shortcut-settings__actions {
+    grid-column: 1 / -1;
+    justify-content: flex-end;
+  }
+}
+
 .settings__field-heading {
   display: flex;
   align-items: center;

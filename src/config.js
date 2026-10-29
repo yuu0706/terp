@@ -2,6 +2,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { readKeybindings, validateKeybindings } = require('./shortcuts');
 
 const CONFIG_DIR = process.env.TERP_CONFIG_DIR || path.join(os.homedir(), '.config', 'terp');
 const CONFIG_PATH = path.join(CONFIG_DIR, 'config.json');
@@ -14,6 +15,7 @@ const THEME_DIRS = [
 ];
 
 const DEFAULT_CONFIG = {
+  keybindings: {},
   theme: null,
   accent: null,
   // テーマの色の上書き。null ならテーマの色を使う。palette は { "0": "#rrggbb", … "15": … } の一部だけでもよい
@@ -270,6 +272,10 @@ function normalizeTerminalConfig(config) {
     config[key] = DEFAULT_CONFIG[key];
     error = error || `${key} の値を確認する。既定の値で動作中`;
   }
+  // 全体を戻すと使える割り当てまで失うため、この項目は ID ごとに検査する。
+  const keys = readKeybindings(config.keybindings);
+  config.keybindings = keys.bindings;
+  if (keys.invalid) error = error || 'keybindings の値を確認する。使えない割り当ては既定で動作中';
   return error;
 }
 
@@ -298,6 +304,7 @@ function loadConfig() {
   return {
     error,
     font: { family: config.fontFamily, size: config.fontSize },
+    keybindings: config.keybindings,
     paddingX: config.paddingX,
     paddingY: config.paddingY,
     minimumContrast: config.minimumContrast,
@@ -397,6 +404,10 @@ function updateConfig(patch) {
     else {
       if (key === 'agents') validateAgents(value);
       if (key === 'commands') validateCommands(value);
+      if (key === 'keybindings') {
+        const error = validateKeybindings(value);
+        if (error) throw new Error(error);
+      }
       if (TERMINAL_VALIDATORS[key] && !TERMINAL_VALIDATORS[key](value)) throw new Error(`${key} の値を確認する`);
       if (COLOR_VALIDATORS[key] && !COLOR_VALIDATORS[key](value)) throw new Error(`${key} は #rrggbb の色で指定する`);
       next[key] = value;
