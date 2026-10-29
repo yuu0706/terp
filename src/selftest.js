@@ -3730,6 +3730,66 @@ async function runWorkTest({ win, js, check, outDir }) {
   check('読み直しても並びが保たれる', (await order()).join() === 'sample-repo,second-repo');
 }
 
+// TERP_SELFTEST_THEMEICON は、一時フォルダの設定で Dock の色と描き直しを確かめる
+async function runThemeIconTest({ js, check, outDir }) {
+  if (!process.env.TERP_CONFIG_DIR) throw new Error('アイコンの自己診断には一時フォルダの TERP_CONFIG_DIR が必要');
+  if (!app.dock) throw new Error('アイコンの自己診断には macOS の Dock が必要');
+  const config = require('./config');
+  const { iconColors, DEFAULT_ICON_COLORS } = require('./themeicon');
+  const state = require('./main').__test;
+  const original = fs.readFileSync(config.CONFIG_PATH, 'utf8');
+  const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+  const waitFor = async (condition) => {
+    for (let t = 0; t < 10000; t += 100) {
+      if (await condition()) return true;
+      await sleep(100);
+    }
+    return false;
+  };
+  const applied = async (colors) => waitFor(() => !state.dockIconBusy && same(state.dockIconColors, colors));
+  const shoot = (name) => {
+    const png = state.dockIconPng;
+    check(`${name} の PNG がある`, Boolean(png));
+    if (png) fs.writeFileSync(path.join(outDir, `${name}.png`), png);
+  };
+  const change = async (patch) => {
+    config.updateConfig(patch);
+    const loaded = config.loadConfig();
+    const colors = loaded.themedIcon ? iconColors(loaded.chrome) : DEFAULT_ICON_COLORS;
+    const seen = await waitFor(() => js(`(() => {
+      const c = window.__terp.config;
+      return c.themedIcon === ${loaded.themedIcon} && c.font.size === ${JSON.stringify(loaded.font.size)}
+        && JSON.stringify(c.chrome) === ${JSON.stringify(JSON.stringify(loaded.chrome))};
+    })()`));
+    check('設定の変更が画面まで届く', seen);
+    check('Dock に設定の色が当たる', await applied(colors), JSON.stringify(state.dockIconColors));
+    return colors;
+  };
+
+  try {
+    check('起動後にテーマの5色が当たる', await applied(iconColors(config.loadConfig().chrome)), JSON.stringify(state.dockIconColors));
+    shoot('theme-icon-start');
+    const before = state.dockIconColors;
+    const accent = before?.accent === '#369abc' ? '#c96437' : '#369abc';
+    const themed = await change({ accent, themedIcon: true });
+    check('強調色を変えると Dock の色も変わる', !same(before, state.dockIconColors) && state.dockIconColors?.accent === accent);
+    shoot('theme-icon-custom');
+    await change({ themedIcon: false });
+    check('切ると原本の5色になる', same(state.dockIconColors, DEFAULT_ICON_COLORS));
+    shoot('theme-icon-original');
+    await change({ themedIcon: true });
+    check('戻すとテーマの5色になる', same(state.dockIconColors, themed));
+    shoot('theme-icon-restored');
+    const count = state.dockIconRenderCount;
+    const fontSize = config.loadConfig().font.size === 17 ? 18 : 17;
+    await change({ fontSize });
+    await sleep(700);
+    check('5色が同じ設定の変更では描き直さない', state.dockIconRenderCount === count, `${count} → ${state.dockIconRenderCount}`);
+  } finally {
+    fs.writeFileSync(config.CONFIG_PATH, original);
+  }
+}
+
 // TERP_SELFTEST_THEME を付けると、設定ファイルを書き換えてテーマと透過の反映を確かめる。
 // TERP_CONFIG_DIR に一時フォルダを指定し、利用者の設定を書き換えないこと
 async function runThemeTest({ win, js, send, check, outDir }) {
@@ -4146,6 +4206,13 @@ exports.run = (win) => {
 
     if (process.env.TERP_SELFTEST_WORK) {
       await runWorkTest({ win, js, check, outDir });
+      fs.writeFileSync(path.join(outDir, 'result.txt'), log.join('\n') + '\n');
+      await finish();
+      return;
+    }
+
+    if (process.env.TERP_SELFTEST_THEMEICON === '1') {
+      await runThemeIconTest({ js, check, outDir });
       fs.writeFileSync(path.join(outDir, 'result.txt'), log.join('\n') + '\n');
       await finish();
       return;

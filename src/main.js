@@ -26,6 +26,8 @@ const wallpaper = require('./wallpaper');
 const agentreply = require('./agentreply');
 const agenthistory = require('./agenthistory');
 const { PtyClient } = require('./ptyclient');
+const { createDockIcon } = require('./dockicon');
+const dockIcon = createDockIcon({ app, BrowserWindow });
 
 // シェルは常駐のプロセス（ptyhost.js）が持つ。terp を閉じてもシェルは残り、開き直したらつなぎ直す
 const client = new PtyClient();
@@ -46,7 +48,13 @@ ipcMain.on('dock:badge', (event, count) => {
   updateDockBadge();
 });
 
-exports.__test = { get dockBadge() { return lastDockBadge; } };
+exports.__test = {
+  get dockBadge() { return lastDockBadge; },
+  get dockIconColors() { return dockIcon.colors; },
+  get dockIconRenderCount() { return dockIcon.renderCount; },
+  get dockIconBusy() { return dockIcon.busy; },
+  get dockIconPng() { return dockIcon.png; },
+};
 notify.init({ getWindow: () => win, toWindow });
 
 // 起動元（npm・Electron・Claude Code）の環境変数をシェルへ持ち込まない
@@ -604,6 +612,7 @@ function createWindow() {
     closeRequest = { id, timer: setTimeout(() => finishClose(true), 2000) };
     toWindow('window:close-request', id);
   });
+  win.once('closed', () => dockIcon.stop());
   // 全画面の Space には壁紙も他の窓も無いため、透過していても灰色の板になる。壁紙を画面に敷いて透けて見せる
   win.on('enter-full-screen', () => {
     wallpaper.wallpaperDataUrl(win.getBounds())
@@ -612,6 +621,7 @@ function createWindow() {
   });
   win.on('leave-full-screen', () => toWindow('fullscreen:wallpaper', null));
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+  dockIcon.update(initial);
   win.once('ready-to-show', () => {
     applyWindowLook(win, initial.window);
     if (process.env.TERP_SELFTEST) win.showInactive();
@@ -633,6 +643,7 @@ app.whenReady().then(() => {
   // 設定ファイルを保存したら、開いている端末にすぐ反映する
   config.watchConfig((loaded) => {
     updateDockBadge();
+    dockIcon.update(loaded);
     if (!win || win.isDestroyed()) return;
     applyWindowLook(win, loaded.window);
     toWindow('config', loaded);
@@ -648,4 +659,7 @@ app.on('before-quit', () => {
   saveSnapshot();
 });
 // 終わるときは常駐のプロセスとの接続を切り、出力が届かないようにする。シェルは常駐のプロセスに残る
-app.on('will-quit', () => client.socket?.destroy());
+app.on('will-quit', () => {
+  dockIcon.stop();
+  client.socket?.destroy();
+});
