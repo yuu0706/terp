@@ -16,7 +16,7 @@ contextBridge.exposeInMainWorld('terp', {
   aiCommitMessage: (top) => ipcRenderer.invoke('ai:commit-message', top),
   aiTerminalName: (info) => ipcRenderer.invoke('ai:terminal-name', info),
   aiUsage: () => ipcRenderer.invoke('ai:usage'),
-  generateTheme: (answers) => ipcRenderer.invoke('theme:generate', answers),
+  generateTheme: (answers, revision) => ipcRenderer.invoke('theme:generate', answers, revision),
   saveTheme: (theme) => ipcRenderer.invoke('theme:save', theme),
   openConfigFile: () => ipcRenderer.invoke('config:open-file'),
   showNotification: (message) => ipcRenderer.invoke('notify:show', message),

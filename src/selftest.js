@@ -714,11 +714,13 @@ async function runThemeAiTest({ win, js, check, outDir }) {
   const stamp = Date.now();
   const name = `ThemeAI ${stamp}`;
   const theme = {
-    name, background: '#101820', foreground: '#f0f4f8', cursor: '#58c4ff', cursorText: '#101820',
+    name, concept: '深い海の青に、金色の光を添える', appBackground: '#0c1218', background: '#101820', foreground: '#f0f4f8', cursor: '#58c4ff', cursorText: '#101820',
     selectionBackground: '#345678', selectionForeground: '#ffffff',
     palette: ['#202830', '#ee6688', '#88cc88', '#eedd88', '#5599ee', '#bb88dd', '#66cccc', '#dddddd',
       '#667788', '#ff88aa', '#aaffaa', '#ffeeaa', '#88bbff', '#ddaaff', '#88eeee', '#ffffff'],
   };
+  const revised = { ...theme, concept: '青を強めた海に、金色の光を添える', selectionBackground: '#234567' };
+  const revisedAgain = { ...revised, concept: '青い海に、控えめな金色の光を添える', selectionBackground: '#123456' };
   const fixtureA = `Preview A ${stamp}`;
   const fixtureB = `Preview B ${stamp}`;
   const dir = path.join(config.CONFIG_DIR, 'themes');
@@ -732,6 +734,10 @@ async function runThemeAiTest({ win, js, check, outDir }) {
   const shellQuote = (s) => "'" + s.replace(/'/g, "'\\''") + "'";
   const envelope = (value) => JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: '```json\n' + JSON.stringify(value) + '\n```' });
   fs.writeFileSync(fake, `#!/bin/sh
+if [ "$1" != -p ]; then exit 2; fi
+has_system=no
+for arg in "$@"; do if [ "$arg" = --system-prompt ]; then has_system=yes; fi; done
+if [ "$has_system" != yes ]; then exit 2; fi
 count_file=${shellQuote(countFile)}
 mode_file=${shellQuote(modeFile)}
 n=0
@@ -742,7 +748,21 @@ printf '%s' "$2" > ${shellQuote(promptFile)}
 mode=good
 if [ -f "$mode_file" ]; then mode=$(cat "$mode_file"); fi
 if [ "$mode" = slow ]; then sleep 1; fi
-if [ "$mode" = low ] || { [ "$mode" = recover ] && [ "$n" -eq 1 ]; }; then
+if [ "$mode" = revise ] || [ "$mode" = revise-again ]; then
+if [ "$mode" = revise ]; then
+cat <<'THEME_JSON'
+${envelope(revised)}
+THEME_JSON
+else
+cat <<'THEME_JSON'
+${envelope(revisedAgain)}
+THEME_JSON
+fi
+elif [ "$mode" = palette-low ] || { [ "$mode" = palette-recover ] && [ "$n" -eq 1 ]; }; then
+cat <<'THEME_JSON'
+${envelope({ ...theme, palette: theme.palette.map((c, i) => i === 4 || i === 12 ? theme.background : c) })}
+THEME_JSON
+elif [ "$mode" = low ] || { [ "$mode" = recover ] && [ "$n" -eq 1 ]; }; then
 cat <<'THEME_JSON'
 ${envelope({ ...theme, foreground: theme.background })}
 THEME_JSON
@@ -763,7 +783,7 @@ fi
     return wait(`!document.getElementById('theme-ai-preview').hidden || !document.getElementById('theme-ai-error').hidden`);
   };
   try {
-    config.updateConfig({ theme: null, accent: null });
+    config.updateConfig({ theme: null, accent: null, aiAssist: false, aiDailyLimit: 0 });
     await sleep(400);
     win.webContents.send('menu', 'settings');
     await wait(`!!document.getElementById('setting-theme')`);
@@ -782,25 +802,72 @@ fi
     await sleep(400);
     check('Enter でテーマを適用する', saved().theme === fixtureB);
 
+    config.updateConfig({ accent: '#ff0000', foreground: '#e0e4e8', background: '#121a22', palette: { 4: '#66aaff' } });
+    const baseColors = config.getThemeColors(config.rawConfig().theme);
+    await sleep(400);
     await openAi();
-    check('AI の画面に3つの質問がある', await js(`document.querySelectorAll('#theme-ai-questions > fieldset').length === 3`));
-    await js(`(() => { const f = document.querySelector('#theme-ai-dialog form'); f.querySelector('[name="brightness"][value="明るい"]').checked = true; f.querySelector('[name="mood"][value="海"]').checked = true; f.querySelector('[name="moodText"]').value = '金色を少し'; f.querySelector('[name="contrast"][value="くっきり"]').checked = true; })()`);
+    check('AI の画面に8つの質問がある', await js(`document.querySelectorAll('#theme-ai-questions > fieldset').length === 8`));
+    check('強調色の欄は指定するときだけ操作できる', await js(`document.querySelector('#theme-ai-dialog [name="accent"]').disabled`));
+    await js(`(() => { const f = document.querySelector('#theme-ai-dialog form'); f.querySelector('[name="brightness"][value="明るい"]').checked = true; f.querySelector('[name="mood"][value="海"]').checked = true; f.querySelector('[name="moodText"]').value = '金色を少し'; f.querySelector('[name="contrast"][value="くっきり"]').checked = true; f.querySelector('[name="temperature"][value="冷たい"]').checked = true; f.querySelector('[name="saturation"][value="落ち着いた"]').checked = true; f.querySelector('[name="useAccent"]').click(); f.querySelector('[name="accent"]').value = '#58c4ff'; f.querySelector('[name="colorblind"]').checked = true; f.querySelector('[name="appBackground"]').checked = true; f.querySelector('[name="base"][value="current"]').checked = true; })()`);
+    check('指定すると強調色の欄を操作できる', await js(`!document.querySelector('#theme-ai-dialog [name="accent"]').disabled`));
     await createAi();
     check('答えて作成するとプレビューが出る', await js(`!document.getElementById('theme-ai-preview').hidden && document.querySelector('#theme-ai-preview .theme-preview__name').textContent === ${JSON.stringify(name)}`));
-    const prompt = fs.readFileSync(promptFile, 'utf8');
-    check('3つの回答と雰囲気の追記を CLI に渡す', ['明るい', '海、金色を少し', 'くっきり'].every((answer) => prompt.includes(answer)));
+    const promptData = () => {
+      const prefix = '回答・今の案・追い指示・土台の色: ';
+      return JSON.parse(fs.readFileSync(promptFile, 'utf8').split('\n').find((line) => line.startsWith(prefix)).slice(prefix.length));
+    };
+    const data = promptData();
+    check('新しい回答と雰囲気の追記を CLI に渡す', JSON.stringify(data.answers) === JSON.stringify({ brightness: '明るい', mood: '海、金色を少し', contrast: 'くっきり', temperature: '冷たい', saturation: '落ち着いた', accent: '#58c4ff', colorblind: true, appBackground: true, base: 'current' }));
+    check('土台は本体で読んだ上書き後の色になる', JSON.stringify(data.baseColors) === JSON.stringify(baseColors));
+    check('concept をプレビューの上に出す', await js(`!document.getElementById('theme-ai-concept').hidden && document.getElementById('theme-ai-concept').textContent === ${JSON.stringify(theme.concept)}`));
+    fs.writeFileSync(modeFile, 'revise');
+    await js(`(() => { const input = document.getElementById('theme-ai-instruction'); input.value = 'もう少し青く'; input.dispatchEvent(new Event('input')); document.getElementById('theme-ai-refine').click(); })()`);
+    await wait(`document.getElementById('theme-ai-concept').textContent === ${JSON.stringify(revised.concept)}`);
+    check('追い指示には今の案と指示を渡す', JSON.stringify(promptData().currentTheme) === JSON.stringify(require('./themegen').validateTheme(theme, { appBackground: true })) && promptData().instruction === 'もう少し青く' && promptData().baseColors === null);
+    fs.writeFileSync(modeFile, 'palette-low');
+    await js(`(() => { const input = document.getElementById('theme-ai-instruction'); input.value = '金色を控えめに'; input.dispatchEvent(new Event('input')); document.getElementById('theme-ai-refine').click(); })()`);
+    await wait(`!document.getElementById('theme-ai-error').hidden`);
+    check('修正に失敗しても元の案と追い指示を残す', await js(`document.getElementById('theme-ai-concept').textContent === ${JSON.stringify(revised.concept)} && document.getElementById('theme-ai-instruction').value === '金色を控えめに' && !document.getElementById('theme-ai-refine').disabled && !document.getElementById('theme-ai-apply').disabled`));
+    fs.writeFileSync(modeFile, 'revise-again');
+    await js(`(() => { const input = document.getElementById('theme-ai-instruction'); input.value = '金色を控えめに'; input.dispatchEvent(new Event('input')); document.getElementById('theme-ai-refine').click(); })()`);
+    await wait(`document.getElementById('theme-ai-concept').textContent === ${JSON.stringify(revisedAgain.concept)}`);
+    check('次の追い指示は直した案を土台にする', promptData().currentTheme.concept === revised.concept && promptData().instruction === '金色を控えめに');
+    fs.writeFileSync(modeFile, 'good');
+    await js(`document.getElementById('theme-ai-retry').click()`);
+    await wait(`document.getElementById('theme-ai-concept').textContent === ${JSON.stringify(theme.concept)}`);
+    check('作り直すと同じ答えから追い指示なしで作る', JSON.stringify(promptData().answers) === JSON.stringify(data.answers) && promptData().currentTheme === null && promptData().instruction === null);
+    config.updateConfig({ foreground: null, background: null, palette: null });
     check('作成だけではテーマを書かない', !fs.existsSync(path.join(dir, name)) && saved().theme === fixtureB);
     await js(`document.getElementById('theme-ai-apply').click()`);
     await wait(`!document.getElementById('theme-ai-dialog').open`);
     await sleep(400);
     check('適用でテーマのファイルを作り、カーソルの色を強調色にする', fs.existsSync(path.join(dir, name)) && saved().theme === name && (await js('window.__terp.config.chrome.accent')) === theme.cursor);
+    check('アプリの背景色を保存し、強調色の上書きを外す', saved().appBackground === theme.appBackground && saved().accent === undefined);
+    check('Ghostty のファイルには concept と appBackground を書かない', !/concept|appBackground/.test(fs.readFileSync(path.join(dir, name), 'utf8')));
     check('Ghostty の書式で16色を保存する', config.parseGhosttyTheme(fs.readFileSync(path.join(dir, name), 'utf8')).palette.join() === theme.palette.join());
+    config.updateConfig({ accent: '#998877', appBackground: '#112233' });
+    await sleep(400);
     await openAi();
     await createAi();
+    check('指定しない項目は既定の回答を渡す', JSON.stringify(promptData().answers) === JSON.stringify({ brightness: '暗い', mood: '', contrast: 'ふつう', temperature: 'ふつう', saturation: 'ふつう', accent: null, colorblind: false, appBackground: false, base: 'new' }));
     await js(`document.getElementById('theme-ai-apply').click()`);
     await wait(`!document.getElementById('theme-ai-dialog').open`);
     check('同じ名前は上書きせず 2 を付ける', saved().theme === `${name} 2` && fs.existsSync(path.join(dir, `${name} 2`)) && fs.existsSync(path.join(dir, name)));
 
+    check('指定しない強調色とアプリの背景色はそのまま残す', saved().accent === '#998877' && saved().appBackground === '#112233');
+    check('テーマの作成を AI の手伝いが切れていても使用量に数える', require('./aiassist').loadUsage().features.theme >= 5);
+    fs.writeFileSync(modeFile, 'palette-recover');
+    fs.writeFileSync(countFile, '0');
+    await openAi();
+    await createAi();
+    check('16色の不足番号を添えて1回だけ作り直す', fs.readFileSync(countFile, 'utf8') === '2' && fs.readFileSync(promptFile, 'utf8').includes('番号 4・12') && await js(`!document.getElementById('theme-ai-preview').hidden`));
+    await js(`document.getElementById('theme-ai-cancel').click()`);
+    fs.writeFileSync(modeFile, 'palette-low');
+    fs.writeFileSync(countFile, '0');
+    await openAi();
+    await createAi();
+    check('16色の不足が続くと理由を出して失敗する', fs.readFileSync(countFile, 'utf8') === '2' && await js(`document.getElementById('theme-ai-error').textContent.includes('番号 4・12')`));
+    await js(`document.getElementById('theme-ai-cancel').click()`);
     fs.writeFileSync(modeFile, 'recover');
     fs.writeFileSync(countFile, '0');
     await openAi();

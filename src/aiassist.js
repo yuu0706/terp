@@ -9,6 +9,7 @@ const { CONFIG_DIR, rawConfig } = require('./config');
 
 const USAGE_PATH = path.join(CONFIG_DIR, 'ai-usage.json');
 const FEATURES = {
+  theme: { flag: null, label: 'テーマの作成' },
   commitMessage: { flag: 'aiCommitMessage', label: 'コミットメッセージ' },
   terminalName: { flag: 'aiNameTerminal', label: 'ターミナルの名前' },
   autoTitle: { flag: 'aiAutoTitle', label: 'ターミナルの題名の自動の予測' },
@@ -50,8 +51,8 @@ function recordUsage(feature, usage, now) {
 // 使えるか。使えないときは理由を返す（画面に出す）
 function blocked(feature, config = rawConfig(), now) {
   if (!FEATURES[feature]) return '知らない機能です';
-  if (config.aiAssist === false) return '設定の「AI の手伝い」が切ってあります';
-  if (config[FEATURES[feature].flag] === false) return `設定の「${FEATURES[feature].label}」が切ってあります`;
+  if (FEATURES[feature].flag && config.aiAssist === false) return '設定の「AI の手伝い」が切ってあります';
+  if (FEATURES[feature].flag && config[FEATURES[feature].flag] === false) return `設定の「${FEATURES[feature].label}」が切ってあります`;
   const limit = Number(config.aiDailyLimit) || 0;
   if (limit > 0 && loadUsage(now).calls >= limit) return `今日の上限（${limit} 回）に達しました。設定の「1日の上限」で変えられます`;
   return null;
@@ -78,7 +79,7 @@ function parseEnvelope(stdout) {
   return { text: envelope.result.trim(), usage: envelope.usage || null };
 }
 
-async function ask(feature, system, prompt, { now } = {}) {
+async function ask(feature, system, prompt, { now, timeout = 60000 } = {}) {
   const config = rawConfig();
   const reason = blocked(feature, config, now);
   if (reason) throw new Error(reason);
@@ -90,8 +91,8 @@ async function ask(feature, system, prompt, { now } = {}) {
   const args = ['-p', prompt, '--output-format', 'json', '--model', model, '--tools', '',
     '--system-prompt', system, '--disable-slash-commands', '--strict-mcp-config', '--setting-sources', '', '--no-session-persistence'];
   const { text, usage } = await new Promise((resolve, reject) => {
-    const child = execFile(file, args, { cwd: CONFIG_DIR, env, timeout: 60000, killSignal: 'SIGKILL', maxBuffer: 1024 * 1024 }, (err, stdout) => {
-      if (err) return reject(new Error(err.killed ? 'claude が60秒で終わりませんでした' : 'claude の実行に失敗しました'));
+    const child = execFile(file, args, { cwd: CONFIG_DIR, env, timeout, killSignal: 'SIGKILL', maxBuffer: 1024 * 1024 }, (err, stdout) => {
+      if (err) return reject(new Error(err.killed ? `claude が${timeout / 1000}秒で終わりませんでした` : 'claude の実行に失敗しました'));
       try { resolve(parseEnvelope(stdout)); } catch (error) { reject(error); }
     });
     child.stdin.end();

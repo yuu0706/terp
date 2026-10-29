@@ -328,7 +328,7 @@ const FIELD_TYPES = {
     el.id = id;
     const res = await terp.aiUsage();
     const u = res.ok ? res.value : null;
-    const names = { commitMessage: 'コミット', terminalName: '名前', autoTitle: '自動の題名' };
+    const names = { commitMessage: 'コミット', terminalName: '名前', autoTitle: '自動の題名', theme: 'テーマ' };
     el.textContent = u
       ? `${u.calls} 回・読ませた量 約 ${u.inputTokens.toLocaleString()} トークン・書かせた量 約 ${u.outputTokens.toLocaleString()} トークン`
         + (u.calls ? `（${Object.entries(u.features).map(([k, n]) => `${names[k] || k} ${n} 回`).join('・')}）` : '')
@@ -1295,6 +1295,14 @@ function openThemeAi(onApplied) {
   const apply = document.getElementById('theme-ai-apply');
   const retry = document.getElementById('theme-ai-retry');
   const cancel = document.getElementById('theme-ai-cancel');
+  const concept = document.getElementById('theme-ai-concept');
+  const revision = document.getElementById('theme-ai-revision');
+  const instruction = document.getElementById('theme-ai-instruction');
+  const refine = document.getElementById('theme-ai-refine');
+  const useAccent = form.elements.useAccent;
+  const accent = form.elements.accent;
+  accent.disabled = true;
+  useAccent.onchange = () => { accent.disabled = !useAccent.checked; };
   let request = 0;
   let generated = null;
   let answers = null;
@@ -1305,6 +1313,9 @@ function openThemeAi(onApplied) {
     savedName = null;
     result.replaceChildren();
     result.hidden = true;
+    concept.hidden = true;
+    revision.hidden = true;
+    instruction.value = '';
     apply.hidden = true;
     retry.hidden = true;
     create.hidden = false;
@@ -1323,61 +1334,91 @@ function openThemeAi(onApplied) {
   dialog.onclose = () => { request++; };
   dialog.onkeydown = (e) => e.stopPropagation();
   cancel.onclick = close;
-  const generate = async () => {
-    if (busy) return;
+  const generate = async (revising = false) => {
+    if (busy || (revising && (!generated || !instruction.value.trim()))) return;
     const data = new FormData(form);
     answers = answers || {
       brightness: data.get('brightness'),
       mood: [...data.getAll('mood'), data.get('moodText')].filter(Boolean).join('、'),
       contrast: data.get('contrast'),
+      temperature: data.get('temperature'),
+      saturation: data.get('saturation'),
+      accent: data.has('useAccent') ? data.get('accent') : null,
+      colorblind: data.has('colorblind'),
+      appBackground: data.has('appBackground'),
+      base: data.get('base'),
     };
-    resetResult();
+    const changes = revising ? { currentTheme: generated, instruction: instruction.value.trim() } : undefined;
+    if (!revising) resetResult();
+    error.hidden = true;
     busy = true;
     questions.disabled = true;
+    revision.disabled = true;
     create.disabled = true;
+    retry.disabled = true;
+    apply.disabled = true;
     create.textContent = '作成中…';
-    status.textContent = '作成中…';
+    status.textContent = revising ? '修正中…' : '作成中…';
     const token = ++request;
-    const res = await terp.generateTheme(answers);
+    const res = await terp.generateTheme(answers, changes);
     if (token !== request || !dialog.open) return;
     busy = false;
     status.textContent = '';
     create.disabled = false;
+    retry.disabled = false;
+    apply.disabled = false;
+    revision.disabled = false;
     if (!res.ok) {
       error.textContent = res.error;
       error.hidden = false;
-      questions.disabled = false;
-      create.textContent = 'もう一度';
-      answers = null;
+      if (!revising) {
+        questions.disabled = false;
+        create.textContent = 'もう一度';
+        answers = null;
+      }
       return;
     }
     generated = res.value.theme;
+    savedName = null;
+    concept.textContent = generated.concept || '';
+    concept.hidden = !generated.concept;
     result.replaceChildren(renderThemePreview(res.value.colors, generated.name));
     result.hidden = false;
+    revision.hidden = false;
+    instruction.value = '';
+    refine.disabled = true;
     create.hidden = true;
     retry.hidden = false;
     apply.hidden = false;
-    apply.disabled = false;
     apply.focus();
   };
-  form.onsubmit = (e) => { e.preventDefault(); generate(); };
-  retry.onclick = generate;
+  instruction.oninput = () => { refine.disabled = !instruction.value.trim(); };
+  refine.onclick = () => generate(true);
+  form.onsubmit = (e) => { e.preventDefault(); generate(Boolean(generated)); };
+  retry.onclick = () => generate();
   apply.onclick = async () => {
     if (busy || !generated) return;
     busy = true;
     apply.disabled = true;
     retry.disabled = true;
+    revision.disabled = true;
     const token = ++request;
     const res = savedName ? { ok: true, value: savedName } : await terp.saveTheme(generated);
     if (token !== request || !dialog.open) return;
     if (res.ok) savedName = res.value;
-    if (!res.ok || !(await save('theme', savedName))) {
+    let applied = res.ok && await save('theme', savedName);
+    if (token !== request || !dialog.open) return;
+    if (applied && answers.appBackground) applied = await save('appBackground', generated.appBackground);
+    if (token !== request || !dialog.open) return;
+    if (applied && answers.accent) applied = await save('accent', null);
+    if (!applied) {
       if (token !== request || !dialog.open) return;
       error.textContent = res.ok ? 'テーマを保存できませんでした。設定のエラーを確かめる' : res.error;
       error.hidden = false;
       busy = false;
       apply.disabled = false;
       retry.disabled = false;
+      revision.disabled = false;
       return;
     }
     if (token !== request || !dialog.open) return;

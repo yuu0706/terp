@@ -307,7 +307,7 @@
       <form method="dialog" class="dialog__body">
         <h2 id="theme-ai-title" class="dialog__title">AI で好みを作成</h2>
         <fieldset id="theme-ai-questions" class="theme-ai__questions">
-          <legend class="theme-ai__legend">3つの質問</legend>
+          <legend class="theme-ai__legend">好みの質問</legend>
           <fieldset class="theme-ai__question">
             <legend>1. 明るさ</legend>
             <div class="theme-ai__options">
@@ -338,10 +338,55 @@
               <label><input type="radio" name="contrast" value="くっきり">くっきり</label>
             </div>
           </fieldset>
+          <fieldset class="theme-ai__question">
+            <legend>4. 色の温度</legend>
+            <div class="theme-ai__options">
+              <label><input type="radio" name="temperature" value="暖かい">暖かい</label>
+              <label><input type="radio" name="temperature" value="ふつう" checked>ふつう</label>
+              <label><input type="radio" name="temperature" value="冷たい">冷たい</label>
+            </div>
+          </fieldset>
+          <fieldset class="theme-ai__question">
+            <legend>5. 鮮やかさ</legend>
+            <div class="theme-ai__options">
+              <label><input type="radio" name="saturation" value="落ち着いた">落ち着いた</label>
+              <label><input type="radio" name="saturation" value="ふつう" checked>ふつう</label>
+              <label><input type="radio" name="saturation" value="鮮やか">鮮やか</label>
+            </div>
+          </fieldset>
+          <fieldset class="theme-ai__question">
+            <legend>6. 強調色</legend>
+            <div class="theme-ai__options">
+              <label><input type="checkbox" name="useAccent">強調色を指定する</label>
+              <input type="color" name="accent" value="#58c4ff" aria-label="強調色" disabled>
+            </div>
+          </fieldset>
+          <fieldset class="theme-ai__question">
+            <legend>7. 見やすさ</legend>
+            <div class="theme-ai__options">
+              <label><input type="checkbox" name="colorblind">赤と緑を見分けやすくする</label>
+              <label><input type="checkbox" name="appBackground">アプリの背景色（左の一覧など）も作る</label>
+            </div>
+          </fieldset>
+          <fieldset class="theme-ai__question">
+            <legend>8. 土台</legend>
+            <div class="theme-ai__options">
+              <label><input type="radio" name="base" value="new" checked>新しく作る</label>
+              <label><input type="radio" name="base" value="current">今のテーマを土台にする</label>
+            </div>
+          </fieldset>
         </fieldset>
         <p id="theme-ai-status" class="dialog__note" role="status"></p>
         <p id="theme-ai-error" class="dialog__error" role="alert" hidden></p>
+        <p id="theme-ai-concept" class="dialog__note" hidden></p>
         <div id="theme-ai-preview" hidden></div>
+        <fieldset id="theme-ai-revision" class="theme-ai__question" hidden>
+          <label class="field" for="theme-ai-instruction">
+            <span class="field__label">直したいこと（200字以内）</span>
+            <input id="theme-ai-instruction" class="input" name="instruction" maxlength="200" placeholder="例: もう少し青く">
+          </label>
+          <button id="theme-ai-refine" class="btn" type="button" disabled>この案を直す</button>
+        </fieldset>
         <div class="dialog__actions">
           <button id="theme-ai-cancel" class="btn" type="button">やめる</button>
           <button id="theme-ai-retry" class="btn" type="button" hidden>作り直す</button>

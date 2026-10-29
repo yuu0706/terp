@@ -287,7 +287,12 @@ ipcMain.handle('config:ghostty', safe(() => {
   return { files: result.files, ...ghostty.mapGhosttyConfig(result.entries, { themeExists: (name) => themes.has(name) }), current: config.rawConfig() };
 }));
 ipcMain.handle('config:theme-colors', safe((_e, name) => config.getThemeColors(name)));
-ipcMain.handle('theme:generate', safe((_e, answers) => themegen.generate(answers)));
+ipcMain.handle('theme:generate', safe((_e, answers, revision = {}) => themegen.generate(answers, {
+  currentTheme: revision?.currentTheme ?? null,
+  instruction: revision?.instruction ?? null,
+  // 画面から渡された色を土台にせず、上書きも含めた現在の設定を本体で読む
+  baseColors: answers?.base === 'current' && !revision?.currentTheme ? config.getThemeColors(config.rawConfig().theme) : null,
+})));
 ipcMain.handle('theme:save', safe((_e, theme) => themegen.saveTheme(theme)));
 // AI の手伝い。切ってあるか上限に達していれば、理由を失敗として返す
 ipcMain.handle('ai:commit-message', safe(async (_e, top) => aiassist.commitMessage(await gitpanel.stagedSummary(top))));

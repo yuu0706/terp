@@ -2209,6 +2209,7 @@ button.subagent:hover,
 }
 
 .theme-ai {
+  position: relative;
   width: min(560px, calc(100vw - var(--space-3) * 2));
   max-height: calc(100vh - var(--space-3) * 2);
   overflow-y: auto;
@@ -2242,6 +2243,10 @@ button.subagent:hover,
   display: inline-flex;
   align-items: center;
   gap: var(--space-1);
+}
+
+.theme-ai__question > .btn {
+  margin-top: var(--space-2);
 }
 
 .theme-ai input {
