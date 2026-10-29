@@ -27,9 +27,10 @@ const agentreply = require('./agentreply');
 const agenthistory = require('./agenthistory');
 const { PtyClient, SOCKET } = require('./ptyclient');
 const { createDockIcon } = require('./dockicon');
+const { createAppliedStore, refreshDockAfterExit } = require('./bundleicon');
 // 起動時の貼り付けより先に、自己診断専用の空のアプリを用意する
 if (process.env.TERP_SELFTEST && process.env.TERP_SELFTEST_THEMEICON === '1') require('./selftest').prepareThemeIconTarget();
-const dockIcon = createDockIcon({ app, BrowserWindow });
+const dockIcon = createDockIcon({ app, BrowserWindow, appliedStore: createAppliedStore(path.join(config.CONFIG_DIR, 'bundle-icon.json')) });
 
 // シェルは常駐のプロセス（ptyhost.js）が持つ。terp を閉じてもシェルは残り、開き直したらつなぎ直す
 const client = new PtyClient();
@@ -783,5 +784,8 @@ app.on('before-quit', () => {
 // 終わるときは常駐のプロセスとの接続を切り、出力が届かないようにする。シェルは常駐のプロセスに残る
 app.on('will-quit', () => {
   dockIcon.stop();
+  // この起動でアプリのフォルダの絵を変えたら、終わった後に Dock を作り直し、閉じている間も新しい絵を出させる。
+  // 自己診断は空のアプリに貼るため、利用者の Dock は作り直さない
+  if (dockIcon.bundleChanged && app.isPackaged && !process.env.TERP_SELFTEST) refreshDockAfterExit();
   client.socket?.destroy();
 });

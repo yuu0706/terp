@@ -1,7 +1,8 @@
 const { iconSvg, iconColors, DEFAULT_ICON_COLORS } = require('./themeicon');
 const { bundleIconTarget, setBundleIcon } = require('./bundleicon');
 
-function createDockIcon({ app, BrowserWindow, applyBundleIcon = setBundleIcon }) {
+// appliedStore（bundleicon.js の createAppliedStore）を渡すと、前の起動で貼った絵が残っていれば貼り直さない
+function createDockIcon({ app, BrowserWindow, applyBundleIcon = setBundleIcon, appliedStore = null }) {
   let pending = null;
   let running = false;
   let stopped = false;
@@ -14,6 +15,8 @@ function createDockIcon({ app, BrowserWindow, applyBundleIcon = setBundleIcon })
   let bundleTarget = null;
   let bundleApplyCount = 0;
   let bundleRemoved = null;
+  // この起動でアプリのフォルダの絵を変えたか。変えたら、閉じた後に Dock を作り直す（main.js）
+  let bundleChanged = false;
 
   async function render(colors) {
     const target = new BrowserWindow({
@@ -63,11 +66,13 @@ function createDockIcon({ app, BrowserWindow, applyBundleIcon = setBundleIcon })
             lastImage = image;
           }
           const target = bundleIconTarget({ isPackaged: app.isPackaged });
-          if (target && bundleKey !== lastBundleKey) {
+          if (target && bundleKey !== lastBundleKey && !(lastBundleKey === '' && appliedStore?.applied(target, bundleKey, remove))) {
             await applyBundleIcon(target, remove ? null : image.toPNG(), remove);
+            appliedStore?.save(target, bundleKey);
             bundleTarget = target;
             bundleApplyCount++;
             bundleRemoved = remove;
+            bundleChanged = true;
           }
           lastBundleKey = bundleKey;
         } catch (_) {
@@ -102,6 +107,7 @@ function createDockIcon({ app, BrowserWindow, applyBundleIcon = setBundleIcon })
     get bundleTarget() { return bundleTarget; },
     get bundleApplyCount() { return bundleApplyCount; },
     get bundleRemoved() { return bundleRemoved; },
+    get bundleChanged() { return bundleChanged; },
   };
 }
 

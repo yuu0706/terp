@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { bundleIconTarget, bundleIconArgs, setBundleIcon } = require('./bundleicon');
+const { bundleIconTarget, bundleIconArgs, setBundleIcon, createAppliedStore, dockRefreshArgs, refreshDockAfterExit } = require('./bundleicon');
 
 test('パッケージ版だけ実行ファイルから3つ上のアプリを選ぶ', () => {
   const execPath = '/Applications/terp.app/Contents/MacOS/terp';
@@ -61,4 +61,38 @@ test('解除では PNG を作らず nil を使う呼び出しへ進む', async (
     return { stdout: 'true\n' };
   });
   assert.equal(called, true);
+});
+
+test('控えと同じ絵が貼れたままなら貼り直さず、入れ直して絵が消えたら貼り直す', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'terp-applied-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const target = path.join(dir, 'Fake.app');
+  fs.mkdirSync(target);
+  const store = createAppliedStore(path.join(dir, 'bundle-icon.json'));
+  assert.equal(store.applied(target, 'k1', false), false);
+  store.save(target, 'k1');
+  assert.equal(store.applied(target, 'k1', false), false, '絵が無ければ貼り直す');
+  fs.writeFileSync(path.join(target, 'Icon\r'), '');
+  assert.equal(store.applied(target, 'k1', false), true);
+  assert.equal(store.applied(target, 'k2', false), false, '色が変われば貼り直す');
+  assert.equal(store.applied(path.join(dir, 'Other.app'), 'k1', false), false, '別のアプリには貼り直す');
+  store.save(target, 'k3');
+  assert.equal(store.applied(target, 'k3', true), false, '外した控えなのに絵が残っていれば外し直す');
+  fs.rmSync(path.join(target, 'Icon\r'));
+  assert.equal(store.applied(target, 'k3', true), true);
+});
+
+test('Dock の作り直しは terp が終わるのを待ってから、切り離した子で行う', () => {
+  const args = dockRefreshArgs(4321);
+  assert.equal(args[0], '-c');
+  assert.match(args[1], /kill -0 4321 /);
+  assert.match(args[1], /\/usr\/bin\/killall Dock$/);
+  assert.match(dockRefreshArgs('1; rm -rf /')[1], /kill -0 NaN /, 'pid は数として埋める');
+  const calls = [];
+  let unref = false;
+  refreshDockAfterExit(99, (file, argv, options) => { calls.push({ file, argv, options }); return { unref: () => { unref = true; } }; });
+  assert.equal(calls[0].file, '/bin/sh');
+  assert.deepEqual(calls[0].argv, dockRefreshArgs(99));
+  assert.equal(calls[0].options.detached, true);
+  assert.ok(unref);
 });

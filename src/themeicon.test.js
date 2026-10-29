@@ -78,7 +78,7 @@ test('themedIcon は既定で有効、真偽だけ保存でき、誤った設定
   }
 });
 
-function fakeDock() {
+function fakeDock(options = {}) {
   const windows = [];
   const applied = [];
   const bundleApplied = [];
@@ -121,7 +121,7 @@ function fakeDock() {
     if (control.failBundle) throw new Error('bundle failed');
     bundleApplied.push({ target, png, remove });
   };
-  return { icon: createDockIcon({ app, BrowserWindow, applyBundleIcon }), windows, applied, bundleApplied, control, get maximum() { return maximum; } };
+  return { icon: createDockIcon({ app, BrowserWindow, applyBundleIcon, ...options }), windows, applied, bundleApplied, control, get maximum() { return maximum; } };
 }
 
 async function settled(icon) {
@@ -224,14 +224,14 @@ test('終了時は描画用の窓と待機中の変更を破棄する', async ()
   assert.ok(fake.windows[0].destroyed);
 });
 
-function fakeBundle(t) {
+function fakeBundle(t, options) {
   const previous = process.env.TERP_BUNDLE_ICON_TARGET;
   process.env.TERP_BUNDLE_ICON_TARGET = path.join(os.tmpdir(), 'terp-bundle-test', 'Fake.app');
   t.after(() => {
     if (previous === undefined) delete process.env.TERP_BUNDLE_ICON_TARGET;
     else process.env.TERP_BUNDLE_ICON_TARGET = previous;
   });
-  return fakeDock();
+  return fakeDock(options);
 }
 
 test('起動時と色の変更で同じ PNG を貼り、同じ色では貼らず、無効で外す', async (t) => {
@@ -320,4 +320,27 @@ test('貼り付け中の設定変更も直列に処理し、最後の状態へ�
   assert.deepEqual(fake.bundleApplied.map((entry) => entry.remove), [false, true]);
   assert.equal(fake.icon.bundleRemoved, true);
   assert.deepEqual(fake.icon.colors, DEFAULT_ICON_COLORS);
+});
+
+test('前の起動で同じ絵を貼っていれば貼り直さず、Dock の作り直しも求めない。色を変えたら貼って求める', async (t) => {
+  const saved = [];
+  const fake = fakeBundle(t, { appliedStore: { applied: () => true, save: (target, key) => saved.push(key) } });
+  fake.icon.update({ chrome });
+  await settled(fake.icon);
+  assert.equal(fake.icon.bundleApplyCount, 0);
+  assert.equal(fake.icon.bundleChanged, false);
+  assert.equal(fake.applied.length, 1, 'Dock の起動中の絵は描く');
+  fake.icon.update({ chrome: { ...chrome, accent: '#112233' } });
+  await settled(fake.icon);
+  assert.equal(fake.icon.bundleApplyCount, 1);
+  assert.equal(fake.icon.bundleChanged, true);
+  assert.equal(saved.length, 1);
+});
+
+test('控えが合わなければ起動時に貼り、Dock の作り直しを求める', async (t) => {
+  const fake = fakeBundle(t, { appliedStore: { applied: () => false, save: () => {} } });
+  fake.icon.update({ chrome });
+  await settled(fake.icon);
+  assert.equal(fake.icon.bundleApplyCount, 1);
+  assert.equal(fake.icon.bundleChanged, true);
 });
