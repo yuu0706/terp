@@ -16,6 +16,8 @@ import { withAlpha, favoriteText } from './favcolor.js';
 import { STAR_ICON, draftLabel, createMenu, createWorkspaceUI } from './workspaceui.js';
 import { createOverview } from './overview.js';
 import { createTermSearch } from './termsearch.js';
+import { checkScreen } from './screencheck.js';
+import { MARK_LENGTH, appendTail, recordSize, planReplay } from './replay.js';
 
 // xterm.js の WebGL の描画は blendFunc(SRC_ALPHA, ONE_MINUS_SRC_ALPHA) で重ねるため、透明な面に描いた画素の透明度が
 // a×a になる。窓を透かすと薄い文字（\e[2m）や文字の縁が後ろの色で白く抜け、明るいテーマで文字が読みにくくなった
@@ -128,6 +130,26 @@ function bufferText(id, { visible = false } = {}) {
   const lines = [];
   for (let i = start; i < end; i++) lines.push(buf.getLine(i).translateToString(true));
   return lines.join('\n').replace(/\n+$/, '');
+}
+
+// 表示の崩れを調べる（screencheck.js）。表示範囲の文字・端末の大きさ・シェルに伝えた大きさ・カーソルの位置を見る
+function screenCheckOf(id) {
+  const s = sessions.get(id);
+  if (!s) return null;
+  const buf = s.term.buffer.active;
+  const lines = bufferText(id, { visible: true }).split('\n');
+  return checkScreen({ lines, size: { cols: s.term.cols, rows: s.term.rows }, pty: s.ptySize || null,
+    cursor: { x: buf.cursorX, y: buf.cursorY } });
+}
+
+// シェルに大きさを伝える。伝えた大きさは常駐のプロセスにも預け、開き直したときに同じ大きさで画面を作り直すのに使う
+// 伝えた位置（そこまでに受け取った出力の末尾）も控え、流し直すときに同じ順で大きさを変える（replay.js）
+function resizePty(s, cols, rows) {
+  if (s.ptySize?.cols === cols && s.ptySize?.rows === rows) return;
+  s.ptySize = { cols, rows };
+  s.sizeLog = recordSize(s.sizeLog, s.tail, cols, rows);
+  terp.resize(s.id, cols, rows);
+  terp.setMeta(s.id, { ptySize: s.ptySize, sizeLog: s.sizeLog });
 }
 
 // 設定（色・フォント・透過）を、開いている端末・エディタ・枠に反映する
@@ -1948,6 +1970,8 @@ function attachWebgl(s) {
     s.webgl = new WebglAddon();
     s.webgl.onContextLoss(() => detachWebgl(s));
     s.term.loadAddon(s.webgl);
+    // 裏にある間の出力は描いていないため、付けた直後に全体を描き直す（文字の一部だけが残って見えるのを防ぐ）
+    s.term.refresh(0, s.term.rows - 1);
   } catch {
     s.webgl = null;
   }
@@ -2196,19 +2220,25 @@ function saveTabs() {
   saveTabsTimer = setTimeout(() => terp.saveTabs(savedTabState()), 250);
 }
 
-async function restoreTabs() {
-  const res = await terp.loadTabs().catch(() => ({ ok: false }));
+// 端末の大きさに効く控え（左の一覧の幅・隠したか・面・文字の大きさ）は、端末をつなぎ直す前に当てる。
+// 後から当てると、つなぎ直した端末の大きさが2回変わり、claude などの画面が崩れる
+function applySavedLayout(res) {
+  if (!res.ok) return;
+  const data = res.value;
+  if (data.sidebarHidden) setSidebarHidden(true, { save: false });
+  if (data.fontDelta) setFontDelta(data.fontDelta, { save: false });
+  if (data.sidebarWidth) setSidebarWidth(data.sidebarWidth, { save: false });
+  for (const repo of data.collapsedRepos || []) collapsedRepos.add(repo);
+  if (data.sidebarView) setSidebarView(data.sidebarView, { save: false, animate: false });
+}
+
+async function restoreTabs(res) {
   const remap = (key) => restoredKeys.get(key) || key;
   const remapLayout = (node, depth = 0) => !node || typeof node !== 'object' || depth > 20 ? null
     : node.type === 'pane' ? { ...node, key: remap(node.key) }
     : { ...node, children: Array.isArray(node.children) ? node.children.map((child) => remapLayout(child, depth + 1)) : [] };
   if (res.ok) {
     const data = res.value;
-    if (data.sidebarHidden) setSidebarHidden(true, { save: false });
-    if (data.fontDelta) setFontDelta(data.fontDelta, { save: false });
-    if (data.sidebarWidth) setSidebarWidth(data.sidebarWidth, { save: false });
-    for (const repo of data.collapsedRepos || []) collapsedRepos.add(repo);
-    if (data.sidebarView) setSidebarView(data.sidebarView, { save: false, animate: false });
     const legacyWorkspace = workspaces.find((w) => w.id === 'default')?.id || workspaces[0].id;
     for (const path of data.files) {
       const workspace = workspaces.some((w) => w.id === data.fileWorkspaces?.[path]) ? data.fileWorkspaces[path] : legacyWorkspace;
@@ -2590,6 +2620,9 @@ function registerSession(id, { el, term, fit, search, hoverLink }, extra = {}) {
     unread: false,
     notify: false,
     webgl: null,
+    tail: '',
+    sizeLog: [],
+    ptySize: null,
     // つなぎ直しの途中に届いた出力。残りの出力を書いてから流す
     pending: null,
     ...extra,
@@ -2611,7 +2644,7 @@ function registerSession(id, { el, term, fit, search, hoverLink }, extra = {}) {
     terp.write(id, data);
     renderAll();
   });
-  term.onResize(({ cols, rows }) => terp.resize(id, cols, rows));
+  term.onResize(({ cols, rows }) => { if (!s.replaying) resizePty(s, cols, rows); });
   term.onTitleChange((title) => {
     s.title = title;
     const { working, text } = parseTitle(title);
@@ -2641,8 +2674,9 @@ function registerSession(id, { el, term, fit, search, hoverLink }, extra = {}) {
 async function openTerminal({ cwd, show = true, workspace = activeWorkspace, draftOut = false, restore = false } = {}) {
   const view = buildTerminal();
   const { id, cwd: startCwd } = await terp.createPty({ cols: view.term.cols, rows: view.term.rows, cwd, workspace });
-  const s = registerSession(id, view, { cwd: startCwd, workspace, draftOut });
-  terp.setMeta(id, { workspace, draftOut });
+  const ptySize = { cols: view.term.cols, rows: view.term.rows };
+  const s = registerSession(id, view, { cwd: startCwd, workspace, draftOut, ptySize, sizeLog: recordSize([], '', ptySize.cols, ptySize.rows) });
+  terp.setMeta(id, { workspace, draftOut, ptySize, sizeLog: s.sizeLog });
   if (!restore) {
     if (sidebarView !== 'draft') setSidebarView('draft');
     const repo = workOf(s)?.repo;
@@ -2667,33 +2701,90 @@ async function attachTerminal(e) {
     agentTitle: e.meta.agentTitle || '',
     lastActive: e.meta.lastActive || 0,
     bypass: Boolean(e.meta.bypass),
+    ptySize: e.meta.ptySize || null,
+    sizeLog: Array.isArray(e.meta.sizeLog) ? e.meta.sizeLog : [],
     pending: [],
   });
   tabOrder.push(termKey(e.id));
+  // 流し直す出力は、中のプログラムが今の大きさ（前回シェルに伝えた大きさ）で描いたもの。
+  // 画面をその大きさにしてから流すと、claude などが前の枠を消してから描き直す動きがそのまま再現される。
+  // ここではシェルに大きさを伝えない。表示して枠に合わせたときに、変わっていれば1回だけ伝える（2026-10-27 利用者の指摘。
+  // 以前は窓全体の大きさで作って流し、さらに大きさを2回揺らしていたため、claude の画面に枠の残骸が重なった）
   const res = await terp.attach(e.id);
-  // 流し直す出力に残ったベルや OSC 9 で、開き直すたびに通知が出ないようにする
-  if (res.replay) {
-    s.replaying = true;
-    s.term.write(res.replay, () => { s.replaying = false; });
+  const replay = res.replay || '';
+  // 流し直す出力に残ったベルや OSC 9 で、開き直すたびに通知が出ないようにする。流している間の大きさの変更はシェルに伝えない
+  s.replaying = true;
+  const write = (text) => new Promise((resolve) => s.term.write(text, resolve));
+  const plan = planReplay(replay, s.sizeLog);
+  if (plan) {
+    for (const seg of plan.segments) {
+      s.term.resize(seg.cols, seg.rows);
+      if (seg.text) await write(seg.text);
+    }
+    s.term.resize(plan.final.cols, plan.final.rows);
+  } else {
+    // 大きさの記録が無い（前の版で作った）端末は、最後に伝えた大きさでまとめて流す
+    if (s.ptySize) s.term.resize(s.ptySize.cols, s.ptySize.rows);
+    if (replay) await write(replay);
   }
-  for (const data of s.pending) s.term.write(data);
+  s.tail = replay.slice(-MARK_LENGTH);
+  s.replaying = false;
+  for (const data of s.pending) {
+    s.tail = appendTail(s.tail, data);
+    s.term.write(data);
+  }
   s.pending = null;
-  // 大きさを一度変えて戻し、claude などの全画面のプログラムに描き直させる
-  const { cols, rows } = s.term;
-  terp.resize(e.id, Math.max(cols - 1, 2), rows);
-  setTimeout(() => terp.resize(e.id, cols, rows), 80);
+  // 流している間に表示して枠の大きさが変わっていたら、ここで合わせる（変わっていれば1回だけシェルに伝わる）
+  if (!s.el.hidden) s.fit.fit();
+  // 常駐のプロセスは出力の末尾しか残さない。claude などの全画面の画面は前の画面との差分しか送らないため、
+  // 先頭が欠けた差分を流し直すと消されない残骸が残り、大きさが同じなら描き直されないまま崩れる（2026-10-29 利用者の指摘）。
+  // 全画面の画面なら、こちらの画面を消してから大きさを揺らし、中のプログラムに全部描き直させる
+  if (s.term.buffer.active.type === 'alternate') {
+    await write('\x1b[H\x1b[2J');
+    redrawTerminal(s.id);
+  }
   return s;
+}
+
+// 表示中のターミナルの表示を検査し、結果を見せる（表示のメニュー）。崩れていれば作り直せる
+async function checkActiveScreen() {
+  const s = sessions.get(activeId);
+  if (!s) return null;
+  const report = screenCheckOf(s.id);
+  const name = displayName(s);
+  const detail = [
+    ...report.issues.map((issue) => `・${issue.message}`),
+    `画面 ${s.term.cols}×${s.term.rows}、シェルに伝えた大きさ ${s.ptySize ? `${s.ptySize.cols}×${s.ptySize.rows}` : '不明'}`,
+  ].join('\n');
+  const title = report.ok ? `「${name}」の表示に崩れは見つかりませんでした` : `「${name}」の表示が崩れています`;
+  if (await terp.showScreenReport({ title, detail, broken: !report.ok })) await redrawTerminal(s.id);
+  return report;
+}
+
+// 表示を作り直す（表示のメニュー）。大きさを1桁変えて戻し、中のプログラムに描き直させる。
+// 戻すのは変えた後の応答を待ってからにし、そのときの本当の大きさを伝える
+async function redrawTerminal(id = activeId) {
+  const s = sessions.get(id);
+  if (!s) return;
+  const { cols, rows } = s.term;
+  resizePty(s, Math.max(cols - 1, 2), rows);
+  await new Promise((resolve) => setTimeout(resolve, 120));
+  if (!sessions.has(id)) return;
+  resizePty(s, s.term.cols, s.term.rows);
+  s.webgl?.clearTextureAtlas();
+  s.term.refresh(0, s.term.rows - 1);
 }
 
 // 起動したとき: 生きているシェルがあればつなぎ直す。無ければ前回の控えから開き直し、
 // claude の会話は --resume で再開する。どちらも無ければ1枚開く
-async function restoreSessions() {
+// tabs.json があれば、表示する端末と枠はその後の restoreTabs が決める。ここで表示すると大きさが2回変わるため、控えが無いときだけ表示する
+async function restoreSessions({ show = true } = {}) {
   const { existing, snapshot } = await terp.restoreInfo();
   if (existing.length > 0) {
     const restored = [];
     for (const e of existing.sort((a, b) => a.id - b.id)) restored.push(await attachTerminal(e));
     const inWorkspace = restored.filter((s) => s.workspace === activeWorkspace);
-    if (inWorkspace.length) activate(inWorkspace.reduce((a, b) => b.lastActive > a.lastActive ? b : a, inWorkspace[0]).id);
+    if (show && inWorkspace.length) activate(inWorkspace.reduce((a, b) => b.lastActive > a.lastActive ? b : a, inWorkspace[0]).id);
     return;
   }
   if (snapshot.length > 0) {
@@ -3011,6 +3102,7 @@ terp.onData((id, data) => {
     return;
   }
   updateAgentStatus(s, { type: 'output', replaying: s.replaying });
+  s.tail = appendTail(s.tail, data);
   s.term.write(data);
   s.lastOutput = Date.now();
   if (activeKey !== termKey(id)) s.unread = true;
@@ -3061,6 +3153,12 @@ terp.onMenu((action, arg) => {
   // ファイルのタブを表示している間は、端末向けの操作（消去・すべて選択）を端末に向けない
   const s = activeKey?.startsWith('t:') ? sessions.get(activeId) : null;
   switch (action) {
+    case 'check-screen':
+      checkActiveScreen();
+      break;
+    case 'redraw-terminal':
+      redrawTerminal();
+      break;
     case 'workspace-index':
       if (workspaces[arg]) switchWorkspace(workspaces[arg].id);
       break;
@@ -3365,6 +3463,9 @@ window.__terp = {
   openRemoveDialog,
   workOf: (id) => workOf(sessions.get(id))?.path || null,
   bufferText,
+  screenCheck: screenCheckOf,
+  checkActiveScreen,
+  redrawTerminal,
 };
 
 applyConfig(config);
@@ -3386,9 +3487,11 @@ await refreshProjects();
 noProjects.hidden = currentProjects().length > 0;
 await refreshAgents();
 // つなぎ直しに失敗しても、ファイルのタブは開き直し、控えの書き込みを止めたままにしない
+const savedTabs = await terp.loadTabs().catch(() => ({ ok: false }));
+applySavedLayout(savedTabs);
 try {
-  await restoreSessions();
+  await restoreSessions({ show: !savedTabs.ok });
 } finally {
-  await restoreTabs();
+  await restoreTabs(savedTabs);
 }
 await refreshSubagents();

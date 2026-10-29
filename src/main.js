@@ -306,6 +306,16 @@ ipcMain.handle('agent-history:test-sessions', async (_e, terminals) => {
   historyTestLookup = terminals ? (e) => terminals[e.id] || null : null;
   await saveSnapshot();
 });
+// 表示の検査の結果を見せる。「作り直す」を選んだら true を返す
+ipcMain.handle('screen:report', async (_e, { title, detail, broken }) => {
+  if (!win || win.isDestroyed()) return false;
+  if (process.env.TERP_SELFTEST) return false;
+  const { response } = await dialog.showMessageBox(win, {
+    type: broken ? 'warning' : 'info', message: title, detail,
+    buttons: broken ? ['表示を作り直す', '閉じる'] : ['閉じる'], defaultId: 0, cancelId: broken ? 1 : 0,
+  });
+  return broken && response === 0;
+});
 ipcMain.handle('tabs:load', safe(() => tabs.load()));
 ipcMain.handle('tabs:save', safe((_e, state) => tabs.save(state)));
 ipcMain.handle('projects:list', safe(() => projects.list()));
@@ -518,6 +528,9 @@ function buildMenu() {
         { label: '文字を大きく', accelerator: 'CmdOrCtrl+Plus', visible: false, click: send('font-bigger') },
         { label: '文字を小さく', accelerator: 'CmdOrCtrl+-', click: send('font-smaller') },
         { label: '文字を元の大きさに', accelerator: 'CmdOrCtrl+0', click: send('font-reset') },
+        { type: 'separator' },
+        { label: 'ターミナルの表示を検査', click: send('check-screen') },
+        { label: 'ターミナルの表示を作り直す', click: send('redraw-terminal') },
         { type: 'separator' },
         { role: 'toggleDevTools', label: '開発者ツール' },
         { role: 'togglefullscreen', label: 'フルスクリーン' },

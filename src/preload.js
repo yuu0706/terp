@@ -24,6 +24,7 @@ contextBridge.exposeInMainWorld('terp', {
   removeAgentHistory: (agent, sessionId) => ipcRenderer.invoke('agent-history:remove', agent, sessionId),
   setAgentHistoryTestSessions: (terminals) => ipcRenderer.invoke('agent-history:test-sessions', terminals),
   onAgentHistoryChanged: (fn) => ipcRenderer.on('agent-history:changed', () => fn()),
+  showScreenReport: (report) => ipcRenderer.invoke('screen:report', report),
   loadTabs: () => ipcRenderer.invoke('tabs:load'),
   saveTabs: (state) => ipcRenderer.invoke('tabs:save', state),
   onConfig: (fn) => ipcRenderer.on('config', (_e, config) => fn(config)),

@@ -2405,6 +2405,113 @@ async function runAgentHistoryTest({ win, js, check, outDir }) {
   }
 }
 
+// TERP_SELFTEST_REDRAW は、terp を開き直したとき（画面を読み直してつなぎ直す）と表示し直したときに、
+// claude のような「前の枠を消してから描き直す」プログラムの画面が崩れないかを確かめる。
+// 本物の claude は動かさず、Ink と同じ消し方（1行ずつ上へ戻って消す）で入力欄の枠を描く偽物を使う
+async function runRedrawTest({ win, js, check, outDir }) {
+  const { execFileSync } = require('child_process');
+  const wait = async (code, tries = 80) => {
+    for (let i = 0; i < tries; i++) {
+      if (await js(code).catch(() => false)) return true;
+      await sleep(100);
+    }
+    return false;
+  };
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'terp-redraw-')));
+  const node = execFileSync('/bin/zsh', ['-lc', 'command -v node'], { encoding: 'utf8' }).trim();
+  const ink = path.join(dir, 'ink.js');
+  fs.writeFileSync(ink, `const fs = require('fs');
+const log = process.argv[2];
+const out = process.stdout;
+let prev = 0, n = 0;
+for (let i = 0; i < 60; i++) out.write('message ' + i + ' ' + 'x'.repeat((i * 7) % 90) + '\\n');
+function frame() {
+  const w = out.columns, line = '─'.repeat(Math.max(w - 2, 1));
+  return ['* working ' + (n++), '╭' + line + '╮', '│ > ' + ' '.repeat(Math.max(w - 5, 0)) + '│', '╰' + line + '╯', '  ? for shortcuts'];
+}
+function render() {
+  let s = prev ? '\\x1b[2K\\x1b[1A'.repeat(prev - 1) + '\\x1b[2K\\x1b[G' : '';
+  const f = frame();
+  s += f.join('\\n');
+  prev = f.length;
+  out.write(s);
+}
+out.on('resize', () => { fs.appendFileSync(log, out.columns + 'x' + out.rows + '\\n'); render(); });
+setInterval(render, 150);
+render();
+`);
+  const logOf = (name) => path.join(dir, `${name}.log`);
+  const resizes = (name) => (fs.existsSync(logOf(name)) ? fs.readFileSync(logOf(name), 'utf8').trim().split('\n').filter(Boolean) : []);
+  const quote = (value) => "'" + value.replace(/'/g, "'\\''") + "'";
+  const start = async (id, name) => {
+    await js(`window.terp.write(${id}, ${JSON.stringify(`clear; ${quote(node)} ${quote(ink)} ${quote(logOf(name))}\r`)})`);
+    return wait(`window.__terp.bufferText(${id}, { visible: true }).includes('for shortcuts')`);
+  };
+  const report = (id) => js(`window.__terp.screenCheck(${id})`);
+  try {
+    await sleep(800);
+    const a = await js(`window.__terp.open(${JSON.stringify(dir)})`);
+    check('表示中の偽の claude が動く', await start(a, 'a'));
+    const b = await js(`window.__terp.open(${JSON.stringify(dir)})`);
+    check('もう1枚の偽の claude が動く', await start(b, 'b'));
+    await js(`window.__terp.activate(${a})`);
+    await sleep(800);
+    const before = await report(a);
+    check('はじめは崩れていない', before.ok, JSON.stringify(before));
+    // 裏にある間に窓の中の配置が変わる（左の一覧の幅を変える）
+    await js(`window.__terp.setSidebarWidth(360)`);
+    await sleep(600);
+    const sizeA = await js(`({ cols: window.__terp.sessions.get(${a}).term.cols, rows: window.__terp.sessions.get(${a}).term.rows })`);
+    const countA = resizes('a').length;
+    const countB = resizes('b').length;
+    // 数字（作業中の数え上げ）は時間で変わるため伏せて比べる
+    const screenOf = (id) => js(`window.__terp.bufferText(${id}, { visible: true }).replace(/\\d+/g, '#')`);
+    const liveA = await screenOf(a);
+    const liveB = await screenOf(b);
+    const liveReport = await report(a);
+    fs.writeFileSync(path.join(outDir, 'redraw-before.png'), (await win.webContents.capturePage()).toPNG());
+
+    // terp を開き直したのと同じく、画面を読み直してつなぎ直す
+    win.webContents.reload();
+    await sleep(1500);
+    check('読み直した後につなぎ直す', await wait(`window.__terp && window.__terp.sessions.has(${a}) && window.__terp.sessions.has(${b}) && window.__terp.activeId === ${a}`, 150));
+    await sleep(2000);
+    const after = await report(a);
+    const sizeAfter = await js(`({ cols: window.__terp.sessions.get(${a}).term.cols, rows: window.__terp.sessions.get(${a}).term.rows })`);
+    fs.writeFileSync(path.join(outDir, 'redraw-after.png'), (await win.webContents.capturePage()).toPNG());
+    fs.writeFileSync(path.join(outDir, 'redraw-after-a.txt'), await js(`window.__terp.bufferText(${a}, { visible: true })`));
+    check('開き直した後、表示中の画面が開き直す前と同じ', (await screenOf(a)) === liveA && after.fragments === liveReport.fragments && after.tops === liveReport.tops,
+      JSON.stringify({ before: liveReport, after }));
+    check('開き直した後、画面とシェルの大きさが合っている', !after.issues.some((issue) => issue.kind === 'size-mismatch'), JSON.stringify(after.issues));
+    check('裏の端末も、開き直す前と同じ画面で戻る', (await screenOf(b)) === liveB);
+    check('開き直した後も同じ大きさ', sizeAfter.cols === sizeA.cols && sizeAfter.rows === sizeA.rows, `${JSON.stringify(sizeA)} → ${JSON.stringify(sizeAfter)}`);
+    const extraA = resizes('a').slice(countA);
+    check('大きさが変わらないなら、開き直してもプログラムに大きさの変更を送らない', extraA.length === 0, extraA.join(' / '));
+
+    await js(`window.__terp.activate(${b})`);
+    await sleep(1500);
+    const shownB = await report(b);
+    fs.writeFileSync(path.join(outDir, 'redraw-after-b.txt'), await js(`window.__terp.bufferText(${b}, { visible: true })`));
+    fs.writeFileSync(path.join(outDir, 'redraw-hidden.png'), (await win.webContents.capturePage()).toPNG());
+    check('裏にあった端末を表示すると、画面とシェルの大きさが合う', !shownB.issues.some((issue) => issue.kind === 'size-mismatch'), JSON.stringify(shownB.issues));
+    const extraB = resizes('b').slice(countB);
+    check('裏にあった端末の大きさの変更は、表示したときの1回だけ', extraB.length <= 1, extraB.join(' / '));
+
+    const menuReport = await js(`window.__terp.checkActiveScreen()`);
+    check('表示のメニューの検査は、表示中の端末の結果を返す', menuReport && Array.isArray(menuReport.issues), JSON.stringify(menuReport));
+    const beforeRedraw = resizes('b').length;
+    await js(`window.__terp.redrawTerminal(${b})`);
+    await sleep(800);
+    const redraws = resizes('b').slice(beforeRedraw);
+    const sizeB = await js(`({ cols: window.__terp.sessions.get(${b}).term.cols, rows: window.__terp.sessions.get(${b}).term.rows })`);
+    check('作り直すと、大きさを1桁変えて今の大きさに戻す', redraws.length === 2 && redraws[1] === `${sizeB.cols}x${sizeB.rows}` && redraws[0] === `${sizeB.cols - 1}x${sizeB.rows}`, redraws.join(' / '));
+    check('作り直した後、画面とシェルの大きさが合っている', !(await report(b)).issues.some((issue) => issue.kind === 'size-mismatch'));
+  } finally {
+    await js(`window.__terp.setSidebarWidth(null)`).catch(() => {});
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 // TERP_SELFTEST_MDPREVIEW は、Markdown のファイルを編集とプレビューで切り替えられることを確かめる
 async function runMarkdownPreviewTest({ win, js, check, outDir }) {
   const wait = async (code, tries = 80) => {
@@ -3555,6 +3662,12 @@ exports.run = (win) => {
     }
     if (process.env.TERP_SELFTEST_AGENTHISTORY) {
       await runAgentHistoryTest({ win, js, check, outDir });
+      fs.writeFileSync(path.join(outDir, 'result.txt'), log.join('\n') + '\n');
+      await finish();
+      return;
+    }
+    if (process.env.TERP_SELFTEST_REDRAW) {
+      await runRedrawTest({ win, js, check, outDir });
       fs.writeFileSync(path.join(outDir, 'result.txt'), log.join('\n') + '\n');
       await finish();
       return;
