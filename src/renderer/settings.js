@@ -263,7 +263,8 @@ function showStatus(text, tone = '') {
 }
 
 async function save(key, value) {
-  const res = await terp.updateConfig({ [key]: value });
+  // 手で決めたアプリの背景色は、どのテーマでも使う（AI のテーマに結びつけた印を外す）
+  const res = await terp.updateConfig(key === 'appBackground' ? { appBackground: value, appBackgroundTheme: null } : { [key]: value });
   if (!res.ok) {
     showStatus(res.error, 'error');
     return false;
@@ -1160,7 +1161,7 @@ function renderThemePreview(colors, name) {
 }
 
 function cachedThemeColors(name) {
-  const key = JSON.stringify([name, values.accent || null, values.foreground || null, values.background || null, values.appBackground || null, values.palette || null]);
+  const key = JSON.stringify([name, values.accent || null, values.foreground || null, values.background || null, values.appBackground || null, values.appBackgroundTheme || null, values.palette || null]);
   if (!themeColorCache.has(key)) {
     const pending = terp.themeColors(name).then((res) => {
       if (!res.ok) themeColorCache.delete(key);
@@ -1331,7 +1332,8 @@ function openThemeAi(onApplied) {
   };
   cancelThemeAi = close;
   dialog.oncancel = (e) => { e.preventDefault(); close(); };
-  dialog.onclose = () => { request++; };
+  // close の知らせは閉じた後に遅れて届く。閉じてすぐ開き直したときに、開き直した後の作成の結果を捨てない
+  dialog.onclose = () => { if (!dialog.open) request++; };
   dialog.onkeydown = (e) => e.stopPropagation();
   cancel.onclick = close;
   const generate = async (revising = false) => {
@@ -1408,7 +1410,8 @@ function openThemeAi(onApplied) {
     if (res.ok) savedName = res.value;
     let applied = res.ok && await save('theme', savedName);
     if (token !== request || !dialog.open) return;
-    if (applied && answers.appBackground) applied = await save('appBackground', generated.appBackground);
+    // AI が作ったアプリの背景色は、このテーマのときだけ使う。別のテーマに替えたらテーマの色から作る
+    if (applied && answers.appBackground) applied = await save('appBackground', generated.appBackground) && await save('appBackgroundTheme', savedName);
     if (token !== request || !dialog.open) return;
     if (applied && answers.accent) applied = await save('accent', null);
     if (!applied) {

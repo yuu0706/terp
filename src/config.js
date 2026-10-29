@@ -21,6 +21,8 @@ const DEFAULT_CONFIG = {
   background: null,
   // アプリの地（左の一覧・窓の周り）の色。null ならターミナルの背景色から作る
   appBackground: null,
+  // appBackground を AI のテーマと一緒に作ったときの、そのテーマの名前。別のテーマのときは appBackground を使わない
+  appBackgroundTheme: null,
   palette: null,
   fontFamily: '"JetBrains Mono", Menlo, "Hiragino Sans", monospace',
   fontSize: 14,
@@ -131,19 +133,39 @@ function mix(a, b, ratio) {
   return '#' + [16, 8, 0].map((s) => ch(s).toString(16).padStart(2, '0')).join('');
 }
 
+function contrastRatio(a, b) {
+  const luminance = (hex) => {
+    const [r, g, b2] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255)
+      .map((v) => (v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4));
+    return r * 0.2126 + g * 0.7152 + b2 * 0.0722;
+  };
+  const x = luminance(a);
+  const y = luminance(b);
+  return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
+}
+
+// 候補を順に見て、地の色とのコントラスト比が 4.5 以上の最初の色。無ければいちばん見分けやすい色
+function readableOn(base, candidates) {
+  return candidates.find((c) => contrastRatio(c, base) >= 4.5)
+    || candidates.reduce((a, b) => (contrastRatio(b, base) > contrastRatio(a, base) ? b : a));
+}
+
 // 端末の色から、左の一覧などアプリの枠の色を作る
 // アプリの背景色（appBackground）を決めていれば、地の色をそれにし、行の強調・枠・薄い文字もその色から作る。
 // 決めていなければ、ターミナルの背景色を少し暗くして地の色にする
 function chromeColors(t, accent) {
   const base = t.appBackground || t.background;
+  // アプリの背景色をテーマと別に決めると、暗いテーマの白い文字が明るい地に乗って読めなくなる（2026-10-29 利用者の指摘）。
+  // 地の色と見分けにくければ、読める色に替える
+  const text = readableOn(base, [t.foreground, t.background, '#000000', '#ffffff']);
   return {
     'term-bg': t.background,
     bg: t.appBackground || mix(t.background, '#000000', 0.2),
-    'bg-hover': mix(base, t.foreground, 0.07),
-    'bg-active': mix(base, t.foreground, 0.14),
-    border: mix(base, t.foreground, 0.14),
-    text: t.foreground,
-    'text-muted': mix(t.foreground, base, 0.35),
+    'bg-hover': mix(base, text, 0.07),
+    'bg-active': mix(base, text, 0.14),
+    border: mix(base, text, 0.14),
+    text,
+    'text-muted': mix(text, base, 0.35),
     accent,
     busy: t.palette[2],
     warning: t.palette[3],
@@ -207,9 +229,14 @@ function applyColorOverrides(theme, config) {
   return { theme: next, error };
 }
 
+// AI がテーマと一緒に作ったアプリの背景色は、そのテーマのときだけ使う。別のテーマに替えたらテーマの色から作る
+function overridesFor(config, name) {
+  return config.appBackgroundTheme && config.appBackgroundTheme !== name ? { ...config, appBackground: null } : config;
+}
+
 // テーマの一覧の見本。上書きも重ねて、選んだ後と同じ色で見せる
 function getThemeColors(name) {
-  return themeColors(applyColorOverrides(readTheme(name), rawConfig()).theme);
+  return themeColors(applyColorOverrides(readTheme(name), overridesFor(rawConfig(), name)).theme);
 }
 
 function ensureConfigFile() {
@@ -225,6 +252,7 @@ const TERMINAL_VALIDATORS = {
   cursorStyle: (v) => ['block', 'bar', 'underline'].includes(v),
   cursorBlink: (v) => typeof v === 'boolean',
   themedIcon: (v) => typeof v === 'boolean',
+  appBackgroundTheme: (v) => v === null || (typeof v === 'string' && v.length <= 200),
   aiAssist: (v) => typeof v === 'boolean',
   aiModel: (v) => ['haiku', 'sonnet'].includes(v),
   aiCommitMessage: (v) => typeof v === 'boolean',
@@ -262,7 +290,7 @@ function loadConfig() {
   } catch (err) {
     error = error || err.message;
   }
-  const overridden = applyColorOverrides(theme, config);
+  const overridden = applyColorOverrides(theme, overridesFor(config, config.theme));
   theme = overridden.theme;
   error = error || overridden.error;
   return {
@@ -407,4 +435,4 @@ function listThemes() {
   return [...names];
 }
 
-module.exports = { CONFIG_DIR, CONFIG_PATH, ensureConfigFile, loadConfig, watchConfig, parseGhosttyTheme, updateConfig, rawConfig, listThemes, getThemeColors, themeColors, applyColorOverrides };
+module.exports = { CONFIG_DIR, CONFIG_PATH, ensureConfigFile, loadConfig, watchConfig, parseGhosttyTheme, updateConfig, rawConfig, listThemes, getThemeColors, themeColors, applyColorOverrides, chromeColors, contrastRatio };
