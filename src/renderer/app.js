@@ -15,6 +15,7 @@ import { terminalPaths, pathDropTarget, pathsFromTransfer } from './droppaths.js
 import { withAlpha, favoriteText } from './favcolor.js';
 import { STAR_ICON, draftLabel, createMenu, createWorkspaceUI } from './workspaceui.js';
 import { createOverview } from './overview.js';
+import { parsePermission, permissionSignature, permissionKeys, findClashes, urgencyRank } from './permission.js';
 import { createTermSearch } from './termsearch.js';
 import { checkScreen } from './screencheck.js';
 import { MARK_LENGTH, appendTail, recordSize, planReplay } from './replay.js';
@@ -396,9 +397,14 @@ function renderItem(s, index = visibleKeys().indexOf(termKey(s.id))) {
   const nameEl = li.querySelector('.session__name');
   if (nameEl) nameEl.textContent = displayName(s);
   const name = displayName(s);
+  // 考え中・許可待ちのエージェントは、2行目に今なにしてるか（最後の道具の呼び出し）を出す。
   // 名前がプログラム名なら2行目で繰り返さない
-  const program = isAgent(s) && name !== s.program ? s.program : '';
-  li.querySelector('.session__sub').textContent = [program, placeLabel(s)].filter(Boolean).join(' · ');
+  const doing = doingLabel(s, state);
+  const program = !doing && isAgent(s) && name !== s.program ? s.program : '';
+  li.querySelector('.session__sub').textContent = [doing, program, placeLabel(s)].filter(Boolean).join(' · ');
+  const clash = li.querySelector('.session__clash');
+  clash.hidden = !s.clashes?.length;
+  if (s.clashes?.length) clash.title = clashText(s);
   // 番号は上のタブに出ているものだけに付ける（⌘1〜⌘9 はタブの順）
   li.querySelector('.session__key').textContent = index >= 0 && index < 9 ? `⌘${index + 1}` : '';
 }
@@ -432,7 +438,9 @@ function renderAll() {
   renderWorkspaceStatuses();
   updateDockBadge();
   renderTabs(visible);
+  renderTabsMore();
   renderPaneTitles();
+  renderPermissionCards();
   empty.hidden = Boolean(activeKey);
 }
 
@@ -712,7 +720,9 @@ const overview = createOverview({
       items: ordered.flatMap((w) => list.filter((s) => s.workspace === w.id)).map((s) => {
         const work = workOf(s);
         const repo = projects.find((p) => p.path === work?.repo && p.workspace === s.workspace);
-        return { id: s.id, workspace: s.workspace, name: displayName(s),
+        const state = stateOf(s);
+        return { id: s.id, workspace: s.workspace, name: displayName(s), urgency: urgencyRank(state), activity: doingLabel(s, state),
+          clash: Boolean(s.clashes?.length),
           requirement: isAgent(s) ? s.agentTitle : '', customName: s.customName || '',
           open: s.workspace === activeWorkspace && openKeys.has(termKey(s.id)),
           program: isAgent(s) ? s.program : 'ターミナル', place: work ? placeInWork(s, work) : shortPath(s.cwd),
@@ -1903,6 +1913,7 @@ function createItem(s) {
     <span class="session__name"></span>
     <span class="session__key"></span>
     <span class="session__line2">
+      <span class="session__clash" hidden>同じファイル</span>
       <span class="session__sub"></span>
     </span>
     <button class="session__draft icon-btn draft-star" type="button" data-action="draft" aria-pressed="true" aria-label="${draftLabel(true)}" title="${draftLabel(true)}（上のタブと ⌘M には残る）">${STAR_ICON}</button>
@@ -1935,6 +1946,167 @@ function createItem(s) {
   looseList.appendChild(li);
   return li;
 }
+
+// ---- 並べて動かすエージェントの見張り ----
+// 会話の記録から「今なにしてる」と編集したファイルを読み、許可待ちには画面の文字から答えのカードを作る
+
+const WATCHED_PROGRAMS = new Set(['claude', 'codex']);
+
+function doingLabel(s, state) {
+  return isAgent(s) && ['working', 'waiting'].includes(state) ? s.activity || '' : '';
+}
+
+function clashText(s) {
+  return s.clashes.map((c) => {
+    const others = c.others.map((id) => sessions.get(id)).filter(Boolean).map(displayName).join('・');
+    return `${c.path.split('/').pop()} を ${others} も書き換えた`;
+  }).join('\n') + '\n（30分以内。同じ場所で動いているエージェント同士）';
+}
+
+// 考え中・許可待ちのものは毎回、それ以外は状態が変わった直後に1回だけ読む。
+// 会話の記録がまだ見つからないものは、30秒ごとに読み直す（force は自己診断から待たずに読むため）
+async function refreshActivity(force = false) {
+  const watched = [...sessions.values()].filter((s) => WATCHED_PROGRAMS.has(s.program));
+  const now = Date.now();
+  await Promise.all(watched.map(async (s) => {
+    const state = stateOf(s);
+    const busy = ['working', 'waiting'].includes(state);
+    if (s.activityLoading || (!busy && s.activityState === state) || (!busy && !force && now < (s.activityRetryAt || 0))) return;
+    s.activityLoading = true;
+    const res = await terp.agentActivity(s.id).catch(() => null);
+    s.activityLoading = false;
+    if (res?.ok && res.value) {
+      s.activityState = state;
+      s.activity = res.value.activity;
+      s.edits = res.value.edits;
+    } else s.activityRetryAt = now + 30000;
+  }));
+  const clashes = findClashes(watched.filter((s) => sessions.has(s.id)).map((s) => ({ id: s.id, edits: s.edits })), Date.now());
+  for (const s of sessions.values()) s.clashes = clashes.get(s.id) || [];
+  renderAll();
+}
+setInterval(refreshActivity, 4000);
+
+// 画面の一番下の1画面分。上へ戻して読んでいても、許可の画面はここにある
+function screenBottomText(s) {
+  const buf = s.term.buffer.active;
+  const lines = [];
+  for (let i = buf.baseY; i < Math.min(buf.length, buf.baseY + s.term.rows); i++) lines.push(buf.getLine(i)?.translateToString(true) ?? '');
+  return lines.join('\n');
+}
+
+const permissionHost = document.getElementById('permission-cards');
+// カードを閉じた（または答えた）許可の画面。許可待ちが終わったら忘れる
+const dismissedPrompts = new Map();
+
+function renderPermissionCards() {
+  const want = new Map();
+  for (const s of sessions.values()) {
+    if (!isAgent(s) || stateOf(s) !== 'waiting') { dismissedPrompts.delete(s.id); continue; }
+    if (config.permissionCard === false || terminalVisible(s)) continue;
+    const prompt = parsePermission(screenBottomText(s));
+    const sig = permissionSignature(prompt);
+    if (prompt && dismissedPrompts.get(s.id) !== sig) want.set(s.id, { prompt, sig });
+  }
+  for (const card of [...permissionHost.children]) if (!want.has(Number(card.dataset.id))) card.remove();
+  for (const [id, { prompt, sig }] of want) {
+    const s = sessions.get(id);
+    const card = permissionHost.querySelector(`[data-id="${id}"]`);
+    if (card?.dataset.sig === sig) card.querySelector('.permission-card__name').textContent = displayName(s);
+    else if (card) card.replaceWith(permissionCard(s, prompt, sig));
+    else permissionHost.append(permissionCard(s, prompt, sig));
+  }
+  permissionHost.hidden = !permissionHost.children.length;
+}
+
+function permissionCard(s, prompt, sig) {
+  const card = document.createElement('section');
+  card.className = 'permission-card';
+  card.dataset.id = String(s.id);
+  card.dataset.sig = sig;
+  card.setAttribute('aria-label', `${displayName(s)} の許可待ち`);
+  card.dataset.agentState = 'waiting';
+  card.innerHTML = `<header class="permission-card__head"><span class="session__dot" aria-hidden="true">!</span><span class="permission-card__name"></span>
+    <button class="icon-btn permission-card__close" type="button" aria-label="このカードを閉じる" title="このカードを閉じる（ターミナルの許可待ちは続く）">${CLOSE_ICON}</button></header>
+    <p class="permission-card__question"></p><pre class="permission-card__detail"></pre><div class="permission-card__options"></div>
+    <button class="btn permission-card__go" type="button">ターミナルへ移る</button>`;
+  card.querySelector('.permission-card__name').textContent = displayName(s);
+  card.querySelector('.permission-card__question').textContent = prompt.question;
+  const detail = card.querySelector('.permission-card__detail');
+  detail.textContent = prompt.detail.join('\n');
+  detail.hidden = !prompt.detail.length;
+  const options = card.querySelector('.permission-card__options');
+  prompt.options.forEach((label, index) => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'btn permission-card__option';
+    btn.dataset.index = String(index);
+    btn.textContent = `${index + 1}. ${label}`;
+    btn.addEventListener('click', () => answerPermission(s.id, index, sig));
+    options.append(btn);
+  });
+  card.querySelector('.permission-card__close').addEventListener('click', () => {
+    dismissedPrompts.set(s.id, sig);
+    renderPermissionCards();
+  });
+  card.querySelector('.permission-card__go').addEventListener('click', () => activate(s.id));
+  // 押してもターミナルの入力を奪わない
+  card.addEventListener('mousedown', (e) => { if (e.target.closest('button')) e.preventDefault(); });
+  return card;
+}
+
+// 押す直前に画面を読み直し、同じ許可の画面のときだけ矢印と Enter を送る。
+// 「No, and tell Claude …」は続けて文を打つため、そのターミナルへ移る
+function answerPermission(id, index, sig) {
+  const s = sessions.get(id);
+  const prompt = s && stateOf(s) === 'waiting' ? parsePermission(screenBottomText(s)) : null;
+  if (!prompt || permissionSignature(prompt) !== sig) {
+    showAiToast('許可の画面が変わったため、送りませんでした');
+    renderPermissionCards();
+    return;
+  }
+  terp.write(id, permissionKeys(prompt.cursor, index));
+  dismissedPrompts.set(id, sig);
+  updateAgentStatus(s, { type: 'input' });
+  if (/tell claude|differently/i.test(prompt.options[index])) activate(id);
+  renderAll();
+}
+
+// ---- 上のタブのはみ出し ----
+// 幅に入らないタブを「他 N」にまとめ、押すと一覧から選べる。隠れた中でいちばん急ぐ状態の印を付ける
+const tabsMore = document.getElementById('tabs-more');
+const tabsMoreMenu = createMenu();
+
+function hiddenTabs() {
+  const box = tabsEl.getBoundingClientRect();
+  return [...tabsEl.children].filter((tab) => {
+    const r = tab.getBoundingClientRect();
+    return r.width > 0 && Math.min(r.right, box.right) - Math.max(r.left, box.left) < r.width * 0.6;
+  });
+}
+
+function renderTabsMore() {
+  const hidden = hiddenTabs();
+  tabsMore.hidden = !hidden.length;
+  if (!hidden.length) return;
+  tabsMore.querySelector('.tabs__more-count').textContent = `他 ${hidden.length}`;
+  const states = hidden.map((tab) => tab.dataset.agentState);
+  const top = ['waiting', 'done', 'working'].find((state) => states.includes(state));
+  if (top) tabsMore.dataset.agentState = top;
+  else delete tabsMore.dataset.agentState;
+  tabsMore.title = `幅に入らないタブ ${hidden.length} 個` + (top ? `（${STATE_LABELS[top]}を含む）` : '');
+}
+
+tabsMore.addEventListener('click', () => {
+  tabsMoreMenu.open(hiddenTabs().map((tab) => {
+    const status = document.createElement('span');
+    status.className = 'tabs__more-state';
+    if (tab.dataset.agentState) status.dataset.agentState = tab.dataset.agentState;
+    if (tab.dataset.state) status.dataset.state = tab.dataset.state;
+    status.innerHTML = '<span class="session__dot"></span>';
+    return { label: tab.querySelector('.tab__name').textContent, status, run: () => activateKey(tab.dataset.key) };
+  }), { target: tabsMore });
+});
 
 // ---- AI の手伝い（ターミナルの名前） ----
 // 画面の末尾（最大40行・2000字）と場所だけを渡す。失敗（切ってある・上限・claude が無い）は右下に数秒出す
@@ -3450,6 +3622,8 @@ window.__terp = {
   offerEditedRepos,
   nameWithAi: (id, opts) => nameWithAi(sessions.get(id), opts),
   autoTitleScan,
+  refreshActivity: () => refreshActivity(true),
+  answerPermission,
   get repoOffers() { return repoOffers.map((o) => ({ ...o })); },
   showSampleOffer,
   get repoOffer() { return shownOffer; },

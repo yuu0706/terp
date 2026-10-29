@@ -540,6 +540,21 @@ body[data-sidebar='hidden'] .topbar {
   display: none;
 }
 
+/* 同じファイルを、ほかのエージェントも書き換えた印 */
+.session__clash {
+  flex: none;
+  padding: 0 5px;
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--color-bg);
+  background: var(--history-yellow);
+}
+
+.session__clash[hidden] {
+  display: none;
+}
+
 .session__sub {
   flex: 1;
   font-size: var(--text-sm);
@@ -907,7 +922,7 @@ button.subagent:hover,
 }
 
 /* エージェントの印は一覧・タブ・作業の行・枠の帯で共通にする。 */
-:is(.session, .tab, .work__status, .overview__tile, .pane__title)[data-agent-state] .session__dot {
+:is(.session, .tab, .work__status, .overview__tile, .pane__title, .tabs__more, .tabs__more-state, .permission-card)[data-agent-state] .session__dot {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -922,21 +937,21 @@ button.subagent:hover,
   line-height: 1;
 }
 
-:is(.session, .tab, .work__status, .overview__tile, .pane__title)[data-agent-state='working'] .session__dot {
+:is(.session, .tab, .work__status, .overview__tile, .pane__title, .tabs__more, .tabs__more-state, .permission-card)[data-agent-state='working'] .session__dot {
   border-color: var(--color-accent);
   border-right-color: transparent;
   opacity: 1;
   animation: agent-spin 1s linear infinite;
 }
 
-:is(.session, .tab, .work__status, .overview__tile, .pane__title)[data-agent-state='waiting'] .session__dot {
+:is(.session, .tab, .work__status, .overview__tile, .pane__title, .tabs__more, .tabs__more-state, .permission-card)[data-agent-state='waiting'] .session__dot {
   background: var(--history-yellow);
   border-color: var(--history-yellow);
   color: var(--color-bg);
   opacity: 1;
 }
 
-:is(.session, .tab, .work__status, .overview__tile, .pane__title)[data-agent-state='done'] .session__dot {
+:is(.session, .tab, .work__status, .overview__tile, .pane__title, .tabs__more, .tabs__more-state, .permission-card)[data-agent-state='done'] .session__dot {
   background: var(--history-green);
   border-color: var(--history-green);
   opacity: 1;
@@ -966,7 +981,7 @@ button.subagent:hover,
 @keyframes agent-spin { to { transform: rotate(360deg); } }
 @keyframes agent-pulse { 50% { opacity: 0.4; } }
 @media (prefers-reduced-motion: reduce) {
-  :is(.session, .tab, .work__status, .overview__tile, .pane__title)[data-agent-state='working'] .session__dot {
+  :is(.session, .tab, .work__status, .overview__tile, .pane__title, .tabs__more, .tabs__more-state, .permission-card)[data-agent-state='working'] .session__dot {
     animation: agent-pulse 2s ease-in-out infinite;
   }
 }
@@ -3437,6 +3452,92 @@ button.subagent:hover,
 /* AI の手伝いの失敗（上限・切ってある・claude が無い）を数秒だけ出す */
 .ai-toast { z-index: 21; border-color: var(--color-border); }
 
+/* 幅に入らないタブをまとめるボタン。隠れた中に許可待ちなどがあれば印を付ける */
+.tabs__more {
+  flex: none;
+  gap: var(--space-1);
+  font-size: var(--text-sm);
+}
+
+.tabs__more[hidden] { display: none; }
+.tabs__more:not([data-agent-state]) .session__dot { display: none; }
+.tabs__more-state { display: inline-flex; margin-left: auto; }
+
+/* 表示していないエージェントの許可待ち。右下に重ね、移らずに答えられる */
+.permission-cards {
+  position: fixed;
+  right: var(--space-3);
+  bottom: var(--space-3);
+  z-index: 19;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  width: min(380px, calc(100vw - var(--space-3) * 2));
+  max-height: calc(100vh - var(--titlebar-height) - var(--space-3) * 2);
+  overflow-y: auto;
+}
+
+.permission-cards[hidden] { display: none; }
+
+.permission-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--history-yellow);
+  border-radius: var(--radius);
+  background: var(--color-bg);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.4);
+}
+
+.permission-card__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.permission-card__name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-weight: 600;
+}
+
+.permission-card__question { margin: 0; }
+
+.permission-card__detail {
+  margin: 0;
+  padding: var(--space-2);
+  max-height: 8em;
+  overflow: auto;
+  border-radius: var(--radius);
+  background: var(--color-bg-active);
+  font-family: var(--font-mono, monospace);
+  font-size: var(--text-sm);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.permission-card__detail[hidden] { display: none; }
+
+.permission-card__options {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.permission-card__option {
+  justify-content: flex-start;
+  text-align: left;
+  white-space: normal;
+  height: auto;
+  min-height: var(--control-h);
+}
+
+.permission-card__go { align-self: flex-end; }
 .ai-toast p { margin: 0; font-size: var(--text-sm); color: var(--color-text-muted); overflow-wrap: anywhere; }
 
 .git__ai { align-self: flex-start; }

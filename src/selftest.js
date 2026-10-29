@@ -2779,6 +2779,172 @@ esac
   }
 }
 
+// TERP_SELFTEST_PARALLEL は、claude を何枚も並べて動かすときの手助けを偽の claude で確かめる。
+// 行の「今なにしてる」・同じファイルの重なり・許可待ちのカード・タブのはみ出し・⌘M の並びを見る
+async function runParallelTest({ win, js, check, outDir }) {
+  const { CONFIG_PATH } = require('./config');
+  const agentreply = require('./agentreply');
+  if (!process.env.TERP_CONFIG_DIR) throw new Error('並走の自己診断には一時フォルダの TERP_CONFIG_DIR が必要');
+  const original = fs.readFileSync(CONFIG_PATH, 'utf8');
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'terp-parallel-')));
+  const fake = path.join(dir, 'claude');
+  const script = path.join(dir, 'parallel.js');
+  const node = require('child_process').execFileSync('/bin/zsh', ['-lc', 'command -v node'], { encoding: 'utf8' }).trim();
+  fs.copyFileSync(node, fake);
+  fs.chmodSync(fake, 0o755);
+  const quote = (value) => "'" + value.replace(/'/g, "'\\''") + "'";
+  fs.writeFileSync(script, `require('child_process').execSync('stty -echo', { stdio: 'inherit' });
+const out = (text) => process.stdout.write(text);
+out('parallel-ready\\n');
+const screen = [
+  '╭──────────────────────────╮',
+  '│ Bash command             │',
+  '│   npm test               │',
+  '│ Do you want to proceed?  │',
+  '│ ❯ 1. Yes                 │',
+  "│   2. Yes, and don't ask again for npm test │",
+  '│   3. No, and tell Claude what to do differently (esc) │',
+  '╰──────────────────────────╯',
+].join('\\r\\n');
+require('readline').createInterface({ input: process.stdin }).on('line', (command) => {
+  if (command === 'work') out('\\x1b]0;⠂ 並走の確認\\x07');
+  else if (command === 'ask') out(screen + '\\r\\n\\x1b]9;Claude needs your permission to use Bash\\x07');
+  else out('got:' + JSON.stringify(command) + '\\n');
+});
+`);
+  const fakeDir = path.join(dir, 'fake');
+  fs.mkdirSync(path.join(fakeDir, 'projects', 'p'), { recursive: true });
+  const shared = path.join(dir, 'src', 'shared.js');
+  const at = new Date().toISOString();
+  const row = (name, input) => JSON.stringify({ type: 'assistant', timestamp: at, message: { content: [{ type: 'tool_use', name, input }] } });
+  const ids = [];
+  const wait = async (fn, label = '') => {
+    for (let i = 0; i < 200; i++) {
+      if (await fn()) return true;
+      await sleep(50);
+    }
+    throw new Error(`並走の自己診断で待ち切れなかった ${label}`);
+  };
+  const settings = async (patch) => {
+    const result = await js(`window.terp.updateConfig(${JSON.stringify(patch)})`);
+    if (!result.ok) throw new Error(result.error);
+    await wait(() => js(`Object.entries(${JSON.stringify(patch)}).every(([key, value]) => window.__terp.config[key] === value)`), 'settings');
+  };
+  const input = (id, command) => js(`window.__terp.sessions.get(${id}).term.input(${JSON.stringify(command + '\r')}, true)`);
+  const state = (id) => js(`window.__terp.sessions.get(${id}).li.dataset.agentState`);
+  const row2 = (id) => js(`window.__terp.sessions.get(${id}).li.querySelector('.session__sub').textContent`);
+  const card = (id) => `document.querySelector('#permission-cards .permission-card[data-id="${id}"]')`;
+  const previousFake = process.env.TERP_REPLY_FAKE_DIR;
+  process.env.TERP_REPLY_FAKE_DIR = fakeDir;
+  agentreply.__test.setLookup((entry) => ({ kind: 'claude', sessionId: `par-${entry.id}` }));
+  try {
+    await settings({ notifications: false });
+    await js('window.__terp.setFocusForTest(true)');
+    for (let i = 0; i < 3; i++) {
+      const id = await js(`window.__terp.open(${JSON.stringify(dir)})`);
+      ids.push(id);
+      await js(`window.terp.write(${id}, ${JSON.stringify(quote(fake) + ' ' + quote(script) + '\r')})`);
+      await wait(() => js(`window.__terp.bufferText(${id}).includes('parallel-ready') && window.__terp.sessions.get(${id}).program === 'claude'`), 'ready');
+    }
+    const [a, b, c] = ids;
+    const write = (id, rows) => fs.writeFileSync(path.join(fakeDir, 'projects', 'p', `par-${id}.jsonl`), rows.join('\n') + '\n');
+    write(a, [row('Edit', { file_path: shared }), row('Bash', { command: 'npm test', description: 'テストを流す' })]);
+    write(b, [row('Write', { file_path: shared }), row('Read', { file_path: path.join(dir, 'README.md') })]);
+    write(c, [row('Edit', { file_path: path.join(dir, 'other.js') })]);
+    await sleep(2300);
+
+    await input(a, 'work');
+    await wait(async () => (await state(a)) === 'working', 'working');
+    await js('window.__terp.refreshActivity()');
+    check('考え中の行の2行目に、今なにしてるかを出す', (await row2(a)).startsWith('実行 テストを流す'), await row2(a));
+    check('考え中でなければ、2行目はこれまでどおりプログラム', (await row2(c)).startsWith('claude'), await row2(c));
+    const clash = (id) => js(`(() => { const el = window.__terp.sessions.get(${id}).li.querySelector('.session__clash'); return el.hidden ? '' : el.title; })()`);
+    // 4秒ごとの読み直しと重なると読みかけを飛ばすため、印が付くまで読み直す
+    await wait(async () => { await js('window.__terp.refreshActivity()'); return Boolean(await clash(b)); }, 'clash').catch(() => {});
+    const clashA = await clash(a);
+    check('同じファイルを書き換えた2枚に印を付ける', clashA.includes('shared.js') && (await clash(b)).includes('shared.js'), await js(`JSON.stringify([${a}, ${b}, ${c}].map((id) => { const s = window.__terp.sessions.get(id); return [id, s.activityState, s.activity, s.edits, s.clashes]; }))`));
+    check('重ならないものには付けない', (await clash(c)) === '');
+
+    check('表示していないものは、まだ許可待ちでなければカードを出さない', !(await js(`Boolean(${card(a)})`)));
+    await input(a, 'ask');
+    await wait(async () => (await state(a)) === 'waiting', 'waiting');
+    await js('window.__terp.renderAll()');
+    check('表示していないエージェントの許可待ちに、右下のカードを出す', await js(`Boolean(${card(a)}) && !document.getElementById('permission-cards').hidden`));
+    const options = await js(`[...${card(a)}.querySelectorAll('.permission-card__option')].map((el) => el.textContent)`);
+    check('画面の選択肢をボタンにする', options.length === 3 && options[0] === '1. Yes' && options[2].startsWith('3. No'), options.join(' / '));
+    check('何を許可するかを出す', (await js(`${card(a)}.querySelector('.permission-card__detail').textContent`)).includes('npm test'));
+    check('カードは窓の中に見える位置に出る', await js(`(() => { const r = ${card(a)}.getBoundingClientRect(); return r.width > 0 && r.right <= innerWidth && r.bottom <= innerHeight && r.top >= 0; })()`));
+    fs.writeFileSync(path.join(outDir, 'parallel-permission-card.png'), (await win.webContents.capturePage()).toPNG());
+
+    const sig = await js(`${card(a)}.dataset.sig`);
+    await js(`window.__terp.answerPermission(${a}, 1, 'stale')`);
+    await sleep(400);
+    check('画面が変わっていたら送らずに知らせる', !(await js(`window.__terp.bufferText(${a})`)).includes('got:')
+      && (await js(`document.getElementById('ai-toast').textContent`)).includes('送りませんでした'));
+    const active = await js('window.__terp.activeId');
+    await js(`${card(a)}.querySelector('.permission-card__option[data-index="1"]').click()`);
+    await wait(() => js(`window.__terp.bufferText(${a}).includes('got:')`), 'answer');
+    const got = await js(`window.__terp.bufferText(${a}).split('\\n').find((line) => line.startsWith('got:'))`);
+    check('2つ目を押すと、下へ1つ動かして Enter を送る', got === 'got:"\\u001b[B"', got);
+    check('答えたらカードを消し、表示中のターミナルから移らない', !(await js(`Boolean(${card(a)})`)) && (await js('window.__terp.activeId')) === active);
+    void sig;
+
+    await input(c, 'ask');
+    await wait(async () => (await state(c)) === 'waiting', 'waiting c');
+    await js('window.__terp.renderAll()');
+    check('表示中のターミナルの許可待ちにはカードを出さない', !(await js(`Boolean(${card(c)})`)));
+
+    await input(b, 'ask');
+    await wait(async () => (await state(b)) === 'waiting', 'waiting b');
+    await settings({ permissionCard: false });
+    await js('window.__terp.renderAll()');
+    check('設定で切るとカードを出さない', !(await js(`Boolean(${card(b)})`)));
+    await settings({ permissionCard: true });
+    await js('window.__terp.renderAll()');
+    await js(`${card(b)}.querySelector('.permission-card__close').click()`);
+    await js('window.__terp.renderAll()');
+    check('× で閉じたカードは、同じ許可待ちの間は出し直さない', !(await js(`Boolean(${card(b)})`)) && (await state(b)) === 'waiting');
+
+    await js(`document.getElementById('tabs').style.maxWidth = '150px'`);
+    await js('window.__terp.renderAll()');
+    const more = await js(`(() => { const el = document.getElementById('tabs-more'); return el.hidden ? null : { text: el.textContent, state: el.dataset.agentState || '' }; })()`);
+    check('幅に入らないタブは「他 N」にまとめる', Boolean(more && /^他 \d+$/.test(more.text)), JSON.stringify(more));
+    check('隠れたタブに許可待ちがあれば印を付ける', more?.state === 'waiting', JSON.stringify(more));
+    await js(`document.getElementById('tabs-more').click()`);
+    await sleep(200);
+    const menu = await js(`[...document.querySelectorAll('.menu:popover-open .menu__item')].map((el) => el.textContent)`);
+    check('押すと隠れたタブを選べる', menu.length >= 1, menu.join(' / '));
+    await js(`document.querySelector('.menu:popover-open .menu__item').click()`);
+    check('選ぶとそのタブへ移る', (await js('window.__terp.activeId')) !== c || (await js(`document.querySelector('.tab[aria-selected="true"]').dataset.key`)) !== `t:${c}`);
+    await js(`document.getElementById('tabs').style.maxWidth = ''`);
+    await js(`window.__terp.activate(${c})`);
+    await js('window.__terp.renderAll()');
+    await js(`for (const tab of document.getElementById('tabs').children) tab.style.maxWidth = '70px'`);
+    await js('window.__terp.renderAll()');
+    check('全部入ればまとめのボタンを隠す', await js(`document.getElementById('tabs-more').hidden`));
+    await js(`for (const tab of document.getElementById('tabs').children) tab.style.maxWidth = ''`);
+
+    await js('window.__terp.overview.toggle()');
+    await sleep(300);
+    const order = await js(`[...document.querySelectorAll('.overview__repo[data-group="open"] .overview__tile')].map((el) => Number(el.dataset.id))`);
+    check('⌘M は許可待ちを先に並べる', order.indexOf(b) < order.indexOf(a) && order.indexOf(b) === 0, JSON.stringify(order));
+    await input(b, 'x');
+    await sleep(1200);
+    const after = await js(`[...document.querySelectorAll('.overview__repo[data-group="open"] .overview__tile')].map((el) => Number(el.dataset.id))`);
+    check('開いている間は状態が変わってもタイルを動かさない', JSON.stringify(after) === JSON.stringify(order), JSON.stringify(after));
+    check('タイルの下の行に今なにしてるを出す', (await js(`document.getElementById('overview-terminal-${a}').querySelector('.overview__meta').textContent`)).includes('同じファイルを書き換え中'));
+    await js('window.__terp.overview.close()');
+  } finally {
+    for (const id of ids) await js(`window.terp.kill(${id})`).catch(() => {});
+    await js('window.__terp.setFocusForTest(null)').catch(() => {});
+    agentreply.__test.setLookup(null);
+    if (previousFake === undefined) delete process.env.TERP_REPLY_FAKE_DIR;
+    else process.env.TERP_REPLY_FAKE_DIR = previousFake;
+    fs.writeFileSync(CONFIG_PATH, original);
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 // TERP_SELFTEST_KEYS は、行の編集のキー（⌥←→・⌘←→・⌘⌫）と Shift+Enter が zsh で効くことを確かめる
 async function runKeysTest({ win, js, check }) {
   const id = await js('window.__terp.activeId');
@@ -3818,6 +3984,12 @@ exports.run = (win) => {
     }
     if (process.env.TERP_SELFTEST_AIASSIST) {
       await runAiAssistTest({ win, js, check, outDir });
+      fs.writeFileSync(path.join(outDir, 'result.txt'), log.join('\n') + '\n');
+      await finish();
+      return;
+    }
+    if (process.env.TERP_SELFTEST_PARALLEL) {
+      await runParallelTest({ win, js, check, outDir });
       fs.writeFileSync(path.join(outDir, 'result.txt'), log.join('\n') + '\n');
       await finish();
       return;

@@ -142,6 +142,79 @@ async function editedFiles(entry) {
   }
 }
 
+// 道具の呼び出しを、一覧の行に出す短い「今なにしてる」にする。中身の分からない道具は名前だけ
+const clip = (text, n = 60) => {
+  const one = String(text || '').replace(/\s+/g, ' ').trim();
+  return Array.from(one).length > n ? Array.from(one).slice(0, n).join('') + '…' : one;
+};
+const base = (p) => (typeof p === 'string' ? path.basename(p) : '');
+function describeTool(name, input = {}) {
+  if (EDIT_TOOLS.has(name)) return `編集 ${base(input.file_path || input.notebook_path)}`.trim();
+  if (name === 'Read') return `読む ${base(input.file_path)}`.trim();
+  if (name === 'Bash') return `実行 ${clip(input.description || input.command)}`.trim();
+  if (name === 'Grep' || name === 'Glob') return `検索 ${clip(input.pattern, 40)}`.trim();
+  if (name === 'Task' || name === 'Agent') return `サブに頼む ${clip(input.description, 40)}`.trim();
+  if (name === 'WebFetch') return `Web を読む ${clip(input.url, 40)}`.trim();
+  if (name === 'WebSearch') return `Web で検索 ${clip(input.query, 40)}`.trim();
+  if (name === 'TodoWrite') {
+    const doing = Array.isArray(input.todos) ? input.todos.find((t) => t?.status === 'in_progress') : null;
+    return doing ? clip(doing.activeForm || doing.content) : '作業の一覧を更新';
+  }
+  return clip(String(name).replace(/^mcp__[^_]+(?:_[^_]+)*?__/, ''), 40);
+}
+
+// 会話の記録の末尾から、最後の道具の呼び出し（今なにしてる）と、編集したファイルと時刻を拾う。
+// 時刻の無い行は 0 とし、新しい編集を探すときに数えない
+function activityOf(rows, kind) {
+  let activity = '';
+  const edits = new Map();
+  const at = (row) => Date.parse(row.timestamp) || 0;
+  for (const row of rows) {
+    if (kind === 'codex') {
+      const p = row.payload;
+      if (row.type === 'event_msg' && p?.type === 'patch_apply_begin' && p.changes && typeof p.changes === 'object') {
+        for (const file of Object.keys(p.changes)) edits.set(file, at(row));
+        activity = `編集 ${Object.keys(p.changes).map(base).join(', ')}`;
+      } else if (row.type === 'response_item' && p?.type === 'function_call') {
+        let args = {};
+        try { args = JSON.parse(p.arguments || '{}'); } catch { /* 引数が読めなければ名前だけ */ }
+        const command = Array.isArray(args.command) ? args.command.join(' ') : args.cmd || args.command;
+        activity = command ? `実行 ${clip(command)}` : clip(p.name, 40);
+      }
+      continue;
+    }
+    if (row.isSidechain || row.type !== 'assistant' || !Array.isArray(row.message?.content)) continue;
+    for (const block of row.message.content) {
+      if (block?.type !== 'tool_use') continue;
+      activity = describeTool(block.name, block.input || {});
+      const file = EDIT_TOOLS.has(block.name) ? block.input?.file_path || block.input?.notebook_path : null;
+      if (typeof file === 'string' && path.isAbsolute(file)) {
+        edits.delete(file);
+        edits.set(file, at(row));
+      }
+    }
+  }
+  return { activity, edits: [...edits].reverse().slice(0, 30).map(([file, time]) => ({ path: file, at: time })) };
+}
+
+async function activity(entry) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), WAIT_MS);
+  let record;
+  try {
+    const source = await lookup(entry, controller.signal);
+    if (!source?.file) return null;
+    record = await openRecord(source.file);
+    if (!record) return null;
+    return activityOf((await readTailRows(record.fd, record.size, TAIL_BYTES)).rows, source.kind);
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+    await record?.fd.close().catch(() => {});
+  }
+}
+
 async function within(file, root) {
   try {
     const [real, base] = await Promise.all([fs.promises.realpath(file), fs.promises.realpath(root)]);
@@ -337,7 +410,7 @@ async function find(entry, id) {
 }
 
 module.exports = {
-  formatReply, find, rememberSessions, codexFile, editedFiles, editedPaths,
+  formatReply, find, rememberSessions, codexFile, editedFiles, editedPaths, activity, activityOf,
   remember: (id, reply) => used.set(id, reply.signature),
   forget: (id) => used.delete(id),
   __test: process.env.TERP_SELFTEST ? {

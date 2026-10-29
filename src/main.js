@@ -381,6 +381,12 @@ ipcMain.handle('agent:edited-repos', safe(async (_e, id) => {
   return roots;
 }));
 const editedRepoRoots = new Map();
+// エージェントの「今なにしてる」（最後の道具の呼び出し）と、編集したファイル・時刻。一覧の行と、同じファイルの重なりの印に使う
+ipcMain.handle('agent:activity', safe(async (_e, id) => {
+  const entry = known.get(id);
+  if (!entry || (!process.env.TERP_SELFTEST && !['claude', 'codex'].includes(entry.program))) return null;
+  return agentreply.activity({ id, pid: entry.pid, program: entry.program });
+}));
 // 場所を含む git のリポジトリの一番上（worktree なら元のリポジトリ）。git でなければ null
 ipcMain.handle('repos:root', safe((_e, dir) => gitops.repoRoot(dir).catch(() => null)));
 ipcMain.handle('repos:find-new', safe((_e, dir, since) => newrepos.findNewRepos(dir, since)));

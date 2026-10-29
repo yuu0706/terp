@@ -27,17 +27,21 @@ export function overviewTabItems(items, tab) {
 }
 
 // タイルの見出しは要件（claude などが付ける端末の題名。話が変わるたびに付け替わる）を主にし、
-// 無ければ一覧と同じ名前にする。下の行に、自分で付けた名前・ブランチ（作業外なら場所）・プログラムを並べる
+// 無ければ一覧と同じ名前にする。下の行に、同じファイルの重なり・自分で付けた名前・ブランチ（作業外なら場所）・
+// 今なにしてる（無ければプログラム）を並べる
 export function tileLabels(item) {
   const main = item.requirement || item.name || '';
-  const meta = [...new Set([item.requirement ? item.customName : '', item.branch || item.place, item.program]
+  const meta = [...new Set([item.clash ? '同じファイルを書き換え中' : '', item.requirement ? item.customName : '',
+    item.branch || item.place, item.activity || item.program]
     .filter((part) => part && part !== main))];
   return { main, meta: meta.join(' · ') };
 }
 
 // 所属の中のまとまり。開いているタブ（画面上部のタブの帯に出ている端末）を先頭に出し、
-// 続けてリポジトリ（一覧の並び順）、最後にその他のターミナル。リポジトリが多くても、作業中の端末まで送らずに済む
-export function overviewGroups(members) {
+// 続けてリポジトリ（一覧の並び順）、最後にその他のターミナル。リポジトリが多くても、作業中の端末まで送らずに済む。
+// まとまりの中は rank（許可待ち・終わったが先）の順にし、同じ rank は一覧の並びのまま
+export function overviewGroups(all) {
+  const members = all.map((item, i) => [item, i]).sort(([a, i], [b, j]) => (a.rank ?? 0) - (b.rank ?? 0) || i - j).map(([item]) => item);
   const groups = [];
   const open = members.filter((item) => item.open);
   if (open.length) groups.push({ key: 'open', repoPath: null, label: '開いているタブ', items: open });
@@ -143,6 +147,7 @@ export function createOverview({ host, snapshot, preview, renderStatus, activate
   let origin = null;
   let signature = null;
   const tiles = new Map();
+  const ranks = new Map();
 
   function select(id, scroll = false) {
     selected = id;
@@ -159,9 +164,14 @@ export function createOverview({ host, snapshot, preview, renderStatus, activate
     const tabs = overviewTabs(items);
     if (!tabs.some((t) => t.key === tab)) tab = 'all';
     renderTabs(tabs);
+    // 並びは開いたときの状態で決め、開いている間に状態が変わってもタイルを動かさない
+    for (const item of items) {
+      if (!ranks.has(item.id)) ranks.set(item.id, item.urgency ?? 3);
+      item.rank = ranks.get(item.id);
+    }
     const matches = filterOverview(overviewTabItems(items, tab), input.value);
     if (!matches.some((item) => item.id === selected)) selected = matches[0]?.id ?? null;
-    const nextSignature = JSON.stringify([workspaces, tab, matches.map((item) => [item.id, item.workspace, item.repoPath, item.repoName, item.open])]);
+    const nextSignature = JSON.stringify([workspaces, tab, matches.map((item) => [item.id, item.workspace, item.repoPath, item.repoName, item.open, item.rank])]);
     if (signature !== nextSignature) {
       const tileHadFocus = document.activeElement?.closest('.overview__tile');
       signature = nextSignature;
@@ -328,6 +338,7 @@ export function createOverview({ host, snapshot, preview, renderStatus, activate
     beforeOpen();
     origin = document.activeElement;
     selected = snapshot().activeId;
+    ranks.clear();
     input.value = '';
     signature = null;
     dialog.showModal();

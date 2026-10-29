@@ -89,5 +89,14 @@ const path = require('node:path');
   check('スクロール後の負の位置でも上へ', neighbor(2, 'ArrowUp', [rect(1, 0, -100), rect(2, 0, -10)]), 1);
   check('隣の行の高さが異なっても上へ', neighbor(2, 'ArrowUp', [{ ...rect(1, 0, 0), height: 150 }, rect(2, 0, 170)]), 1);
   check('丸め誤差のある同じ行でも右へ', neighbor(1, 'ArrowRight', [rect(1, 0, 0.25), rect(2, 110, 0.5)]), 2);
+  check('まとまりの中は許可待ち・終わったを先にし、同じ重みは元の並び',
+    groups([{ id: 1, open: true, rank: 2 }, { id: 2, open: true, rank: 0 }, { id: 3, open: true, rank: 2 }, { id: 4, open: true, rank: 1 }]),
+    [['開いているタブ', [2, 4, 1, 3]]]);
+  check('今なにしてるはプログラムの代わりに出す',
+    tileLabels({ name: 'x', requirement: 'ログイン修正', branch: 'main', program: 'claude', activity: '実行 npm test' }),
+    { main: 'ログイン修正', meta: 'main · 実行 npm test' });
+  check('同じファイルの重なりは先頭に出す',
+    tileLabels({ name: 'x', requirement: 'A', branch: 'main', program: 'claude', clash: true }),
+    { main: 'A', meta: '同じファイルを書き換え中 · main · claude' });
   console.log(`全体の一覧: ${count}例 OK`);
 })().catch((error) => { console.error(error); process.exitCode = 1; });

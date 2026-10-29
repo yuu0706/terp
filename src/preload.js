@@ -65,6 +65,7 @@ contextBridge.exposeInMainWorld('terp', {
   findNewRepos: (dir, since) => ipcRenderer.invoke('repos:find-new', dir, since),
   repoRoot: (dir) => ipcRenderer.invoke('repos:root', dir),
   editedRepos: (id) => ipcRenderer.invoke('agent:edited-repos', id),
+  agentActivity: (id) => ipcRenderer.invoke('agent:activity', id),
   writeFile: (opts) => ipcRenderer.invoke('files:write', opts),
   openExternalFile: (file) => ipcRenderer.invoke('files:open-external', file),
   revealFile: (file) => ipcRenderer.invoke('files:reveal', file),

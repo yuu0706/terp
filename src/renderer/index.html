@@ -100,6 +100,7 @@
           <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2" /><path d="M9 5v14" /></svg>
         </button>
         <div id="tabs" class="tabs" role="tablist" aria-label="開いているターミナルとファイル"></div>
+        <button id="tabs-more" class="btn tabs__more" type="button" aria-haspopup="menu" hidden><span class="session__dot" aria-hidden="true"></span><span class="tabs__more-count"></span></button>
         <div class="tabs__actions">
           <button id="tab-new" class="icon-btn icon-btn--tab" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="新しいタブ" title="新しいタブ">
             <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
@@ -374,6 +375,7 @@
       </form>
     </dialog>
     <script src="../../node_modules/monaco-editor/min/vs/loader.js"></script>
+    <div id="permission-cards" class="permission-cards" role="region" aria-label="許可待ち" hidden></div>
     <div id="ai-toast" class="repo-toast ai-toast" role="status" hidden><p class="ai-toast__body"></p></div>
     <div id="repo-toast" class="repo-toast" role="alertdialog" aria-labelledby="repo-toast-title" aria-describedby="repo-toast-body" hidden>
       <p id="repo-toast-title" class="repo-toast__title"></p>

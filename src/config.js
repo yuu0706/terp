@@ -48,6 +48,8 @@ const DEFAULT_CONFIG = {
   notifyWhenVisible: false,
   notifySound: true,
   notifyMessage: true,
+  // 表示していないエージェントの許可待ちを、右下のカードから移らずに答えられるようにする
+  permissionCard: true,
   // AI の手伝い。aiAssist で全体を切り、機能ごとにも切れる。aiAutoTitle は画面の文字を claude に送るため既定で切る。
   // aiDailyLimit は1日に claude を呼ぶ回数の上限（0 なら上限なし）
   aiAssist: true,
@@ -286,6 +288,7 @@ function loadConfig() {
     notifyWhenVisible: config.notifyWhenVisible === true,
     notifySound: config.notifySound === true,
     notifyMessage: config.notifyMessage === true,
+    permissionCard: config.permissionCard !== false,
     confirmDraftRemove: config.confirmDraftRemove !== false,
     ai: {
       enabled: config.aiAssist,

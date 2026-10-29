@@ -138,6 +138,7 @@ export const SECTIONS = [
       { key: 'notifySound', label: '音を鳴らす', type: 'toggle', default: true, disabled: (v) => v.notifications === false },
       { key: 'notifyMessage', label: '返答の文を出す', type: 'toggle', default: true, help: 'ロック画面や画面の共有で、返答の中身が見えることがある', disabled: (v) => v.notifications === false },
       { key: 'dockBadge', label: 'Dock に数を出す', type: 'toggle', default: true },
+      { key: 'permissionCard', label: '許可待ちに右下のカードで答える', type: 'toggle', default: true, help: '表示していないターミナルが許可を求めたとき、移らずに選べる' },
       { key: 'confirmDraftRemove', label: 'ドラフトから外すときに確認する', type: 'toggle', default: true, help: '確認の画面で「今後は確認しない」を選ぶと切れる' },
       {
         type: 'action', label: '試しに通知する',
