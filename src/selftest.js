@@ -186,6 +186,31 @@ async function runSettingsTest({ win, js, check, outDir }) {
   check('テーマを選ぶと設定ファイルに書く', saved().theme === 'Sakura Night', saved().theme);
   check('テーマを選ぶとすぐ反映される', (await js('window.__terp.config.chrome.accent')) === '#ff9ebb', await js('window.__terp.config.chrome.accent'));
 
+  // 文字色はテーマを替えずに上書きでき、既定に戻すとテーマの色に戻る
+  await js(`(() => { const s = document.getElementById('setting-foreground'); s.value = '#123abc'; s.dispatchEvent(new Event('change')); })()`);
+  await sleep(1500);
+  const fgId = await js('window.__terp.activeId');
+  check('文字色の欄で端末の文字色を変えられる', saved().foreground === '#123abc' && saved().theme === 'Sakura Night'
+    && (await js(`window.__terp.sessions.get(${fgId}).term.options.theme.foreground`)) === '#123abc');
+  await shot('1b-foreground');
+  await js(`document.getElementById('setting-foreground').parentElement.querySelector('button').click()`);
+  await sleep(1500);
+  check('文字色を既定に戻すとテーマの色に戻る', saved().foreground === undefined
+    && (await js(`window.__terp.sessions.get(${fgId}).term.options.theme.foreground`)) === '#f5d5de');
+
+  // アプリの背景色はターミナルの背景色と別に決められ、既定に戻すとターミナルの背景色から作り直す
+  const bgOf = () => js(`({ app: window.__terp.config.chrome.bg, term: window.__terp.config.chrome['term-bg'], border: window.__terp.config.chrome.border })`);
+  const before = await bgOf();
+  await js(`(() => { const s = document.getElementById('setting-appBackground'); s.value = '#20304a'; s.dispatchEvent(new Event('change')); })()`);
+  await sleep(1500);
+  const split = await bgOf();
+  check('アプリの背景色を、ターミナルの背景色と別に変えられる', saved().appBackground === '#20304a' && split.app === '#20304a' && split.term === before.term
+    && split.border !== before.border && (await js(`getComputedStyle(document.documentElement).getPropertyValue('--color-bg').trim()`)) === '#20304a', JSON.stringify(split));
+  await shot('1c-app-background');
+  await js(`document.getElementById('setting-appBackground').parentElement.querySelector('button').click()`);
+  await sleep(1500);
+  check('アプリの背景色を既定に戻すと、ターミナルの背景色から作る', saved().appBackground === undefined && JSON.stringify(await bgOf()) === JSON.stringify(before));
+
   await js(`(() => { const s = document.getElementById('setting-fontSize'); s.value = '16'; s.dispatchEvent(new Event('change')); })()`);
   await sleep(1500);
   const id = await js('window.__terp.activeId');
@@ -239,10 +264,11 @@ async function runGhosttyTest({ win, js, check }) {
       'font-family = "Test Mono"', `theme = light:X,dark:${theme}`,
       'window-padding-x = 4,12', 'window-padding-y = 6,14',
       'cursor-style = bar', 'cursor-style-blink = true', 'bold-color = #ffffff', 'macos-option-as-alt = true',
+      'foreground = C0CAF5', 'palette = 1=#ff0000', 'palette = 99=#000000',
     ].join('\n'));
     fs.writeFileSync(path.join(dir, 'extra'), [
       'font-family = "Test Fallback"', 'font-size = 19', 'minimum-contrast = 4.5',
-      'background-opacity = 0.8', 'background-blur = 12', 'config-file = ?missing', 'config-file = config',
+      'background-opacity = 0.8', 'background-blur = 12', 'config-file = ?missing', 'config-file = config', 'background = #1a1b26',
     ].join('\n'));
     fs.writeFileSync(CONFIG_PATH, '{}\n');
     await sleep(500);
@@ -252,6 +278,8 @@ async function runGhosttyTest({ win, js, check }) {
     const preview = await js(`document.getElementById('ghostty-import-detail').textContent`);
     check('取り込みの差分をラベルと前後の値で表示する', preview.includes('文字の大きさ: 14 → 19') && preview.includes('余白（左右）: 10 → 8'));
     check('写さない項目に理由を表示する', preview.includes('bold-color = #ffffff — terp に無い') && preview.includes('macos-option-as-alt = true — terp は常に Meta'));
+    check('文字色・背景色・16色の上書きも差分に出す', preview.includes('文字色: テーマの色 → #c0caf5') && preview.includes('背景色: テーマの色 → #1a1b26')
+      && preview.includes('16色: テーマの色 → 1=#ff0000') && preview.includes('palette = 99=#000000 —'), preview);
     check('読んだファイルを表示する', preview.includes(process.env.TERP_GHOSTTY_CONFIG) && preview.includes(path.join(dir, 'extra')));
     const beforeCancel = fs.readFileSync(CONFIG_PATH, 'utf8');
     await js(`document.getElementById('ghostty-import-cancel').click()`);
@@ -263,6 +291,12 @@ async function runGhosttyTest({ win, js, check }) {
     await sleep(1200);
     const values = saved();
     check('取り込んだ値を設定ファイルに書く', values.theme === theme && values.fontSize === 19 && values.paddingX === 8 && values.paddingY === 10 && values.minimumContrast === 4.5 && values.cursorStyle === 'bar' && values.cursorBlink === true && values.backgroundOpacity === 0.8 && values.backgroundBlur === 12);
+    check('文字色・背景色・16色の上書きを設定ファイルに書く', values.foreground === '#c0caf5' && values.background === '#1a1b26' && JSON.stringify(values.palette) === '{"1":"#ff0000"}');
+    check('上書きの色が端末と枠に効く', await js(`(() => {
+      const t = [...window.__terp.sessions.values()][0].term.options.theme;
+      return t.foreground === '#c0caf5' && t.red === '#ff0000' && t.background === 'rgba(26, 27, 38, 0)'
+        && getComputedStyle(document.documentElement).getPropertyValue('--color-text').trim() === '#c0caf5';
+    })()`));
     check('フォントの順と日本語の代替フォントを保つ', values.fontFamily === '"Test Mono", "Test Fallback", Menlo, "Hiragino Sans", monospace');
     check('端末に文字・コントラスト・カーソルを反映する', await js(`(() => {
       const terminals = [...window.__terp.sessions.values()].map((s) => s.term.options);

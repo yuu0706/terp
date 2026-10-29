@@ -16,6 +16,12 @@ const THEME_DIRS = [
 const DEFAULT_CONFIG = {
   theme: null,
   accent: null,
+  // テーマの色の上書き。null ならテーマの色を使う。palette は { "0": "#rrggbb", … "15": … } の一部だけでもよい
+  foreground: null,
+  background: null,
+  // アプリの地（左の一覧・窓の周り）の色。null ならターミナルの背景色から作る
+  appBackground: null,
+  palette: null,
   fontFamily: '"JetBrains Mono", Menlo, "Hiragino Sans", monospace',
   fontSize: 14,
   paddingX: 10,
@@ -115,15 +121,18 @@ function mix(a, b, ratio) {
 }
 
 // 端末の色から、左の一覧などアプリの枠の色を作る
+// アプリの背景色（appBackground）を決めていれば、地の色をそれにし、行の強調・枠・薄い文字もその色から作る。
+// 決めていなければ、ターミナルの背景色を少し暗くして地の色にする
 function chromeColors(t, accent) {
+  const base = t.appBackground || t.background;
   return {
     'term-bg': t.background,
-    bg: mix(t.background, '#000000', 0.2),
-    'bg-hover': mix(t.background, t.foreground, 0.07),
-    'bg-active': mix(t.background, t.foreground, 0.14),
-    border: mix(t.background, t.foreground, 0.14),
+    bg: t.appBackground || mix(t.background, '#000000', 0.2),
+    'bg-hover': mix(base, t.foreground, 0.07),
+    'bg-active': mix(base, t.foreground, 0.14),
+    border: mix(base, t.foreground, 0.14),
     text: t.foreground,
-    'text-muted': mix(t.foreground, t.background, 0.35),
+    'text-muted': mix(t.foreground, base, 0.35),
     accent,
     busy: t.palette[2],
     warning: t.palette[3],
@@ -160,8 +169,36 @@ function readTheme(name) {
   return parseGhosttyTheme(fs.readFileSync(file, 'utf8'));
 }
 
+const HEX_COLOR = /^#[0-9a-fA-F]{6}$/;
+const COLOR_VALIDATORS = {
+  foreground: (v) => typeof v === 'string' && HEX_COLOR.test(v),
+  background: (v) => typeof v === 'string' && HEX_COLOR.test(v),
+  appBackground: (v) => typeof v === 'string' && HEX_COLOR.test(v),
+  palette: (v) => Boolean(v) && typeof v === 'object' && !Array.isArray(v)
+    && Object.entries(v).every(([i, c]) => /^(\d|1[0-5])$/.test(i) && typeof c === 'string' && HEX_COLOR.test(c)),
+};
+
+// 設定の文字色・背景色・16色を、テーマの色の上に重ねる（2026-10-28 利用者の指示。テーマを替えずに文字色を変えたい）。
+// 誤った値は使わず、error に書いて返す
+function applyColorOverrides(theme, config) {
+  const next = { ...theme, palette: [...theme.palette] };
+  let error = null;
+  for (const [key, valid] of Object.entries(COLOR_VALIDATORS)) {
+    const value = config[key];
+    if (value === null || value === undefined) continue;
+    if (!valid(value)) {
+      error = error || `${key} の値を確認する。テーマの色で動作中`;
+      continue;
+    }
+    if (key === 'palette') for (const [i, c] of Object.entries(value)) next.palette[Number(i)] = c.toLowerCase();
+    else next[key] = value.toLowerCase();
+  }
+  return { theme: next, error };
+}
+
+// テーマの一覧の見本。上書きも重ねて、選んだ後と同じ色で見せる
 function getThemeColors(name) {
-  return themeColors(readTheme(name));
+  return themeColors(applyColorOverrides(readTheme(name), rawConfig()).theme);
 }
 
 function ensureConfigFile() {
@@ -207,6 +244,9 @@ function loadConfig() {
   } catch (err) {
     error = error || err.message;
   }
+  const overridden = applyColorOverrides(theme, config);
+  theme = overridden.theme;
+  error = error || overridden.error;
   return {
     error,
     font: { family: config.fontFamily, size: config.fontSize },
@@ -302,6 +342,7 @@ function updateConfig(patch) {
       if (key === 'agents') validateAgents(value);
       if (key === 'commands') validateCommands(value);
       if (TERMINAL_VALIDATORS[key] && !TERMINAL_VALIDATORS[key](value)) throw new Error(`${key} の値を確認する`);
+      if (COLOR_VALIDATORS[key] && !COLOR_VALIDATORS[key](value)) throw new Error(`${key} は #rrggbb の色で指定する`);
       next[key] = value;
     }
   }
@@ -340,4 +381,4 @@ function listThemes() {
   return [...names];
 }
 
-module.exports = { CONFIG_DIR, CONFIG_PATH, ensureConfigFile, loadConfig, watchConfig, parseGhosttyTheme, updateConfig, rawConfig, listThemes, getThemeColors, themeColors };
+module.exports = { CONFIG_DIR, CONFIG_PATH, ensureConfigFile, loadConfig, watchConfig, parseGhosttyTheme, updateConfig, rawConfig, listThemes, getThemeColors, themeColors, applyColorOverrides };

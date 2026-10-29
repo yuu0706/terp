@@ -138,6 +138,9 @@ terp は、ターミナルを複数開いて素早く切り替えるための ma
 | --- | --- | --- |
 | `theme` | `null`（Catppuccin Mocha 相当の内蔵の色） | テーマの名前。Ghostty のテーマの書式のファイルを、`~/.config/terp/themes`・`~/.config/ghostty/themes`・Ghostty.app 付属のテーマの順に探す |
 | `accent` | `null`（テーマのカーソルの色） | 強調色。新規ボタン・未読の印などに使う |
+| `foreground`・`background` | `null`（テーマの色） | テーマの文字色・背景色の上書き（`#rrggbb`）。テーマを替えずに文字色を変えるため（2026-10-28 利用者の指示）。`appBackground` を決めていなければ、一覧や枠の色もこの色から計算する。設定の「外観」の「文字色」「ターミナルの背景色」で変えられる |
+| `appBackground` | `null`（ターミナルの背景色を2割暗くした色） | アプリの地（左の一覧・窓の周り・設定の画面）の色（`#rrggbb`）。決めると、行の強調・枠の線・薄い文字もこの色から作る。ターミナルの背景とアプリの背景を分けるため（2026-10-29 利用者の指示）。設定の「外観」の「アプリの背景色」で変えられる。Ghostty には当たる設定が無いため取り込まない |
+| `palette` | `null`（テーマの16色） | テーマの16色の一部の上書き。`{ "1": "#rrggbb" }` の形。画面の欄は無く、Ghostty から取り込むか手で書く |
 | `fontFamily` | `"JetBrains Mono", Menlo, "Hiragino Sans", monospace` | フォント |
 | `fontSize` | `14` | 文字の大きさ |
 | `paddingX` | `10` | 端末の左右の余白（0〜40 px の整数）。変更時に端末の寸法を測り直す |
@@ -184,6 +187,8 @@ terp は、ターミナルを複数開いて素早く切り替えるための ma
 | `background-blur`・`background-blur-radius` | `backgroundBlur` | 真偽か数値。数値は既存のぼかしと同じ0〜100に収め、別名同士でも後の値を優先する |
 | `window-padding-x`・`window-padding-y` | `paddingX`・`paddingY` | 1値か2値。2値は平均を四捨五入し、0〜40に収める |
 | `minimum-contrast` | `minimumContrast` | 1〜21 に収める |
+| `foreground`・`background` | `foreground`・`background` | `#` の有無を問わず6桁の16進だけ。色の名前（`white` など）は写さない |
+| `palette` | `palette` | 行ごとに読み、0〜15 の番号の分だけ写す。同じ番号は後の行を使う |
 | `cursor-style` | `cursorStyle` | `block`・`bar`・`underline`。`block_hollow` は `block` に置き換え、理由も表示する |
 | `cursor-style-blink` | `cursorBlink` | `true`・`false` を写す |
 

@@ -31,6 +31,11 @@ export const SECTIONS = [
         },
       },
       { key: 'accent', label: '強調色', type: 'color', help: '新しいターミナルのボタンや未読の印の色。既定に戻すとテーマのカーソルの色になる' },
+      // テーマを替えずに、文字色と背景色だけを変える（2026-10-28 利用者の指示）。一覧や枠の色もここから計算する
+      { key: 'foreground', label: '文字色', type: 'color', themeVar: '--color-text', help: 'テーマの文字色の代わりに使う。既定に戻すとテーマの色になる' },
+      { key: 'background', label: 'ターミナルの背景色', type: 'color', themeVar: '--color-term-bg', help: 'テーマの背景色の代わりに使う。アプリの背景色を決めていなければ、一覧や枠の色もこの色から作る' },
+      // ターミナルとアプリの地を別の色にする（2026-10-29 利用者の指示）
+      { key: 'appBackground', label: 'アプリの背景色', type: 'color', themeVar: '--color-bg', help: '左の一覧や窓の周りの色。既定に戻すと、ターミナルの背景色を少し暗くした色になる' },
       { key: 'fontFamily', label: 'フォント', type: 'text', help: 'CSS の font-family の書き方で、使いたい順に並べる' },
       { key: 'fontSize', label: '文字の大きさ', type: 'number', min: 9, max: 32, step: 1, unit: 'px' },
       { key: 'paddingX', label: '余白（左右）', type: 'number', min: 0, max: 40, step: 1, unit: 'px' },
@@ -241,7 +246,7 @@ async function save(key, value) {
   }
   values = { ...values, [key]: value };
   if (value === null) delete values[key];
-  if (key === 'accent') refreshThemePreview();
+  if (['accent', 'foreground', 'background', 'appBackground', 'palette'].includes(key)) refreshThemePreview();
   refreshDisabledFields();
   showStatus('保存しました');
   return true;
@@ -406,7 +411,7 @@ const FIELD_TYPES = {
     input.type = 'color';
     input.className = 'settings__color';
     input.id = id;
-    input.value = value || getComputedStyle(document.documentElement).getPropertyValue('--color-accent').trim() || '#89b4fa';
+    input.value = value || getComputedStyle(document.documentElement).getPropertyValue(field.themeVar || '--color-accent').trim() || '#89b4fa';
     const state = document.createElement('span');
     state.className = 'settings__unit';
     state.textContent = value ? value : 'テーマに合わせる';
@@ -987,9 +992,11 @@ async function createGhosttyImport() {
 function openGhosttyImport({ changes, skipped, files, current: before }) {
   if (document.getElementById('ghostty-import-dialog')) return;
   const fields = SECTIONS.flatMap((section) => section.fields);
-  const different = Object.entries(changes).filter(([key, value]) => value !== before[key]);
+  const different = Object.entries(changes).filter(([key, value]) => JSON.stringify(value) !== JSON.stringify(before[key]));
   const display = (key, value) => {
     const field = fields.find((f) => f.key === key);
+    if (key === 'palette') return value ? Object.entries(value).map(([i, c]) => `${i}=${c}`).join(' ') : 'テーマの色';
+    if (field?.type === 'color') return value || 'テーマの色';
     if (key === 'cursorStyle') return ({ block: '四角', bar: '縦線', underline: '下線' })[value] || value;
     if (typeof value === 'boolean') return value ? '有効' : '無効';
     return field?.format ? field.format(value) : String(value ?? '内蔵の色');
@@ -1013,7 +1020,7 @@ function openGhosttyImport({ changes, skipped, files, current: before }) {
   detail.append(element('h3', 'settings__label', '変わる項目'));
   if (!different.length) detail.append(element('p', 'dialog__note', '変わる項目はない'));
   for (const [key, value] of different) {
-    const row = element('p', 'dialog__note', `${fields.find((f) => f.key === key)?.label || key}: ${display(key, before[key])} → ${display(key, value)}`);
+    const row = element('p', 'dialog__note', `${key === 'palette' ? '16色' : fields.find((f) => f.key === key)?.label || key}: ${display(key, before[key])} → ${display(key, value)}`);
     row.dataset.key = key;
     detail.append(row);
   }
@@ -1117,7 +1124,7 @@ function renderThemePreview(colors, name) {
 }
 
 function cachedThemeColors(name) {
-  const key = JSON.stringify([name, values.accent || null]);
+  const key = JSON.stringify([name, values.accent || null, values.foreground || null, values.background || null, values.appBackground || null, values.palette || null]);
   if (!themeColorCache.has(key)) {
     const pending = terp.themeColors(name).then((res) => {
       if (!res.ok) themeColorCache.delete(key);

@@ -63,15 +63,25 @@ function mapGhosttyConfig(entries, { themeExists }) {
   const skipped = [];
   const latest = new Map();
   const families = [];
+  const palette = {};
+  const skip = (entry, reason) => skipped.push({ ...entry, reason });
+  const hex = (value) => (/^#?[0-9a-fA-F]{6}$/.test(value) ? `#${value.replace(/^#/, '').toLowerCase()}` : null);
   for (const entry of entries) {
     if (entry.key === 'font-family') {
       if (entry.value === '') families.length = 0;
       else families.push(entry.value);
     }
+    // palette は番号ごとに何行も書くため、行ごとに読む。後に読んだ値を優先する
+    if (entry.key === 'palette') {
+      const m = entry.value.match(/^(\d+)\s*=\s*(\S+)$/);
+      const color = m && Number(m[1]) < 16 ? hex(m[2]) : null;
+      if (color) palette[m[1]] = color;
+      else skip(entry, '0〜15 の番号と #rrggbb の色で指定する');
+      continue;
+    }
     // 別名のぼかしも、後に読んだ値を優先する
     latest.set(entry.key === 'background-blur-radius' ? 'background-blur' : entry.key, entry);
   }
-  const skip = (entry, reason) => skipped.push({ ...entry, reason });
   const number = (value) => value.trim() !== '' && Number.isFinite(Number(value)) ? Number(value) : null;
   const bounded = (entry, key, min, max) => {
     const n = number(entry.value);
@@ -117,10 +127,18 @@ function mapGhosttyConfig(entries, { themeExists }) {
         if (value === 'true' || value === 'false') changes.cursorBlink = value === 'true';
         else skip(entry, 'true か false で指定する');
         break;
+      case 'foreground':
+      case 'background': {
+        const color = hex(value);
+        if (color) changes[key] = color;
+        else skip(entry, '#rrggbb の色で指定する（色の名前は読めない）');
+        break;
+      }
       case 'macos-option-as-alt': skip(entry, 'terp は常に Meta'); break;
       default: skip(entry, 'terp に無い');
     }
   }
+  if (Object.keys(palette).length) changes.palette = palette;
   return { changes, skipped };
 }
 
