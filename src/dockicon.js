@@ -1,6 +1,7 @@
 const { iconSvg, iconColors, DEFAULT_ICON_COLORS } = require('./themeicon');
+const { bundleIconTarget, setBundleIcon } = require('./bundleicon');
 
-function createDockIcon({ app, BrowserWindow }) {
+function createDockIcon({ app, BrowserWindow, applyBundleIcon = setBundleIcon }) {
   let pending = null;
   let running = false;
   let stopped = false;
@@ -9,6 +10,10 @@ function createDockIcon({ app, BrowserWindow }) {
   let lastImage = null;
   let renderCount = 0;
   let drawingWindow = null;
+  let lastBundleKey = '';
+  let bundleTarget = null;
+  let bundleApplyCount = 0;
+  let bundleRemoved = null;
 
   async function render(colors) {
     const target = new BrowserWindow({
@@ -36,20 +41,35 @@ function createDockIcon({ app, BrowserWindow }) {
     running = true;
     try {
       while (pending && !stopped) {
-        const colors = pending;
+        const request = pending;
+        const { colors, remove } = request;
         const key = JSON.stringify(colors);
+        const bundleKey = JSON.stringify(request);
         pending = null;
-        if (key === lastKey) continue;
+        if (key === lastKey && bundleKey === lastBundleKey) continue;
         try {
-          renderCount++;
-          const image = await render(colors);
+          let image = lastImage;
+          if (key !== lastKey) {
+            renderCount++;
+            image = await render(colors);
+          }
           // 描いている間に変わった色は当てず、最後に届いた色だけを次に描く
-          if (stopped || (pending && JSON.stringify(pending) !== key)) continue;
+          if (stopped || (pending && JSON.stringify(pending) !== bundleKey)) continue;
           if (image.isEmpty()) continue;
-          app.dock.setIcon(image);
-          lastKey = key;
-          lastColors = colors;
-          lastImage = image;
+          if (key !== lastKey) {
+            app.dock.setIcon(image);
+            lastKey = key;
+            lastColors = colors;
+            lastImage = image;
+          }
+          const target = bundleIconTarget({ isPackaged: app.isPackaged });
+          if (target && bundleKey !== lastBundleKey) {
+            await applyBundleIcon(target, remove ? null : image.toPNG(), remove);
+            bundleTarget = target;
+            bundleApplyCount++;
+            bundleRemoved = remove;
+          }
+          lastBundleKey = bundleKey;
         } catch (_) {
           // アイコンの失敗で端末を止めない。成功した色だけ覚え、次の変更でまた試す
         }
@@ -61,7 +81,8 @@ function createDockIcon({ app, BrowserWindow }) {
 
   function update(loaded) {
     if (!app.dock || stopped) return;
-    pending = loaded.themedIcon === false ? { ...DEFAULT_ICON_COLORS } : iconColors(loaded.chrome);
+    const remove = loaded.themedIcon === false;
+    pending = { colors: remove ? { ...DEFAULT_ICON_COLORS } : iconColors(loaded.chrome), remove };
     if (!running) void drain();
   }
 
@@ -78,6 +99,9 @@ function createDockIcon({ app, BrowserWindow }) {
     get renderCount() { return renderCount; },
     get busy() { return running; },
     get png() { return lastImage?.toPNG() || null; },
+    get bundleTarget() { return bundleTarget; },
+    get bundleApplyCount() { return bundleApplyCount; },
+    get bundleRemoved() { return bundleRemoved; },
   };
 }
 

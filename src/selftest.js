@@ -3827,17 +3827,27 @@ async function runWorkTest({ win, js, check, outDir }) {
   check('読み直しても並びが保たれる', (await order()).join() === 'sample-repo,second-repo');
 }
 
-// TERP_SELFTEST_THEMEICON は、一時フォルダの設定で Dock の色と描き直しを確かめる
+exports.prepareThemeIconTarget = () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'terp-theme-icon-'));
+  const target = path.join(dir, 'Fake.app');
+  fs.mkdirSync(target);
+  process.env.TERP_BUNDLE_ICON_TARGET = target;
+  app.once('will-quit', () => fs.rmSync(dir, { recursive: true, force: true }));
+};
+
+// TERP_SELFTEST_THEMEICON は、一時フォルダの設定と空のアプリで色と貼り直しを確かめる
 async function runThemeIconTest({ js, check, outDir }) {
   if (!process.env.TERP_CONFIG_DIR) throw new Error('アイコンの自己診断には一時フォルダの TERP_CONFIG_DIR が必要');
   if (!app.dock) throw new Error('アイコンの自己診断には macOS の Dock が必要');
   const config = require('./config');
   const { iconColors, DEFAULT_ICON_COLORS } = require('./themeicon');
   const state = require('./main').__test;
+  const target = process.env.TERP_BUNDLE_ICON_TARGET;
+  const customIcon = path.join(target, 'Icon\r');
   const original = fs.readFileSync(config.CONFIG_PATH, 'utf8');
   const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
   const waitFor = async (condition) => {
-    for (let t = 0; t < 10000; t += 100) {
+    for (let t = 0; t < 20000; t += 100) {
       if (await condition()) return true;
       await sleep(100);
     }
@@ -3865,23 +3875,30 @@ async function runThemeIconTest({ js, check, outDir }) {
 
   try {
     check('起動後にテーマの5色が当たる', await applied(iconColors(config.loadConfig().chrome)), JSON.stringify(state.dockIconColors));
+    check('起動後に空のアプリへアイコンを貼る', state.bundleIconTarget === target && state.bundleIconApplyCount === 1 && state.bundleIconRemoved === false && fs.existsSync(customIcon));
     shoot('theme-icon-start');
     const before = state.dockIconColors;
+    const beforeApply = state.bundleIconApplyCount;
     const accent = before?.accent === '#369abc' ? '#c96437' : '#369abc';
     const themed = await change({ accent, themedIcon: true });
     check('強調色を変えると Dock の色も変わる', !same(before, state.dockIconColors) && state.dockIconColors?.accent === accent);
+    check('強調色を変えるとアプリにも貼り直す', state.bundleIconApplyCount > beforeApply && state.bundleIconRemoved === false && fs.existsSync(customIcon));
     shoot('theme-icon-custom');
     await change({ themedIcon: false });
     check('切ると原本の5色になる', same(state.dockIconColors, DEFAULT_ICON_COLORS));
+    check('切るとアプリに貼った絵を外す', state.bundleIconRemoved === true && !fs.existsSync(customIcon));
     shoot('theme-icon-original');
     await change({ themedIcon: true });
     check('戻すとテーマの5色になる', same(state.dockIconColors, themed));
+    check('戻すとアプリへ再び貼る', state.bundleIconRemoved === false && fs.existsSync(customIcon));
     shoot('theme-icon-restored');
     const count = state.dockIconRenderCount;
+    const applyCount = state.bundleIconApplyCount;
     const fontSize = config.loadConfig().font.size === 17 ? 18 : 17;
     await change({ fontSize });
     await sleep(700);
     check('5色が同じ設定の変更では描き直さない', state.dockIconRenderCount === count, `${count} → ${state.dockIconRenderCount}`);
+    check('5色が同じ設定の変更では貼り直さない', state.bundleIconApplyCount === applyCount, `${applyCount} → ${state.bundleIconApplyCount}`);
   } finally {
     fs.writeFileSync(config.CONFIG_PATH, original);
   }

@@ -81,9 +81,10 @@ test('themedIcon は既定で有効、真偽だけ保存でき、誤った設定
 function fakeDock() {
   const windows = [];
   const applied = [];
+  const bundleApplied = [];
   let active = 0;
   let maximum = 0;
-  const control = { failLoad: false, failCapture: false, failApply: false, loading: null };
+  const control = { failLoad: false, failCapture: false, failApply: false, failBundle: false, loading: null, bundling: null };
   function BrowserWindow(options) {
     const target = this;
     target.options = options;
@@ -115,7 +116,12 @@ function fakeDock() {
     if (control.failApply) throw new Error('setIcon failed');
     applied.push(image.toPNG().toString());
   } } };
-  return { icon: createDockIcon({ app, BrowserWindow }), windows, applied, control, get maximum() { return maximum; } };
+  const applyBundleIcon = async (target, png, remove) => {
+    if (control.bundling) await control.bundling;
+    if (control.failBundle) throw new Error('bundle failed');
+    bundleApplied.push({ target, png, remove });
+  };
+  return { icon: createDockIcon({ app, BrowserWindow, applyBundleIcon }), windows, applied, bundleApplied, control, get maximum() { return maximum; } };
 }
 
 async function settled(icon) {
@@ -216,4 +222,102 @@ test('終了時は描画用の窓と待機中の変更を破棄する', async ()
   assert.equal(fake.applied.length, 0);
   assert.equal(fake.windows.length, 1);
   assert.ok(fake.windows[0].destroyed);
+});
+
+function fakeBundle(t) {
+  const previous = process.env.TERP_BUNDLE_ICON_TARGET;
+  process.env.TERP_BUNDLE_ICON_TARGET = path.join(os.tmpdir(), 'terp-bundle-test', 'Fake.app');
+  t.after(() => {
+    if (previous === undefined) delete process.env.TERP_BUNDLE_ICON_TARGET;
+    else process.env.TERP_BUNDLE_ICON_TARGET = previous;
+  });
+  return fakeDock();
+}
+
+test('起動時と色の変更で同じ PNG を貼り、同じ色では貼らず、無効で外す', async (t) => {
+  const fake = fakeBundle(t);
+  fake.icon.update({ chrome });
+  await settled(fake.icon);
+  assert.equal(fake.icon.bundleTarget, process.env.TERP_BUNDLE_ICON_TARGET);
+  assert.equal(fake.icon.bundleApplyCount, 1);
+  assert.equal(fake.icon.bundleRemoved, false);
+  assert.deepEqual(fake.bundleApplied[0].png, fake.icon.png);
+  fake.icon.update({ chrome, fontSize: 17 });
+  await settled(fake.icon);
+  assert.equal(fake.icon.bundleApplyCount, 1);
+  fake.icon.update({ chrome: { ...chrome, accent: '#112233' } });
+  await settled(fake.icon);
+  assert.equal(fake.icon.bundleApplyCount, 2);
+  assert.deepEqual(fake.bundleApplied[1].png, fake.icon.png);
+  fake.icon.update({ chrome, themedIcon: false });
+  await settled(fake.icon);
+  assert.equal(fake.icon.bundleApplyCount, 3);
+  assert.equal(fake.icon.bundleRemoved, true);
+  assert.equal(fake.bundleApplied[2].png, null);
+  fake.icon.update({ chrome, themedIcon: false, fontSize: 18 });
+  await settled(fake.icon);
+  assert.equal(fake.icon.bundleApplyCount, 3);
+  fake.icon.update({ chrome });
+  await settled(fake.icon);
+  assert.equal(fake.icon.bundleApplyCount, 4);
+  assert.equal(fake.icon.bundleRemoved, false);
+  const restarted = fakeDock();
+  restarted.icon.update({ chrome });
+  await settled(restarted.icon);
+  assert.equal(restarted.icon.bundleApplyCount, 1);
+});
+
+test('5色が原本と同じでも切り替えで貼り付けと解除を行い、描き直さない', async (t) => {
+  const fake = fakeBundle(t);
+  fake.icon.update({});
+  await settled(fake.icon);
+  fake.icon.update({ themedIcon: false });
+  await settled(fake.icon);
+  assert.equal(fake.icon.bundleRemoved, true);
+  fake.icon.update({ themedIcon: true });
+  await settled(fake.icon);
+  assert.equal(fake.icon.bundleRemoved, false);
+  assert.equal(fake.icon.bundleApplyCount, 3);
+  assert.equal(fake.icon.renderCount, 1);
+});
+
+test('貼り付けと解除の失敗は Dock を止めず、次の同じ色の設定変更で再試行する', async (t) => {
+  const fake = fakeBundle(t);
+  fake.control.failBundle = true;
+  fake.icon.update({ chrome });
+  await settled(fake.icon);
+  assert.deepEqual(fake.icon.colors, custom);
+  assert.equal(fake.icon.bundleApplyCount, 0);
+  assert.equal(fake.icon.bundleTarget, null);
+  fake.control.failBundle = false;
+  fake.icon.update({ chrome, fontSize: 17 });
+  await settled(fake.icon);
+  assert.equal(fake.icon.bundleApplyCount, 1);
+  fake.control.failBundle = true;
+  fake.icon.update({ themedIcon: false });
+  await settled(fake.icon);
+  assert.deepEqual(fake.icon.colors, DEFAULT_ICON_COLORS);
+  assert.equal(fake.icon.bundleRemoved, false);
+  fake.control.failBundle = false;
+  fake.icon.update({ themedIcon: false, fontSize: 18 });
+  await settled(fake.icon);
+  assert.equal(fake.icon.bundleRemoved, true);
+  assert.equal(fake.icon.bundleApplyCount, 2);
+});
+
+test('貼り付け中の設定変更も直列に処理し、最後の状態へ追いつく', async (t) => {
+  const fake = fakeBundle(t);
+  let release;
+  fake.control.bundling = new Promise((resolve) => { release = resolve; });
+  fake.icon.update({ chrome });
+  for (let i = 0; i < 200 && fake.applied.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(fake.applied.length, 1);
+  assert.equal(fake.icon.busy, true);
+  fake.icon.update({ chrome: { ...chrome, accent: '#112233' } });
+  fake.icon.update({ themedIcon: false });
+  release();
+  await settled(fake.icon);
+  assert.deepEqual(fake.bundleApplied.map((entry) => entry.remove), [false, true]);
+  assert.equal(fake.icon.bundleRemoved, true);
+  assert.deepEqual(fake.icon.colors, DEFAULT_ICON_COLORS);
 });

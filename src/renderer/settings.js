@@ -68,7 +68,7 @@ export const SECTIONS = [
         write: (v) => (v === 0 ? false : v),
         format: (v) => (v === 0 ? 'なし' : String(v)),
       },
-      { key: 'themedIcon', label: 'Dock のアイコンをテーマの色にする', type: 'toggle', default: true, help: '起動している間だけ変わる。閉じている間の Dock や Finder のアイコンは元のまま' },
+      { key: 'themedIcon', label: 'Dock・Finder のアイコンをテーマの色にする', type: 'toggle', default: true, help: 'Dock と Finder のアイコンをテーマの色で描く。閉じている間の Dock は、すぐには替わらないことがある' },
     ],
   },
   {

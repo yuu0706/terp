@@ -27,6 +27,8 @@ const agentreply = require('./agentreply');
 const agenthistory = require('./agenthistory');
 const { PtyClient } = require('./ptyclient');
 const { createDockIcon } = require('./dockicon');
+// 起動時の貼り付けより先に、自己診断専用の空のアプリを用意する
+if (process.env.TERP_SELFTEST && process.env.TERP_SELFTEST_THEMEICON === '1') require('./selftest').prepareThemeIconTarget();
 const dockIcon = createDockIcon({ app, BrowserWindow });
 
 // シェルは常駐のプロセス（ptyhost.js）が持つ。terp を閉じてもシェルは残り、開き直したらつなぎ直す
@@ -54,6 +56,9 @@ exports.__test = {
   get dockIconRenderCount() { return dockIcon.renderCount; },
   get dockIconBusy() { return dockIcon.busy; },
   get dockIconPng() { return dockIcon.png; },
+  get bundleIconTarget() { return dockIcon.bundleTarget; },
+  get bundleIconApplyCount() { return dockIcon.bundleApplyCount; },
+  get bundleIconRemoved() { return dockIcon.bundleRemoved; },
 };
 notify.init({ getWindow: () => win, toWindow });
 
