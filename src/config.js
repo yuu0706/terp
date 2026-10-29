@@ -48,6 +48,14 @@ const DEFAULT_CONFIG = {
   notifyWhenVisible: false,
   notifySound: true,
   notifyMessage: true,
+  // AI の手伝い。aiAssist で全体を切り、機能ごとにも切れる。aiAutoTitle は画面の文字を claude に送るため既定で切る。
+  // aiDailyLimit は1日に claude を呼ぶ回数の上限（0 なら上限なし）
+  aiAssist: true,
+  aiModel: 'haiku',
+  aiCommitMessage: true,
+  aiNameTerminal: true,
+  aiAutoTitle: false,
+  aiDailyLimit: 30,
   // ドラフトから外すときに確認するか。確認の画面の「今後は確認しない」で切れる
   confirmDraftRemove: true,
 };
@@ -213,6 +221,12 @@ const TERMINAL_VALIDATORS = {
   minimumContrast: (v) => typeof v === 'number' && Number.isFinite(v) && v >= 1 && v <= 21,
   cursorStyle: (v) => ['block', 'bar', 'underline'].includes(v),
   cursorBlink: (v) => typeof v === 'boolean',
+  aiAssist: (v) => typeof v === 'boolean',
+  aiModel: (v) => ['haiku', 'sonnet'].includes(v),
+  aiCommitMessage: (v) => typeof v === 'boolean',
+  aiNameTerminal: (v) => typeof v === 'boolean',
+  aiAutoTitle: (v) => typeof v === 'boolean',
+  aiDailyLimit: (v) => Number.isInteger(v) && v >= 0 && v <= 1000,
 };
 
 function normalizeTerminalConfig(config) {
@@ -273,6 +287,12 @@ function loadConfig() {
     notifySound: config.notifySound === true,
     notifyMessage: config.notifyMessage === true,
     confirmDraftRemove: config.confirmDraftRemove !== false,
+    ai: {
+      enabled: config.aiAssist,
+      commitMessage: config.aiAssist && config.aiCommitMessage,
+      nameTerminal: config.aiAssist && config.aiNameTerminal,
+      autoTitle: config.aiAssist && config.aiAutoTitle,
+    },
   };
 }
 

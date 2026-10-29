@@ -234,6 +234,7 @@
         <form id="git-commit" class="git__commit">
           <p id="git-identity" class="git__note"></p>
           <textarea name="message" class="input git__message" rows="3" placeholder="コミットメッセージ" spellcheck="false"></textarea>
+          <button id="git-ai-message" type="button" class="btn btn--xs git__ai" hidden>AI で書く</button>
           <p id="git-commit-reason" class="git__note" hidden></p>
           <button type="submit" class="btn btn--primary btn--block-sm">コミット<kbd class="btn__key">⌘↩</kbd></button>
         </form>
@@ -373,6 +374,7 @@
       </form>
     </dialog>
     <script src="../../node_modules/monaco-editor/min/vs/loader.js"></script>
+    <div id="ai-toast" class="repo-toast ai-toast" role="status" hidden><p class="ai-toast__body"></p></div>
     <div id="repo-toast" class="repo-toast" role="alertdialog" aria-labelledby="repo-toast-title" aria-describedby="repo-toast-body" hidden>
       <p id="repo-toast-title" class="repo-toast__title"></p>
       <p id="repo-toast-body" class="repo-toast__body"></p>

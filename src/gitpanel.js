@@ -113,4 +113,19 @@ async function fetch(top) {
   return git(['fetch', '--prune'], top, { timeout: NETWORK_TIMEOUT });
 }
 
-module.exports = { toplevel, status, diff, stage, unstage, commit, push, pull, fetch, parseStatus, DIFF_LINE_LIMIT };
+// コミットメッセージを AI に作らせるための材料。差分は長いと途中で切る
+const COMMIT_DIFF_LIMIT = 12000;
+async function stagedSummary(top) {
+  const [stat, full, log] = await Promise.all([
+    git(['diff', '--cached', '--stat'], top),
+    git(['diff', '--cached', '--no-color', '--no-ext-diff'], top),
+    git(['log', '-8', '--format=%s'], top).catch(() => ''),
+  ]);
+  return {
+    stat: stat.trim(),
+    diff: full.length > COMMIT_DIFF_LIMIT ? `${full.slice(0, COMMIT_DIFF_LIMIT)}\n（以下略）` : full,
+    subjects: log.split('\n').map((l) => l.trim()).filter(Boolean),
+  };
+}
+
+module.exports = { toplevel, status, diff, stage, unstage, commit, push, pull, fetch, parseStatus, stagedSummary, DIFF_LINE_LIMIT };

@@ -182,6 +182,25 @@ async function runFileAction(action, files) {
   await refresh(true);
 }
 
+// AI でコミットメッセージを書く（設定の「AI の手伝い」で切れる）。ステージした差分だけを渡す
+const aiButton = document.getElementById('git-ai-message');
+export function setGitAi(enabled) {
+  aiButton.hidden = !enabled;
+}
+aiButton.addEventListener('click', async () => {
+  if (aiButton.disabled || !state?.top) return;
+  aiButton.disabled = true;
+  aiButton.textContent = '考え中…';
+  const res = await terp.aiCommitMessage(state.top);
+  aiButton.disabled = false;
+  aiButton.textContent = 'AI で書く';
+  if (!res.ok) { showResult(res.error, 'error'); return; }
+  const message = commitForm.elements.message;
+  message.value = res.value;
+  message.focus();
+  updateCommitButton();
+});
+
 async function commit() {
   updateCommitButton();
   const button = commitForm.querySelector('[type="submit"]');

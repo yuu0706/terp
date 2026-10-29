@@ -176,7 +176,7 @@ async function runSettingsTest({ win, js, check, outDir }) {
   await sleep(800);
   check('⌘, で設定の画面が開く', (await js(`document.getElementById('settings').hidden`)) === false);
   const navs = await js(`[...document.querySelectorAll('#settings-nav .settings__nav-item')].map((b) => b.textContent)`);
-  check('左にメニューが並ぶ', navs.join() === '外観,AI エージェント,コマンド,通知,詳しい設定', navs.join());
+  check('左にメニューが並ぶ', navs.join() === '外観,AI エージェント,AI の手伝い,コマンド,通知,詳しい設定', navs.join());
   const themeCount = await js(`document.querySelectorAll('.theme-picker__row').length`);
   check('テーマを一覧から選べる', themeCount > 100, `${themeCount} 件`);
   await shot('1-appearance');
@@ -2681,6 +2681,104 @@ async function runEditRepoTest({ win, js, check, outDir }) {
   }
 }
 
+// TERP_SELFTEST_AIASSIST は、AI の手伝い（コミットメッセージ・ターミナルの名前・題名の自動の予測）を偽の claude で確かめる。
+// 身軽に呼ぶ引数・渡す中身・設定での切り替え・1日の上限・使用量の記録を見る
+async function runAiAssistTest({ win, js, check, outDir }) {
+  const config = require('./config');
+  const { execFileSync } = require('child_process');
+  if (!process.env.TERP_CONFIG_DIR) throw new Error('AI の手伝いの自己診断には一時フォルダの TERP_CONFIG_DIR が必要です');
+  const fake = path.join(outDir, 'fake-assist-claude');
+  const argsFile = `${fake}.args`;
+  const countFile = `${fake}.count`;
+  const shellQuote = (v) => "'" + v.replace(/'/g, "'\\''") + "'";
+  const envelope = (result) => JSON.stringify({ type: 'result', is_error: false, result, usage: { input_tokens: 10, cache_creation_input_tokens: 590, output_tokens: 5 } });
+  fs.writeFileSync(fake, `#!/bin/sh
+n=0
+if [ -f ${shellQuote(countFile)} ]; then n=$(cat ${shellQuote(countFile)}); fi
+printf '%s' "$((n + 1))" > ${shellQuote(countFile)}
+for a in "$@"; do printf '%s\\n' "$a"; done > ${shellQuote(argsFile)}
+case "$2" in
+  *コミットメッセージ*) printf '%s' ${shellQuote(envelope('```\nAI の偽のメッセージ\n```'))} ;;
+  *) printf '%s' ${shellQuote(envelope('題名: 「偽の名前」'))} ;;
+esac
+`, { mode: 0o755 });
+  const count = () => Number(fs.existsSync(countFile) ? fs.readFileSync(countFile, 'utf8') : 0);
+  const args = () => fs.readFileSync(argsFile, 'utf8');
+  const setConfig = async (patch) => { await js(`window.terp.updateConfig(${JSON.stringify(patch)})`); await sleep(1200); };
+  const previousBin = process.env.TERP_CLAUDE_BIN;
+  process.env.TERP_CLAUDE_BIN = fake;
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'terp-assist-')));
+  try {
+    execFileSync('git', ['init', '-q'], { cwd: repo });
+    execFileSync('git', ['-c', 'user.email=t@example.invalid', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', '最初の件名'], { cwd: repo });
+    fs.writeFileSync(path.join(repo, 'hello.txt'), 'staged-marker\n');
+    execFileSync('git', ['add', 'hello.txt'], { cwd: repo });
+
+    check('既定ではコミットの欄に「AI で書く」を出す', await js(`!document.getElementById('git-ai-message').hidden`));
+    const msg = await js(`window.terp.aiCommitMessage(${JSON.stringify(repo)})`);
+    check('ステージした差分からコミットメッセージを作る', msg.ok && msg.value === 'AI の偽のメッセージ', JSON.stringify(msg));
+    const a1 = args();
+    check('ステージした差分と直近の件名を渡す', a1.includes('staged-marker') && a1.includes('最初の件名'));
+    check('身軽に呼ぶ（独自の指示・設定やスキルや MCP を読まない・haiku）', ['--system-prompt', '--disable-slash-commands', '--strict-mcp-config', '--setting-sources', '--no-session-persistence', '--tools'].every((f) => a1.includes(`${f}\n`)) && a1.includes('--model\nhaiku\n'));
+
+    const id = await js('window.__terp.activeId');
+    await js(`window.__terp.sessions.get(${id}).li.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 60, clientY: 300 }))`);
+    await sleep(200);
+    const items = await js(`[...document.querySelectorAll('.menu:popover-open .menu__item')].map((el) => el.textContent)`);
+    await js(`document.querySelector('.menu:popover-open')?.hidePopover()`);
+    check('行の右クリックに「AI で名前を付ける」を出す', items.some((t) => t.startsWith('AI で名前を付ける')), items.join(' / '));
+    await js(`window.__terp.nameWithAi(${id})`);
+    check('AI の名前を、前置きや括弧を外して付ける', (await js(`window.__terp.sessions.get(${id}).customName`)) === '偽の名前');
+
+    const plain = await js('window.__terp.open()');
+    await sleep(1500);
+    const before = count();
+    await js(`window.__terp.autoTitleScan(Date.now() + 60000)`);
+    await sleep(300);
+    check('題名の自動の予測は既定では呼ばない', count() === before && !(await js(`window.__terp.sessions.get(${plain}).aiTitle`)));
+    await setConfig({ aiAutoTitle: true });
+    await js(`window.__terp.autoTitleScan(Date.now() + 60000)`);
+    await sleep(500);
+    check('入れると無地のターミナルに題名を付ける', (await js(`window.__terp.sessions.get(${plain}).aiTitle`)) === '偽の名前'
+      && (await js(`window.__terp.sessions.get(${plain}).li.querySelector('.session__name').textContent`)) === '偽の名前');
+    const afterTitle = count();
+    await js(`window.__terp.autoTitleScan(Date.now() + 120000)`);
+    await sleep(300);
+    check('画面が同じなら呼び直さない', count() === afterTitle);
+
+    const usage = await js('window.terp.aiUsage()');
+    check('使った回数とトークンを記録する', usage.ok && usage.value.calls === 3 && usage.value.inputTokens === 1800 && usage.value.outputTokens === 15
+      && usage.value.features.commitMessage === 1 && usage.value.features.terminalName === 1 && usage.value.features.autoTitle === 1, JSON.stringify(usage.value));
+
+    await setConfig({ aiDailyLimit: 3 });
+    await js(`window.__terp.nameWithAi(${id})`);
+    await sleep(200);
+    const toast = await js(`document.getElementById('ai-toast').hidden ? '' : document.getElementById('ai-toast').textContent`);
+    check('1日の上限に達したら呼ばずに知らせる', count() === afterTitle && toast.includes('上限'), toast);
+
+    await setConfig({ aiDailyLimit: 30, aiCommitMessage: false });
+    check('切るとコミットの欄から「AI で書く」が消える', await js(`document.getElementById('git-ai-message').hidden`));
+    const off = await js(`window.terp.aiCommitMessage(${JSON.stringify(repo)})`);
+    check('切った機能は呼ばない', !off.ok && off.error.includes('切ってあります') && count() === afterTitle, off.error);
+    await setConfig({ aiCommitMessage: null, aiAssist: false });
+    const allOff = await js(`window.terp.aiTerminalName({ screen: 'x', cwd: '~', program: 'zsh' })`);
+    check('全体を切るとどの機能も呼ばない', !allOff.ok && allOff.error.includes('AI の手伝い') && count() === afterTitle, allOff.error);
+    await setConfig({ aiAssist: null });
+
+    win.webContents.send('menu', 'settings');
+    await sleep(800);
+    await js(`[...document.querySelectorAll('#settings-nav .settings__nav-item')].find((b) => b.textContent === 'AI の手伝い').click()`);
+    await sleep(600);
+    const text = await js(`document.getElementById('settings-content')?.textContent || document.getElementById('settings').textContent`);
+    check('設定に「AI の手伝い」の欄と今日の使用量を出す', text.includes('コミットメッセージを書く') && text.includes('無地のターミナルの題名を自動で予測する') && text.includes('3 回'));
+    fs.writeFileSync(path.join(outDir, 'assist-settings.png'), (await win.webContents.capturePage()).toPNG());
+  } finally {
+    if (previousBin === undefined) delete process.env.TERP_CLAUDE_BIN;
+    else process.env.TERP_CLAUDE_BIN = previousBin;
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+}
+
 // TERP_SELFTEST_KEYS は、行の編集のキー（⌥←→・⌘←→・⌘⌫）と Shift+Enter が zsh で効くことを確かめる
 async function runKeysTest({ win, js, check }) {
   const id = await js('window.__terp.activeId');
@@ -3714,6 +3812,12 @@ exports.run = (win) => {
     }
     if (process.env.TERP_SELFTEST_EDITREPO) {
       await runEditRepoTest({ win, js, check, outDir });
+      fs.writeFileSync(path.join(outDir, 'result.txt'), log.join('\n') + '\n');
+      await finish();
+      return;
+    }
+    if (process.env.TERP_SELFTEST_AIASSIST) {
+      await runAiAssistTest({ win, js, check, outDir });
       fs.writeFileSync(path.join(outDir, 'result.txt'), log.join('\n') + '\n');
       await finish();
       return;

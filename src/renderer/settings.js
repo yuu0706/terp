@@ -9,6 +9,7 @@ const ICONS = {
   appearance: '<path d="M12 3a9 9 0 1 0 0 18c1.1 0 1.5-.8 1.5-1.5 0-1.2-1-1.5-1-2.5 0-.8.7-1.5 1.5-1.5H16a5 5 0 0 0 5-5c0-4.1-4-7.5-9-7.5z" /><circle cx="7.5" cy="11" r="1" /><circle cx="10.5" cy="7.5" r="1" /><circle cx="15" cy="8" r="1" />',
   agents: '<rect x="4" y="8" width="16" height="12" rx="2" /><path d="M12 4v4M9 13v2M15 13v2M2 14h2M20 14h2" />',
   commands: '<path d="M7 5l12 7-12 7z" />',
+  assist: '<path d="M12 3l1.8 4.7L18.5 9.5l-4.7 1.8L12 16l-1.8-4.7L5.5 9.5l4.7-1.8z" /><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z" />',
   notifications: '<path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4" />',
   advanced: '<path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0" /><circle cx="16" cy="6" r="2" /><circle cx="10" cy="12" r="2" /><circle cx="18" cy="18" r="2" />',
 };
@@ -91,6 +92,27 @@ export const SECTIONS = [
         ],
       },
       { key: 'agents', type: 'registry' },
+    ],
+  },
+  // AI の手伝い（2026-10-28 利用者の指示）。claude を身軽に呼び、1回あたり約 600 トークン＋渡す文字の分を使う
+  {
+    id: 'assist',
+    label: 'AI の手伝い',
+    fields: [
+      { key: 'aiAssist', label: 'AI の手伝いを使う', type: 'toggle', default: true, help: '切ると下の機能はすべて止まり、claude を呼ばない' },
+      {
+        key: 'aiModel',
+        label: '使うモデル',
+        type: 'select',
+        help: 'haiku は速く、使う量も少ない。sonnet は文の質が上がるが、使う量が増える',
+        options: () => [{ value: 'haiku', label: 'haiku（おすすめ）' }, { value: 'sonnet', label: 'sonnet' }],
+        disabled: (v) => v.aiAssist === false,
+      },
+      { key: 'aiCommitMessage', label: 'コミットメッセージを書く', type: 'toggle', default: true, help: '「変更」の面に「AI で書く」を出す。押したときだけ、ステージした差分（最大 12,000 字）を渡す', disabled: (v) => v.aiAssist === false },
+      { key: 'aiNameTerminal', label: 'ターミナルに名前を付ける', type: 'toggle', default: true, help: '行の右クリックに「AI で名前を付ける」を出す。押したときだけ、画面の末尾（最大 2,000 字）を渡す', disabled: (v) => v.aiAssist === false },
+      { key: 'aiAutoTitle', label: '無地のターミナルの題名を自動で予測する', type: 'toggle', help: '画面が変わって落ち着いたら、画面の末尾を渡して題名を付ける。1分に1枚、同じターミナルは10分あける。画面の文字が claude に送られる', disabled: (v) => v.aiAssist === false },
+      { key: 'aiDailyLimit', label: '1日の上限', type: 'number', min: 0, max: 1000, step: 1, unit: '回', help: '1日に claude を呼ぶ回数の上限。0 で上限なし', disabled: (v) => v.aiAssist === false },
+      { key: 'aiUsage', label: '今日の使用量', type: 'aiUsage' },
     ],
   },
   {
@@ -299,6 +321,18 @@ const FIELD_TYPES = {
   theme: createThemePicker,
   registry: createAgentRegistry,
   commands: createCommandList,
+  async aiUsage(_field, _value, id) {
+    const el = element('p', 'settings__unit');
+    el.id = id;
+    const res = await terp.aiUsage();
+    const u = res.ok ? res.value : null;
+    const names = { commitMessage: 'コミット', terminalName: '名前', autoTitle: '自動の題名' };
+    el.textContent = u
+      ? `${u.calls} 回・読ませた量 約 ${u.inputTokens.toLocaleString()} トークン・書かせた量 約 ${u.outputTokens.toLocaleString()} トークン`
+        + (u.calls ? `（${Object.entries(u.features).map(([k, n]) => `${names[k] || k} ${n} 回`).join('・')}）` : '')
+      : '読めませんでした';
+    return el;
+  },
   async select(field, value, id) {
     const select = document.createElement('select');
     select.className = 'input';

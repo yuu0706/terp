@@ -5,7 +5,7 @@ import { Unicode11Addon } from '../../node_modules/@xterm/addon-unicode11/lib/ad
 import { WebLinksAddon } from '../../node_modules/@xterm/addon-web-links/lib/addon-web-links.mjs';
 import { SearchAddon } from '../../node_modules/@xterm/addon-search/lib/addon-search.mjs';
 import { initHistoryPanel, setHistoryVisible, refreshHistory, filterFileHistory, renderCommitView } from './historypanel.js';
-import { initGitPanel, refresh as refreshGit, setGitVisible } from './gitpanel.js';
+import { initGitPanel, refresh as refreshGit, setGitVisible, setGitAi } from './gitpanel.js';
 import { initFilesPanel, refreshFiles, setFilesVisible, markActiveFile } from './filespanel.js';
 import { renderFileView, applyEditorConfig } from './fileview.js';
 import { createPathLinkProvider } from './pathlinks.js';
@@ -172,6 +172,7 @@ function applyConfig(c) {
   for (const [key, value] of Object.entries(c.terminal)) root.setProperty(`--history-${key}`, value);
   configError.textContent = c.error || '';
   configError.hidden = !c.error;
+  setGitAi(Boolean(c.ai?.commitMessage));
   // skipApprovals を切り替えたら、エージェントのボタンの説明と印も変える
   if (agentList.length) renderAgentButtons();
   refreshAgents();
@@ -204,7 +205,10 @@ function placeInWork(s, w) {
 // 名前の優先順: 自分で付けた名前 > claude などが作った題名 > 作業の下ならプログラム名 > 作業場所のフォルダ名
 function displayName(s) {
   if (s.customName) return s.customName;
+  if (s.aiNaming) return '名前を考え中…';
   if (isAgent(s) && s.agentTitle) return s.agentTitle;
+  // 無地のターミナルは、AI が画面から予測した題名を出す（設定の「題名を自動で予測」）
+  if (!isAgent(s) && s.aiTitle) return s.aiTitle;
   const w = workOf(s);
   // 作業の行に名前が出ているため、ターミナルの行で同じ名前を繰り返さない
   // シェルは「ターミナル」と出す。~ だけでは何の行か分かりにくかった（2026-10-28 利用者の指示）
@@ -1916,6 +1920,7 @@ function createItem(s) {
       { label: draftLabel(true), run: () => removeSessionFromDraft(s) },
       gatherMenu(s),
       { label: '名前を変更', run: () => startRename(s) },
+      ...(config.ai?.nameTerminal ? [{ label: 'AI で名前を付ける', run: () => nameWithAi(s) }] : []),
       moveWorkspaceMenu(s.workspace, (id) => moveSessionWorkspace(s.id, id)),
     ], { x: e.clientX, y: e.clientY, target: li });
   });
@@ -1930,6 +1935,58 @@ function createItem(s) {
   looseList.appendChild(li);
   return li;
 }
+
+// ---- AI の手伝い（ターミナルの名前） ----
+// 画面の末尾（最大40行・2000字）と場所だけを渡す。失敗（切ってある・上限・claude が無い）は右下に数秒出す
+const aiToast = document.getElementById('ai-toast');
+let aiToastTimer = null;
+function showAiToast(text) {
+  aiToast.querySelector('p').textContent = text;
+  aiToast.hidden = false;
+  clearTimeout(aiToastTimer);
+  aiToastTimer = setTimeout(() => { aiToast.hidden = true; }, 6000);
+}
+
+function screenTail(s) {
+  return bufferText(s.id, { visible: true }).split('\n').slice(-40).join('\n').slice(-2000);
+}
+
+async function nameWithAi(s, { auto = false } = {}) {
+  if (s.aiNaming) return false;
+  s.aiNaming = !auto;
+  if (!auto) renderAll();
+  const res = await terp.aiTerminalName({ screen: screenTail(s), cwd: shortPath(s.cwd), program: s.program, auto });
+  s.aiNaming = false;
+  if (!sessions.has(s.id)) return false;
+  if (!res.ok) {
+    if (!auto) { showAiToast(res.error); renderAll(); }
+    return false;
+  }
+  if (auto) {
+    s.aiTitle = res.value;
+    terp.setMeta(s.id, { aiTitle: s.aiTitle });
+  } else {
+    s.customName = res.value;
+    terp.setMeta(s.id, { customName: s.customName });
+  }
+  renderAll();
+  return true;
+}
+
+// 無地のターミナルの題名を、画面が変わって落ち着いたときに予測する。トークンを抑えるため、
+// 1分に1枚だけ、同じ端末は10分あけ、画面が前と同じなら呼ばない。上限などで断られたら30分休む
+const AUTO_TITLE_GAP = 10 * 60 * 1000;
+let autoTitlePausedUntil = 0;
+async function autoTitleScan(now = Date.now()) {
+  if (!config.ai?.autoTitle || now < autoTitlePausedUntil) return;
+  const s = [...sessions.values()].find((x) => !isAgent(x) && !x.customName && !x.aiNaming && x.cwd
+    && now - (x.aiTitleAt || 0) > AUTO_TITLE_GAP && now - x.lastOutput > 5000 && screenTail(x).trim() && screenTail(x) !== x.aiTitleScreen);
+  if (!s) return;
+  s.aiTitleAt = now;
+  s.aiTitleScreen = screenTail(s);
+  if (!(await nameWithAi(s, { auto: true }))) autoTitlePausedUntil = now + 30 * 60 * 1000;
+}
+setInterval(autoTitleScan, 60 * 1000);
 
 function startRename(s, name = s.li.querySelector('.session__name')) {
   if (!name) return;
@@ -2610,6 +2667,7 @@ function registerSession(id, { el, term, fit, search, hoverLink }, extra = {}) {
     program: '',
     title: '',
     customName: null,
+    aiTitle: '',
     workspace: activeWorkspace,
     draftOut: false,
     workPath: null,
@@ -2696,6 +2754,7 @@ async function attachTerminal(e) {
     workspace: e.meta.workspace,
     draftOut: Boolean(e.meta.draftOut),
     customName: e.meta.customName || null,
+    aiTitle: e.meta.aiTitle || '',
     workPath: e.meta.workPath || null,
     title: e.meta.title || '',
     agentTitle: e.meta.agentTitle || '',
@@ -3389,6 +3448,8 @@ window.__terp = {
   addDroppedRepos,
   scanNewRepos,
   offerEditedRepos,
+  nameWithAi: (id, opts) => nameWithAi(sessions.get(id), opts),
+  autoTitleScan,
   get repoOffers() { return repoOffers.map((o) => ({ ...o })); },
   showSampleOffer,
   get repoOffer() { return shownOffer; },

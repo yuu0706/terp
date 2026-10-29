@@ -15,6 +15,7 @@ const history = require('./history');
 const agents = require('./agents');
 const agentstatus = require('./agentstatus');
 const themegen = require('./themegen');
+const aiassist = require('./aiassist');
 const subagents = require('./subagents');
 const files = require('./files');
 const snapshot = require('./snapshot');
@@ -280,6 +281,12 @@ ipcMain.handle('config:ghostty', safe(() => {
 ipcMain.handle('config:theme-colors', safe((_e, name) => config.getThemeColors(name)));
 ipcMain.handle('theme:generate', safe((_e, answers) => themegen.generate(answers)));
 ipcMain.handle('theme:save', safe((_e, theme) => themegen.saveTheme(theme)));
+// AI の手伝い。切ってあるか上限に達していれば、理由を失敗として返す
+ipcMain.handle('ai:commit-message', safe(async (_e, top) => aiassist.commitMessage(await gitpanel.stagedSummary(top))));
+ipcMain.handle('ai:terminal-name', safe((_e, { screen, cwd, program, auto }) => aiassist.terminalName({
+  screen: String(screen || '').slice(-2000), cwd: String(cwd || ''), program: String(program || ''),
+}, auto ? 'autoTitle' : 'terminalName')));
+ipcMain.handle('ai:usage', safe(() => aiassist.loadUsage()));
 ipcMain.handle('config:open-file', safe(() => shell.openPath(config.CONFIG_PATH)));
 ipcMain.handle('notify:show', safe(async (_e, message) => {
   const entry = known.get(message?.id);

@@ -3434,6 +3434,13 @@ button.subagent:hover,
 
 .repo-toast[hidden] { display: none; }
 
+/* AI の手伝いの失敗（上限・切ってある・claude が無い）を数秒だけ出す */
+.ai-toast { z-index: 21; border-color: var(--color-border); }
+
+.ai-toast p { margin: 0; font-size: var(--text-sm); color: var(--color-text-muted); overflow-wrap: anywhere; }
+
+.git__ai { align-self: flex-start; }
+
 .repo-toast p { margin: 0 0 var(--space-2); }
 
 .repo-toast__title { font-weight: 600; overflow-wrap: anywhere; }
