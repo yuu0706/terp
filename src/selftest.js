@@ -1803,7 +1803,7 @@ async function runSidebarTest({ win, js, check, outDir }) {
   const menu = async () => {
     const { Menu } = require('electron');
     const view = Menu.getApplicationMenu().items.find((item) => item.label === '表示');
-    view.submenu.items.find((entry) => entry.accelerator === 'CmdOrCtrl+B').click();
+    view.submenu.items.find((entry) => entry.id === 'toggle-sidebar' && entry.accelerator === 'Command+B').click();
     await sleep(400);
   };
   const state = () => js(`(() => {
@@ -3550,6 +3550,7 @@ async function runWorkspaceTest({ win, js, check, outDir }) {
   };
   const visibleProjects = () => js('[...document.querySelectorAll("#projects .project")].map((el) => el.dataset.path)');
   const visibleSessions = () => js('[...document.querySelectorAll("#tree .session")].map((el) => Number(el.dataset.id))');
+  // メニューの項目は ID で探し、キーは Electron の書き方（Control+Command+2 など）で確かめる
   const selectMenu = async (accelerator) => {
     const { Menu } = require('electron');
     const menu = Menu.getApplicationMenu().items.find((item) => item.label === 'ワークスペース');
@@ -3594,9 +3595,9 @@ async function runWorkspaceTest({ win, js, check, outDir }) {
     await js(`window.terp.write(${a}, 'echo "workspace-mark=$TERP_WORKSPACE_MARK"\\r')`);
     await wait(() => js(`window.__terp.bufferText(${a}).includes('workspace-mark=alive')`));
     check('裏のシェルと出力が残る', await js(`window.__terp.bufferText(${a}).includes('workspace-output') && window.__terp.bufferText(${a}).includes('workspace-mark=alive')`));
-    await selectMenu('Ctrl+Command+2');
+    await selectMenu('Control+Command+2');
     check('⌃⌘2 のメニューで2番目へ移る', (await js('window.__terp.activeWorkspace')) === b.id);
-    await selectMenu('Ctrl+Command+]');
+    await selectMenu('Control+Command+]');
     check('⌃⌘] のメニューで次へ巡回する', (await js('window.__terp.activeWorkspace')) === first);
     await js(`window.__terp.moveProjectWorkspace(${JSON.stringify(repos[0])}, ${JSON.stringify(b.id)})`);
     check('リポジトリを動かすと元の一覧から消える', (await visibleProjects()).length === 0);
@@ -3737,7 +3738,7 @@ async function runOverviewTest({ win, js, check, outDir }) {
         && shell.dataset.agentIcon === 'terminal' && Boolean(shell.querySelector('.session__agent .session__terminal-icon'));
     })()`));
     await js(`window.__terp.switchWorkspace(${JSON.stringify(first)}); window.__terp.activate(${a})`);
-    check('メニューに ⌘M が割り当てられている', item.accelerator === 'CmdOrCtrl+M');
+    check('メニューに ⌘M が割り当てられている', item.accelerator === 'Command+M', item.accelerator);
     check('一覧のボタンに ⌘M が見える', await js('document.getElementById("overview-open").textContent.includes("⌘M")'));
     await openMenu();
     check('端末に焦点があるときもメニューで開ける', await opened());
