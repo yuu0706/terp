@@ -262,15 +262,22 @@ function showStatus(text, tone = '') {
   if (tone !== 'error') statusTimer = setTimeout(() => (statusEl.textContent = ''), 2000);
 }
 
+// 画面に出す値。アプリの背景色は、今のテーマに結びついたものだけを出す（ほかのテーマの色は効いていないため）
+function fieldValue(field) {
+  if (field.key === 'appBackground' && values.appBackgroundTheme !== (values.theme || '')) return undefined;
+  return values[field.key];
+}
+
 async function save(key, value) {
-  // 手で決めたアプリの背景色は、どのテーマでも使う（AI のテーマに結びつけた印を外す）
-  const res = await terp.updateConfig(key === 'appBackground' ? { appBackground: value, appBackgroundTheme: null } : { [key]: value });
+  // アプリの背景色は、決めたときのテーマにだけ使う（config.js の overridesFor）。既定のテーマは空の文字で印を付ける
+  const res = await terp.updateConfig(key === 'appBackground' ? { appBackground: value, appBackgroundTheme: value ? values.theme || '' : null } : { [key]: value });
   if (!res.ok) {
     showStatus(res.error, 'error');
     return false;
   }
   values = { ...values, [key]: value };
   if (value === null) delete values[key];
+  if (key === 'appBackground') values.appBackgroundTheme = value ? values.theme || '' : null;
   if (['accent', 'foreground', 'background', 'appBackground', 'palette'].includes(key)) refreshThemePreview();
   refreshDisabledFields();
   showStatus('保存しました');

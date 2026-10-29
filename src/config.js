@@ -229,9 +229,11 @@ function applyColorOverrides(theme, config) {
   return { theme: next, error };
 }
 
-// AI がテーマと一緒に作ったアプリの背景色は、そのテーマのときだけ使う。別のテーマに替えたらテーマの色から作る
+// アプリの背景色は、決めたときのテーマ（appBackgroundTheme。既定のテーマは空の文字）のときだけ使う。別のテーマに替えたらテーマの色から作る。
+// 以前は手で決めた色をどのテーマでも使っていたが、テーマを変えても一覧と設定の画面が変わらない不具合に見えた（2026-10-29 利用者の指摘）。
+// 印の無い古い値も同じ理由で使わない
 function overridesFor(config, name) {
-  return config.appBackgroundTheme && config.appBackgroundTheme !== name ? { ...config, appBackground: null } : config;
+  return config.appBackgroundTheme == null || config.appBackgroundTheme !== (name || '') ? { ...config, appBackground: null } : config;
 }
 
 // テーマの一覧の見本。上書きも重ねて、選んだ後と同じ色で見せる

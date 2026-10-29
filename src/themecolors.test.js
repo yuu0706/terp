@@ -40,8 +40,15 @@ test('AI のテーマに結びつけたアプリの背景色は、そのテー�
   assert.equal(config.loadConfig().chrome.bg, '#20304a');
 });
 
-test('手で決めたアプリの背景色は、どのテーマでも使う', () => {
+test('テーマの印の無いアプリの背景色は、どのテーマでも使わない', () => {
   fs.writeFileSync(config.CONFIG_PATH, JSON.stringify({ theme: 'Night', appBackground: '#20304a' }));
+  assert.notEqual(config.loadConfig().chrome.bg, '#20304a');
+  assert.notEqual(config.getThemeColors('Day').chrome.bg, '#20304a');
+});
+
+test('既定のテーマで決めたアプリの背景色は、空の印で既定のテーマにだけ使う', () => {
+  fs.writeFileSync(config.CONFIG_PATH, JSON.stringify({ appBackground: '#20304a', appBackgroundTheme: '' }));
   assert.equal(config.loadConfig().chrome.bg, '#20304a');
-  assert.equal(config.getThemeColors('Day').chrome.bg, '#20304a');
+  fs.writeFileSync(config.CONFIG_PATH, JSON.stringify({ theme: 'Night', appBackground: '#20304a', appBackgroundTheme: '' }));
+  assert.notEqual(config.loadConfig().chrome.bg, '#20304a');
 });

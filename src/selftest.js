@@ -207,6 +207,17 @@ async function runSettingsTest({ win, js, check, outDir }) {
   check('アプリの背景色を、ターミナルの背景色と別に変えられる', saved().appBackground === '#20304a' && split.app === '#20304a' && split.term === before.term
     && split.border !== before.border && (await js(`getComputedStyle(document.documentElement).getPropertyValue('--color-bg').trim()`)) === '#20304a', JSON.stringify(split));
   await shot('1c-app-background');
+  // アプリの背景色は決めたときのテーマにだけ効く。別のテーマに替えるとテーマの色に戻り、戻すと決めた色も戻る（2026-10-29 利用者の指摘）
+  const themeName = 'Selftest Other';
+  fs.mkdirSync(path.join(require('./config').CONFIG_DIR, 'themes'), { recursive: true });
+  fs.writeFileSync(path.join(require('./config').CONFIG_DIR, 'themes', themeName), 'background = #fafafa\nforeground = #202020\n');
+  const ownTheme = saved().theme ?? null;
+  await js(`window.terp.updateConfig({ theme: ${JSON.stringify(themeName)} })`);
+  await sleep(1500);
+  check('別のテーマに替えると、アプリの背景色もテーマの色になる', (await bgOf()).app !== '#20304a' && saved().appBackground === '#20304a', JSON.stringify(await bgOf()));
+  await js(`window.terp.updateConfig({ theme: ${JSON.stringify(ownTheme)} })`);
+  await sleep(1500);
+  check('決めたときのテーマに戻すと、アプリの背景色も戻る', (await bgOf()).app === '#20304a');
   await js(`document.getElementById('setting-appBackground').parentElement.querySelector('button').click()`);
   await sleep(1500);
   check('アプリの背景色を既定に戻すと、ターミナルの背景色から作る', saved().appBackground === undefined && JSON.stringify(await bgOf()) === JSON.stringify(before));
