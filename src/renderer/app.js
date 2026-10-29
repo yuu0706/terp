@@ -19,6 +19,7 @@ import { parsePermission, permissionSignature, permissionKeys, findClashes, urge
 import { createTermSearch } from './termsearch.js';
 import { checkScreen } from './screencheck.js';
 import { MARK_LENGTH, appendTail, recordSize, planReplay } from './replay.js';
+import { initTooltips } from './tooltip.js';
 
 // xterm.js の WebGL の描画は blendFunc(SRC_ALPHA, ONE_MINUS_SRC_ALPHA) で重ねるため、透明な面に描いた画素の透明度が
 // a×a になる。窓を透かすと薄い文字（\e[2m）や文字の縁が後ろの色で白く抜け、明るいテーマで文字が読みにくくなった
@@ -434,7 +435,6 @@ function renderAll() {
     el.querySelector('.work__row').setAttribute('aria-current', String(group === el.dataset.path));
   }
   renderWorkStatuses();
-  renderDraftOut();
   renderWorkspaceStatuses();
   updateDockBadge();
   renderTabs(visible);
@@ -811,18 +811,6 @@ async function setProjectDraft(repo, draft) {
   renderAll();
 }
 
-// ターミナルをドラフトから外す・戻す。シェルは止めず、上のタブと ⌘M の一覧にも残す。
-// 戻すとき、リポジトリがドラフトに無ければ一緒に入れる
-async function setSessionDraft(id, inDraft) {
-  const s = sessions.get(id);
-  if (!s) return;
-  s.draftOut = !inDraft;
-  terp.setMeta(id, { draftOut: s.draftOut });
-  const repo = workOf(s)?.repo;
-  if (inDraft && repo && !repoDrafted(repo)) await setProjectDraft(repo, true);
-  renderAll();
-}
-
 // ドラフトから外す前に確かめる。「今後は確認しない」を選んで外すと、設定の confirmDraftRemove を切る
 // （2026-10-28 利用者の指示。設定の「通知」でいつでも戻せる）
 function confirmDraftRemove({ title, message }) {
@@ -849,14 +837,6 @@ async function toggleProjectDraft(p) {
     message: '中のターミナルも一覧から外れます。シェルは止まりません。「すべて」からいつでも戻せます。',
   }))) return;
   await setProjectDraft(p.path, !p.draft);
-}
-
-async function removeSessionFromDraft(s) {
-  if (!(await confirmDraftRemove({
-    title: `${displayName(s)} をドラフトから外しますか？`,
-    message: 'シェルは止まらず、上のタブと ⌘M の一覧には残ります。一覧の下の「外したターミナル」から戻せます。',
-  }))) return;
-  await setSessionDraft(s.id, false);
 }
 
 // ターミナルをリポジトリ（の作業）にまとめる。シェルの作業場所は変えず、terp の一覧の上での置き場所（workPath）だけを変える。
@@ -910,15 +890,13 @@ function repoDrafted(repo) {
 }
 
 function sessionInDraft(s) {
-  if (s.draftOut) return false;
   const w = workOf(s);
   return !w || repoDrafted(w.repo);
 }
 
-// 表示中のタブのターミナルは、リポジトリがドラフトに無くても出す。行が見えないまま作業させないため。
-// 自分で外したものは出さない
+// 表示中のタブのターミナルは、リポジトリがドラフトに無くても出す。行が見えないまま作業させないため
 function sessionShown(s) {
-  return sidebarView === 'draft' && (sessionInDraft(s) || (!s.draftOut && activeKey === termKey(s.id)));
+  return sidebarView === 'draft' && (sessionInDraft(s) || activeKey === termKey(s.id));
 }
 
 function setSidebarView(view, { save = true, animate = true } = {}) {
@@ -1073,23 +1051,20 @@ function renderProjects() {
     projectsEl.appendChild(section);
   }
   noProjects.hidden = currentProjects().length > 0;
+  // その他のターミナルはドラフトから外せないため、出ていても案内は隠さない
   draftEmpty.hidden = sidebarView !== 'draft' || currentProjects().length === 0 || projectsEl.children.length > 0
-    || [...sessions.values()].some((s) => s.workspace === activeWorkspace && sessionShown(s));
-  renderDraftOut();
+    || [...sessions.values()].some((s) => s.workspace === activeWorkspace && workOf(s) && sessionShown(s));
   renderAll();
 }
 
 // ---- ドラフトに出すリポジトリ ----
 // ドラフトに入れていなくても、表示中のタブがそのリポジトリにあれば出す。行が見えないまま作業させないため
 let shownSignature = '';
-const draftOutEl = document.getElementById('draft-out');
 const draftEmpty = document.getElementById('draft-empty');
 
 function projectShown(p) {
   if (sidebarView === 'all' || p.draft) return true;
   if (!activeKey) return false;
-  const active = activeKey.startsWith('t:') ? sessions.get(Number(activeKey.slice(2))) : null;
-  if (active?.draftOut) return false;
   const group = groupOf(activeKey);
   return p.worktrees.some((w) => w.path === group);
 }
@@ -1097,32 +1072,6 @@ function projectShown(p) {
 function shownProjectsSignature() {
   const drafted = sidebarView === 'draft' && [...sessions.values()].some((s) => s.workspace === activeWorkspace && sessionShown(s));
   return [sidebarView, drafted, ...currentProjects().filter(projectShown).map((p) => `${p.path}:${p.draft}`)].join('\n');
-}
-
-// ドラフトに出ていないターミナル（外したもの・ドラフトに無いリポジトリのもの）
-function draftOutSessions() {
-  return [...sessions.values()].filter((s) => s.workspace === activeWorkspace && !sessionShown(s));
-}
-
-function renderDraftOut() {
-  const out = sidebarView === 'draft' ? draftOutSessions() : [];
-  draftOutEl.hidden = out.length === 0;
-  draftOutEl.querySelector('.draft-out__count').textContent = String(out.length);
-  const summary = urgentAgentSessions(out);
-  const status = draftOutEl.querySelector('.work__status');
-  status.hidden = summary.sessions.length === 0;
-  if (status.hidden) return;
-  renderStatus(status, summary.sessions[0], summary.state);
-  status.querySelector('.work__status-count').textContent = summary.sessions.length > 1 ? summary.sessions.length : '';
-  status.setAttribute('aria-label', `外したターミナルの${STATE_LABELS[summary.state]} ${summary.sessions.length}件の先頭を表示`);
-}
-
-// 外したターミナルを選んでドラフトに戻し、表示する
-function openDraftOut(target) {
-  rowMenu.open(draftOutSessions().map((s) => ({
-    label: [displayName(s), placeLabel(s)].filter(Boolean).join(' · '),
-    run: async () => { await setSessionDraft(s.id, true); activate(s.id); },
-  })), { target });
 }
 
 // 各ターミナルの行を、作業場所を含む作業の下へ動かす。どれにも入らないものは「その他」へ
@@ -1575,13 +1524,6 @@ function wantsBypass(a, altKey = false) {
   return Boolean(a.bypassArgs) && config.skipApprovals !== altKey;
 }
 
-function agentTitle(a) {
-  if (!a.bypassArgs) return `${a.label} を新しいターミナルで起動`;
-  return config.skipApprovals
-    ? `${a.label} を確認なしで起動（${a.bypassArgs}）。⌥ を押しながらで確認あり`
-    : `${a.label} を起動。⌥ を押しながらで確認なし（${a.bypassArgs}）`;
-}
-
 async function refreshAgents() {
   const serial = ++agentRefreshSerial;
   const res = await terp.listAgents();
@@ -1599,10 +1541,9 @@ function renderAgentButtons() {
     btn.type = 'button';
     btn.className = 'btn btn--agent';
     btn.dataset.command = a.command;
-    btn.innerHTML = `${agentIcon(a)}<span></span>`;
-    // 左の一覧は幅が狭いため、表示名ではなく短いコマンドの名前を出す
-    btn.querySelector('span').textContent = a.command.split('/').pop();
-    btn.title = agentTitle(a);
+    btn.innerHTML = agentIcon(a);
+    // 説明は名前だけにする。確認を飛ばすかなどの説明は長く、チップが読みにくかった（2026-10-29 利用者の指示）
+    btn.title = a.label;
     btn.dataset.bypass = String(wantsBypass(a));
     btn.setAttribute('aria-label', `${a.label} を起動`);
     btn.addEventListener('click', (e) => launchAgent(a, wantsBypass(a, e.altKey)));
@@ -1631,7 +1572,7 @@ function renderMainAgentButton() {
   mainAgentBtn.innerHTML = agentIcon(a);
   mainAgentBtn.dataset.command = a.command;
   mainAgentBtn.dataset.bypass = String(wantsBypass(a));
-  mainAgentBtn.title = agentTitle(a);
+  mainAgentBtn.title = a.label;
   mainAgentBtn.setAttribute('aria-label', `${a.label} を起動`);
 }
 
@@ -1686,13 +1627,8 @@ function openTabMenu() {
     }
     if (item.agent) {
       btn.dataset.command = item.agent.command;
-      btn.title = agentTitle(item.agent);
-      if (wantsBypass(item.agent)) {
-        const tag = document.createElement('span');
-        tag.className = 'session__bypass';
-        tag.textContent = '確認なし';
-        btn.append(tag);
-      }
+      // 名前だけを出す。「確認なし」の印と説明は要らない（2026-10-29 利用者の指示）
+      btn.title = item.agent.label;
     }
     if (item.hint) {
       const hint = document.createElement('kbd');
@@ -1930,14 +1866,9 @@ function createItem(s) {
       <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
     </button>`;
   li.addEventListener('click', () => activate(s.id));
-  li.querySelector('[data-action="draft"]').addEventListener('click', (e) => {
-    e.stopPropagation();
-    removeSessionFromDraft(s);
-  });
   li.addEventListener('contextmenu', (e) => {
     e.preventDefault();
     rowMenu.open([
-      { label: draftLabel(true), run: () => removeSessionFromDraft(s) },
       gatherMenu(s),
       { label: '名前を変更', run: () => startRename(s) },
       ...(config.ai?.nameTerminal ? [{ label: 'AI で名前を付ける', run: () => nameWithAi(s) }] : []),
@@ -2678,6 +2609,7 @@ let panelTab = null;
 function setPanel(tab) {
   panelTab = tab;
   rightPanel.hidden = !tab;
+  document.querySelector('.topbar__actions').hidden = Boolean(tab);
   setFilesVisible(tab === 'files');
   setGitVisible(tab === 'git');
   setHistoryVisible(tab === 'history');
@@ -2850,7 +2782,6 @@ function registerSession(id, { el, term, fit, search, hoverLink }, extra = {}) {
     customName: null,
     aiTitle: '',
     workspace: activeWorkspace,
-    draftOut: false,
     workPath: null,
     agentTitle: '',
     ...reduceAgentStatus({}, { type: 'reset' }, Date.now()),
@@ -2910,12 +2841,12 @@ function registerSession(id, { el, term, fit, search, hoverLink }, extra = {}) {
 
 // ターミナルはドラフトに開く。「すべて」を見ていたらドラフトへ切り替え、リポジトリがドラフトに無ければ一緒に入れる。
 // 開き直し（restore）は控えの状態に従い、ドラフトの出し入れも表示の切り替えもしない
-async function openTerminal({ cwd, show = true, workspace = activeWorkspace, draftOut = false, restore = false } = {}) {
+async function openTerminal({ cwd, show = true, workspace = activeWorkspace, restore = false } = {}) {
   const view = buildTerminal();
   const { id, cwd: startCwd } = await terp.createPty({ cols: view.term.cols, rows: view.term.rows, cwd, workspace });
   const ptySize = { cols: view.term.cols, rows: view.term.rows };
-  const s = registerSession(id, view, { cwd: startCwd, workspace, draftOut, ptySize, sizeLog: recordSize([], '', ptySize.cols, ptySize.rows) });
-  terp.setMeta(id, { workspace, draftOut, ptySize, sizeLog: s.sizeLog });
+  const s = registerSession(id, view, { cwd: startCwd, workspace, ptySize, sizeLog: recordSize([], '', ptySize.cols, ptySize.rows) });
+  terp.setMeta(id, { workspace, ptySize, sizeLog: s.sizeLog });
   if (!restore) {
     if (sidebarView !== 'draft') setSidebarView('draft');
     const repo = workOf(s)?.repo;
@@ -2933,7 +2864,6 @@ async function attachTerminal(e) {
   const s = registerSession(e.id, view, {
     cwd: e.cwd,
     workspace: e.meta.workspace,
-    draftOut: Boolean(e.meta.draftOut),
     customName: e.meta.customName || null,
     aiTitle: e.meta.aiTitle || '',
     workPath: e.meta.workPath || null,
@@ -3029,7 +2959,7 @@ async function restoreSessions({ show = true } = {}) {
   }
   if (snapshot.length > 0) {
     for (const snap of snapshot) {
-      const s = await openTerminal({ cwd: snap.cwd, workspace: snap.workspace, draftOut: Boolean(snap.draftOut), show: false, restore: true });
+      const s = await openTerminal({ cwd: snap.cwd, workspace: snap.workspace, show: false, restore: true });
       if (snap.id) restoredKeys.set(termKey(snap.id), termKey(s.id));
       if (snap.customName) {
         s.customName = snap.customName;
@@ -3205,7 +3135,7 @@ let shownOffer = null;
 const checkedLoosePlaces = new Set();
 async function adoptLooseRepos() {
   let added = false;
-  for (const s of [...sessions.values()].filter((item) => !workOf(item) && (item.workPath || item.cwd) && !item.draftOut)) {
+  for (const s of [...sessions.values()].filter((item) => !workOf(item) && (item.workPath || item.cwd))) {
     const place = s.workPath || s.cwd;
     const key = `${s.workspace}\n${place}`;
     if (checkedLoosePlaces.has(key)) continue;
@@ -3225,7 +3155,7 @@ const offeredEdits = new Set();
 let editScanTurn = 0;
 // only は自己診断用。エージェントかどうかを問わず、渡したターミナルだけを調べる
 async function offerEditedRepos({ only = null } = {}) {
-  const loose = [...sessions.values()].filter((s) => s.workspace === activeWorkspace && !workOf(s) && !s.draftOut && (only ? only.includes(s.id) : isAgent(s)));
+  const loose = [...sessions.values()].filter((s) => s.workspace === activeWorkspace && !workOf(s) && (only ? only.includes(s.id) : isAgent(s)));
   for (const s of loose) {
     const res = await terp.editedRepos(s.id);
     if (!res.ok || !sessions.has(s.id) || workOf(s)) continue;
@@ -3624,7 +3554,8 @@ document.getElementById('git-toggle').addEventListener('click', () => togglePane
 document.getElementById('panel-tab-files').addEventListener('click', () => setPanel('files'));
 document.getElementById('panel-tab-git').addEventListener('click', () => setPanel('git'));
 document.getElementById('panel-close').addEventListener('click', () => setPanel(null));
-document.getElementById('panel-refresh').addEventListener('click', () => (panelTab === 'files' ? refreshFiles(true) : panelTab === 'history' ? refreshHistory('refresh') : refreshGit(true)));
+document.getElementById('git-refresh').addEventListener('click', () => refreshGit(true));
+document.getElementById('history-refresh').addEventListener('click', () => refreshHistory('refresh'));
 document.getElementById('empty-new').addEventListener('click', () => newTerminal());
 document.getElementById('new-work').addEventListener('click', () => openWorkDialog());
 document.getElementById('add-project').addEventListener('click', () => addProject());
@@ -3684,11 +3615,6 @@ tree.addEventListener('wheel', (e) => {
   tree.style.transform = '';
   setSidebarView(target);
 }, { passive: false });
-document.getElementById('draft-out-open').addEventListener('click', (e) => openDraftOut(e.currentTarget));
-draftOutEl.querySelector('.work__status').addEventListener('click', () => {
-  const summary = urgentAgentSessions(draftOutSessions());
-  if (summary.sessions.length) activate(summary.sessions[0].id);
-});
 document.getElementById('settings-open').addEventListener('click', () => openSettings());
 document.getElementById('empty-add-project').addEventListener('click', () => addProject());
 
@@ -3723,7 +3649,6 @@ window.__terp = {
   moveProjectWorkspace,
   moveSessionWorkspace,
   setProjectDraft,
-  setSessionDraft,
   setSidebarView,
   get sidebarView() { return sidebarView; },
   setSidebarWidth,
@@ -3817,6 +3742,7 @@ window.__terp = {
 };
 
 applyConfig(config);
+initTooltips();
 initGitPanel({ activeCwd });
 initHistoryPanel({ activeCwd, openCommit });
 initSettings({

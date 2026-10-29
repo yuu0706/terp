@@ -1624,7 +1624,8 @@ async function runAgentsTest({ win, js, check, outDir }) {
   const tag = await js(`({ bypass: window.__terp.sessions.get(${id}).bypass, badge: Boolean(window.__terp.sessions.get(${id}).li.querySelector('.session__bypass')) })`);
   check('確認なしで起動したことを覚え、一覧の行には「確認なし」を出さない', tag.bypass === true && !tag.badge, JSON.stringify(tag));
   const claudeTitle = await js(`document.querySelector('#agents [data-command="claude"]').title`);
-  check('claude は Orca と同じ引数で確認を飛ばす', claudeTitle.includes('--dangerously-skip-permissions'), claudeTitle);
+  check('エージェントのボタンの説明は名前だけ', claudeTitle === 'Claude Code', claudeTitle);
+  check('claude は Orca と同じ引数で確認を飛ばす', await js(`window.__terp.agents.find((a) => a.command === 'claude')?.bypassArgs === '--dangerously-skip-permissions'`));
 
   // ⌥ を押しながら押すと、確認ありで起動する
   await js(`[...document.querySelectorAll('#agents .btn--agent')].find((b) => b.dataset.command === ${JSON.stringify(fake)}).dispatchEvent(new MouseEvent('click', { altKey: true, bubbles: true }))`);
@@ -1654,8 +1655,8 @@ async function runAgentsTest({ win, js, check, outDir }) {
   await sleep(300);
   const menu = await js(`[...document.querySelectorAll('#tab-menu .menu__item .menu__label')].map((l) => l.textContent)`);
   check('＋ のプルダウンにターミナルとエージェント全部が出る', menu[0] === 'ターミナル' && ['Claude Code', 'Codex', 'Fake Agent'].every((n) => menu.includes(n)), menu.join(', '));
-  const tagged = await js(`document.querySelector('#tab-menu [data-command="claude"] .session__bypass')?.textContent || ''`);
-  check('プルダウンに確認なしの印が出る', tagged === '確認なし');
+  const tagged = await js(`({ tag: Boolean(document.querySelector('#tab-menu .session__bypass')), title: document.querySelector('#tab-menu [data-command="claude"]').title })`);
+  check('プルダウンには「確認なし」を出さず、説明は名前だけ', !tagged.tag && tagged.title === 'Claude Code', JSON.stringify(tagged));
   const countBefore = await js('window.__terp.sessions.size');
   await js(`[...document.querySelectorAll('#tab-menu .menu__item')].find((b) => b.dataset.command === ${JSON.stringify(fake)}).click()`);
   await sleep(2500);
@@ -1710,7 +1711,7 @@ async function runGitTest({ win, js, check, outDir }) {
   const text = (selector) => js(`document.querySelector(${JSON.stringify(selector)})?.textContent || ''`);
   const count = (group) => js(`document.querySelectorAll('[data-group="${group}"] .git__file').length`);
   const settle = async () => {
-    await js(`document.getElementById('panel-refresh').click()`);
+    await js(`document.getElementById('git-refresh').click()`);
     await sleep(800);
   };
 
@@ -1755,7 +1756,7 @@ async function runGitTest({ win, js, check, outDir }) {
   check('変更が無いと「変更はありません」と出る', !(await js(`document.getElementById('git-clean').hidden`)));
   await settle();
   check('上流より1件進んでいると出る', (await text('#git-ab')).startsWith('↑1'), await text('#git-ab'));
-  check('プッシュのボタンに送る件数が出る', (await text('#git-push')) === 'プッシュ ↑1', await text('#git-push'));
+  check('Push のボタンに送る件数が出る', (await text('#git-push')) === 'Push ↑1', await text('#git-push'));
   await shot('2-committed');
 
   await click('#git-push');
@@ -1843,7 +1844,7 @@ async function runSidebarTest({ win, js, check, outDir }) {
   check('狭めすぎない（200px まで）', (await js(`getComputedStyle(document.getElementById('sidebar')).width`)) === '200px');
   check('いちばん狭くしても、上端のボタンが一覧の中に収まる', await js(`(() => {
     const side = document.getElementById('sidebar').getBoundingClientRect();
-    return [...document.querySelectorAll('.sidebar__head button, .sidebar__head .sidebar__title')].filter((el) => el.getClientRects().length)
+    return [...document.querySelectorAll('.sidebar__head button')].filter((el) => el.getClientRects().length)
       .every((el) => { const r = el.getBoundingClientRect(); return r.left >= 76 && r.right <= side.right; });
   })()`));
   fs.writeFileSync(path.join(outDir, 'sidebar-narrow.png'), (await win.webContents.capturePage()).toPNG());
@@ -1852,6 +1853,17 @@ async function runSidebarTest({ win, js, check, outDir }) {
   await js(`document.getElementById('sidebar-resize').dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))`);
   await sleep(300);
   check('ダブルクリックで元の幅に戻る', (await width()) === base);
+  // アイコンだけのボタンは、カーソルを1秒重ねると説明のチップを出し、OS の吹き出しは出さない
+  const settingsBox = await js(`(() => { const r = document.getElementById('settings-open').getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) }; })()`);
+  win.webContents.sendInputEvent({ type: 'mouseMove', x: settingsBox.x, y: settingsBox.y });
+  await sleep(500);
+  check('重ねて 0.5 秒ではチップを出さない', await js(`document.querySelector('.tooltip').hidden && !document.getElementById('settings-open').hasAttribute('title')`));
+  await sleep(800);
+  check('重ねて 1 秒でボタンの説明をチップで出す', await js(`!document.querySelector('.tooltip').hidden && document.querySelector('.tooltip').textContent.startsWith('設定')`));
+  fs.writeFileSync(path.join(outDir, 'tooltip.png'), (await win.webContents.capturePage()).toPNG());
+  win.webContents.sendInputEvent({ type: 'mouseMove', x: 600, y: 400 });
+  await sleep(200);
+  check('離すとチップを消し、title を戻す', await js(`document.querySelector('.tooltip').hidden && document.getElementById('settings-open').getAttribute('title').startsWith('設定')`));
   // 幅に余裕があっても、リポジトリの見出しでは隠れたボタンが場所を取らない
   check('リポジトリの見出しで、隠れたボタンが場所を取らない', await js(`[...document.querySelectorAll('.project__head .icon-btn--hover:not([aria-pressed="true"])')].every((el) => el.getBoundingClientRect().width === 0)`));
 }
@@ -1976,7 +1988,7 @@ async function runLockTest({ win, js, check, outDir }) {
 }
 
 // TERP_SELFTEST_DRAFT は、左の一覧の「ドラフト」「すべて」を確かめる。ドラフトにはドラフトに入れたリポジトリとターミナルだけを出し、
-// 「すべて」は追加したリポジトリの名前だけを並べて、押すとドラフトに出し入れする。外したターミナルは1行にまとまり、そこから戻せる
+// 「すべて」は追加したリポジトリの名前だけを並べて、押すとドラフトに出し入れする。ターミナルは一つずつは外さない（2026-10-29 利用者の指示で「外したターミナル」をやめた）
 async function runDraftTest({ win, js, check, outDir }) {
   const { execFileSync } = require('child_process');
   const { CONFIG_DIR } = require('./config');
@@ -2021,7 +2033,7 @@ async function runDraftTest({ win, js, check, outDir }) {
     await js(`document.querySelector('#draft-dialog [name="skip"]').click(); document.querySelector('#draft-dialog [value="accept"]').click()`);
     check('見出しの星でリポジトリをドラフトから外す', await wait(`!${section(b)} && !${shown(tb)}`));
     check('「今後は確認しない」で外すと、設定の確認が切れる', await wait(`window.__terp.config.confirmDraftRemove === false`) && JSON.parse(fs.readFileSync(require('./config').CONFIG_PATH, 'utf8')).confirmDraftRemove === false);
-    check('外したリポジトリのターミナルは「外したターミナル」の1行にまとまる', await wait(`!document.getElementById('draft-out').hidden && document.querySelector('.draft-out__count').textContent === '1'`));
+    check('外したリポジトリのターミナルは一覧から消え、上のタブには残る', await wait(`!${shown(tb)} && window.__terp.tabOrder.includes('t:${tb}') && !document.getElementById('draft-out')`));
     await sleep(300);
     check('ドラフトから外したことが projects.json に残る', stored().find((p) => p.path === b).draft === false);
     const cards = await js(`[...document.querySelectorAll('#projects .project, #loose:not([hidden])')].map((el) => {
@@ -2059,7 +2071,6 @@ async function runDraftTest({ win, js, check, outDir }) {
       repos: [...document.querySelectorAll('#projects .project')].map((el) => el.dataset.path),
       sessions: document.querySelectorAll('#tree .session').length, works: document.querySelectorAll('#tree .work').length,
       draft: [...document.querySelectorAll('#projects .project__head')].map((el) => el.dataset.draft),
-      out: !document.getElementById('draft-out').hidden,
       newTerminal: getComputedStyle(document.getElementById('new-terminal')).display, newWork: getComputedStyle(document.getElementById('new-work')).display,
       drafted: getComputedStyle(${section(a)}.querySelector('.project__head')).backgroundImage,
       plain: getComputedStyle(${section(b)}.querySelector('.project__head')).backgroundImage })`);
@@ -2069,7 +2080,7 @@ async function runDraftTest({ win, js, check, outDir }) {
     const sorted = await js(`[...document.querySelectorAll('#projects .project')].map((el) => el.dataset.path)`);
     check('「すべて」はドラフトの並びに関わらず名前の辞書順', sorted.join() === repos.join() && JSON.parse(fs.readFileSync(path.join(CONFIG_DIR, 'projects.json'), 'utf8')).projects[0].path === c, JSON.stringify(sorted));
     check('「すべて」ではドラッグで並べ替えない', await js(`${section(a)}.querySelector('.project__head').draggable === false`));
-    check('「すべて」には追加したリポジトリを全部、名前だけで並べる', all.repos.join() === repos.join() && all.sessions === 0 && all.works === 0 && !all.out, JSON.stringify(all));
+    check('「すべて」には追加したリポジトリを全部、名前だけで並べる', all.repos.join() === repos.join() && all.sessions === 0 && all.works === 0, JSON.stringify(all));
     check('「すべて」にはターミナルを開くボタンを出さない', all.newTerminal === 'none' && all.newWork === 'none', JSON.stringify(all));
     const allCards = await js(`(() => {
       const box = (el) => el.getBoundingClientRect();
@@ -2121,10 +2132,7 @@ async function runDraftTest({ win, js, check, outDir }) {
     await js(`(() => { const tab = document.querySelector('.sidebar-views__tab[aria-selected="true"]'); tab.focus(); tab.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })); })()`);
     check('切り替えは ← → でもできる', await wait(`window.__terp.sidebarView === 'draft'`));
 
-    await js(`window.__terp.activate(${ta})`);
-    await js(`window.__terp.sessions.get(${ta}).li.querySelector('[data-action="draft"]').click()`);
-    check('ターミナルの星でドラフトから外す（表示中でも消える）', await wait(`!${shown(ta)} && document.querySelector('.draft-out__count').textContent === '2'`));
-    check('確認を切った後は、確認を出さずに外す', !(await js(`document.getElementById('draft-dialog').open`)));
+    check('ターミナルの行には、ドラフトから外す星が無い', await js(`!window.__terp.sessions.get(${ta}).li.querySelector('[data-action="draft"]')`));
     await js(`window.__terp.openSettings('notifications')`);
     const toggle = `document.querySelector('.settings__field[data-key="confirmDraftRemove"] input')`;
     check('設定の「通知」に、ドラフトから外すときの確認の切り替えがあり、切れている', await wait(`Boolean(${toggle}) && ${toggle}.checked === false`));
@@ -2133,20 +2141,13 @@ async function runDraftTest({ win, js, check, outDir }) {
     await js(`window.terp.updateConfig({ confirmDraftRemove: false })`);
     await wait(`window.__terp.config.confirmDraftRemove === false`);
     await js(`document.getElementById('settings-close').click()`);
-    check('外したターミナルも上のタブには残る', await js(`window.__terp.tabOrder.includes('t:${ta}')`));
     await js(`document.getElementById('overview-open').click()`);
     await sleep(500);
-    check('⌘M の一覧には外したターミナルも出る', await js(`Boolean(document.querySelector('.overview__tile[data-id="${ta}"]')) && Boolean(document.querySelector('.overview__tile[data-id="${tb}"]'))`));
+    check('⌘M の一覧には、ドラフトに無いリポジトリのターミナルも出る', await js(`Boolean(document.querySelector('.overview__tile[data-id="${tb}"]'))`));
     await js(`document.querySelector('#overview [data-close]').click()`);
     await sleep(300);
-    await js(`document.getElementById('draft-out-open').click()`);
-    await sleep(300);
-    const items = await js(`[...document.querySelectorAll('.menu:popover-open .menu__item')].map((el) => el.textContent)`);
-    check('「外したターミナル」を押すと、外したものが並ぶ', items.length === 2, JSON.stringify(items));
-    await js(`document.querySelectorAll('.menu:popover-open .menu__item')[1].click()`);
-    check('選ぶと、リポジトリごとドラフトに戻って表示する', await wait(`${shown(tb)} && Boolean(${section(b)}) && window.__terp.activeId === ${tb} && document.querySelector('.draft-out__count').textContent === '1'`));
-    await js(`window.__terp.setSessionDraft(${ta}, true)`);
-    await wait(`${shown(ta)} && document.getElementById('draft-out').hidden`);
+    await js(`window.__terp.setProjectDraft(${JSON.stringify(b)}, true)`);
+    await wait(`${shown(tb)}`);
 
     await js(`window.__terp.setProjectDraft(${JSON.stringify(c)}, false)`);
     await js(`window.__terp.setSidebarView('all')`);
@@ -2154,14 +2155,14 @@ async function runDraftTest({ win, js, check, outDir }) {
     check('「すべて」を見ていてもターミナルはドラフトに開き、リポジトリもドラフトに入る', await wait(`window.__terp.sidebarView === 'draft' && ${shown(tc)} && window.__terp.projects.find((p) => p.path === ${JSON.stringify(c)}).draft`));
 
     for (const repo of repos) await js(`window.__terp.setProjectDraft(${JSON.stringify(repo)}, false)`);
-    for (const id of [ta, tb, tc]) await js(`window.__terp.setSessionDraft(${id}, false)`);
-    const ids = await js(`[...window.__terp.sessions.keys()]`);
-    for (const id of ids) await js(`window.__terp.setSessionDraft(${id}, false)`);
-    check('ドラフトが空なら、「すべて」への案内を出す', await wait(`!document.getElementById('draft-empty').hidden && document.querySelectorAll('#projects .project').length === 0`));
+    // その他のターミナルを表示し、リポジトリのターミナルを表示中にしない
+    const looseId = await js(`[...window.__terp.sessions.values()].find((s) => !window.__terp.projects.some((p) => s.cwd.startsWith(p.path)))?.id`);
+    await js(`window.__terp.activate(${looseId})`);
+    check('ドラフトが空なら、その他のターミナルが出ていても「すべて」への案内を出す', await wait(`!document.getElementById('draft-empty').hidden && document.querySelectorAll('#projects .project').length === 0`));
     await js(`document.querySelector('[data-show-view="all"]').click()`);
     check('案内のボタンで「すべて」を開く', await wait(`window.__terp.sidebarView === 'all' && document.getElementById('draft-empty').hidden`));
     await js(`window.__terp.setSidebarView('draft')`);
-    for (const id of ids) await js(`window.__terp.setSessionDraft(${id}, true)`);
+    for (const repo of repos) await js(`window.__terp.setProjectDraft(${JSON.stringify(repo)}, true)`);
 
     // その他のターミナルが git のリポジトリの中にあれば、そのリポジトリを足してドラフトに入れる
     const d = path.join(dir, 'repo-d');
@@ -2537,7 +2538,7 @@ async function runReplaceHostTest({ win, js, check, outDir }) {
   const snapshotFile = path.join(CONFIG_DIR, 'sessions.json');
   const snapshots = () => { try { return JSON.parse(fs.readFileSync(snapshotFile, 'utf8')).sessions; } catch { return []; } };
   const state = `[...window.__terp.sessions.values()].map((s) => ({ id: s.id, cwd: s.cwd, name: s.li.querySelector('.session__name').textContent,
-    workspace: s.workspace, draftOut: Boolean(s.draftOut), bypass: Boolean(s.bypass), agentTitle: s.agentTitle, text: window.__terp.bufferText(s.id) }))`;
+    workspace: s.workspace, bypass: Boolean(s.bypass), agentTitle: s.agentTitle, text: window.__terp.bufferText(s.id) }))`;
   try {
     await sleep(800);
     const res = await js(`window.terp.updateConfig({ agents: [{ command: 'claude', path: ${JSON.stringify(path.join(bin, 'claude'))} }, { command: 'codex', path: ${JSON.stringify(path.join(bin, 'codex'))} }] })`);
@@ -2556,7 +2557,6 @@ async function runReplaceHostTest({ win, js, check, outDir }) {
     await js(`window.__terp.rename(${c}, '入れ替えテスト')`);
     const workspace = await js("window.__terp.createWorkspace('入れ替え用')");
     await js(`window.__terp.moveSessionWorkspace(${c}, ${JSON.stringify(workspace.id)})`);
-    await js(`window.__terp.setSessionDraft(${c}, false)`);
     await js(`window.terp.write(${d}, ${JSON.stringify('sleep 600\r')})`);
     await js(`window.__terp.activate(${b})`);
     await js(`window.__terp.dropTab('t:${a}', window.__terp.layout().id, 'right')`);
@@ -2598,7 +2598,7 @@ async function runReplaceHostTest({ win, js, check, outDir }) {
     const after = await js(state);
     check('名前（題名を含む）が戻る', JSON.stringify(names(after)) === JSON.stringify(names(before)), `${names(before)} → ${names(after)}`);
     const restoredC = after.find((s) => s.name === '入れ替えテスト');
-    check('作業場所・ワークスペース・ドラフトから外したことが戻る', restoredC && /\/tmp$/.test(restoredC.cwd) && restoredC.workspace === workspace.id && restoredC.draftOut, JSON.stringify(restoredC && { ...restoredC, text: undefined }));
+    check('作業場所・ワークスペースが戻る', restoredC && /\/tmp$/.test(restoredC.cwd) && restoredC.workspace === workspace.id, JSON.stringify(restoredC && { ...restoredC, text: undefined }));
     await js(`window.terp.write(${restoredC?.id}, ${JSON.stringify('echo "mark=[$TERP_MARK]"\r')})`);
     check('シェルは新しい常駐のプロセスのもの（前の変数は無い）', await wait(`window.__terp.bufferText(${restoredC?.id}).includes('mark=[]')`, 50), await js(`window.__terp.bufferText(${restoredC?.id})`));
     const restoredA = after.find((s) => s.agentTitle === 'ログインの不具合を調べる');
@@ -3468,7 +3468,6 @@ async function runPersistTest({ js, check, outDir, phase }) {
     const workspace = await js("window.__terp.createWorkspace('保持用')");
     await js(`window.__terp.moveSessionWorkspace(${id}, ${JSON.stringify(workspace.id)})`);
     await js(`window.__terp.activate(${id})`);
-    await js(`window.__terp.setSessionDraft(${id}, false)`);
     const dir = fs.mkdtempSync(path.join(path.resolve(outDir), 'persist-files-'));
     const files = [path.join(dir, 'first.js'), path.join(dir, 'second.md')];
     fs.writeFileSync(files[0], 'const first = 1;\n');
@@ -3494,7 +3493,7 @@ async function runPersistTest({ js, check, outDir, phase }) {
     check('2回目: 開き直してもターミナルが残る', list.length === 1, `枚数 ${list.length}`);
     const id = list[0];
     const name = await js(`window.__terp.sessions.get(${id}).li.querySelector('.session__name').textContent`);
-    check('2回目: ワークスペースとドラフトから外したことが残る', await js(`window.__terp.sessions.get(${id}).workspace === ${JSON.stringify(saved.workspace)} && window.__terp.sessions.get(${id}).draftOut && window.__terp.activeWorkspace === ${JSON.stringify(saved.workspace)}`));
+    check('2回目: ワークスペースが残る', await js(`window.__terp.sessions.get(${id}).workspace === ${JSON.stringify(saved.workspace)} && window.__terp.activeWorkspace === ${JSON.stringify(saved.workspace)}`));
     check('2回目: 名前が残る', name === '保持テスト', name);
     check('2回目: 前の出力が画面に戻る', /phase1-output/.test(await buffer(id)));
     const files = await fileKeys();
@@ -3520,7 +3519,7 @@ async function runPersistTest({ js, check, outDir, phase }) {
   const cwd = await js(`window.__terp.sessions.get(${id}).cwd`);
   check('3回目: 同じ作業場所で開く', /\/tmp$/.test(cwd), cwd);
   const name = await js(`window.__terp.sessions.get(${id}).li.querySelector('.session__name').textContent`);
-  check('3回目: 控えからワークスペースとドラフトから外したことが戻る', await js(`window.__terp.sessions.get(${id}).workspace === ${JSON.stringify(saved.workspace)} && window.__terp.sessions.get(${id}).draftOut && window.__terp.activeWorkspace === ${JSON.stringify(saved.workspace)}`));
+  check('3回目: 控えからワークスペースが戻る', await js(`window.__terp.sessions.get(${id}).workspace === ${JSON.stringify(saved.workspace)} && window.__terp.activeWorkspace === ${JSON.stringify(saved.workspace)}`));
   check('3回目: 名前が戻る', name === '保持テスト', name);
   check('3回目: シェルは新しい（前の変数は無い）', !(await buffer(id)).includes('mark=persist-ok'));
 }
@@ -3620,15 +3619,6 @@ async function runWorkspaceTest({ win, js, check, outDir }) {
     check('一覧のワークスペース名にも許可待ちを出す', await js(`document.querySelector('[data-workspace-status=${JSON.stringify(b.id)}]').dataset.agentState === 'waiting'`));
     await js('window.__terp.nextAttention()');
     check('次の要対応は裏のワークスペースへ移る', (await js('window.__terp.activeWorkspace')) === b.id && (await js('window.__terp.activeId')) === a);
-    // 星と × は同じ行の隣り合う別の場所に置き、押し間違えないようにする
-    const buttons = await js(`(() => {
-      const row = window.__terp.sessions.get(${a}).li;
-      const box = (el) => { const r = el.getBoundingClientRect(); return { left: r.left, right: r.right, top: r.top, bottom: r.bottom }; };
-      return { star: box(row.querySelector('.session__draft')), close: box(row.querySelector('.session__close')) };
-    })()`);
-    check('ドラフトの星と閉じるの × が重ならない',
-      buttons.star.right <= buttons.close.left && buttons.star.bottom > buttons.close.top && buttons.star.top < buttons.close.bottom,
-      JSON.stringify(buttons));
     await js("window.terp.updateConfig({ accent: '#eeeeee', backgroundOpacity: 0.65 })");
     await wait(() => js("window.__terp.config.chrome.accent === '#eeeeee' && window.__terp.config.window.opacity === 0.65"));
     await js(`window.__terp.setSidebarView('all', { animate: false })`);

@@ -20,7 +20,7 @@
   --font-mono: Menlo, monospace;
   --diff-font-size: 13px;
   --titlebar-height: 40px;
-  --row-h: 48px;
+  --row-h: 40px;
   --control-h: 28px;
   --control-h-lg: 40px;
   --space-1: 4px;
@@ -152,30 +152,14 @@ body[data-sidebar='hidden'] .topbar {
   flex: none;
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   padding: 0 var(--space-2) 0 80px;
   -webkit-app-region: drag;
-}
-
-.sidebar__title {
-  font-size: var(--text-sm);
-  color: var(--color-text-muted);
 }
 
 .sidebar__actions {
   display: flex;
   gap: var(--space-1);
-}
-
-/* 狭くしたら「作業」の題を消し、信号機ボタンの右にボタンだけを並べる。題があると窓の外へはみ出す */
-@container sidebar (max-width: 239px) {
-  .sidebar__title {
-    display: none;
-  }
-
-  .sidebar__head {
-    justify-content: flex-end;
-  }
 }
 
 .btn {
@@ -269,16 +253,16 @@ body[data-sidebar='hidden'] .topbar {
 }
 
 .tree__empty[hidden],
-.project[hidden],
-.draft-out[hidden] {
+.project[hidden] {
   display: none;
 }
 
 /* リポジトリごと（その他のターミナルも）を角の丸い枠のカードで囲み、カードの間の隙間で分ける（2026-10-28 利用者の指示。
    以前の強調色の境目の線はやめた）。「すべて」のカードは見出しだけで、ドラフト済みは見出しの背景をぼかしにする */
+/* 縦の余白は詰める。カードが縦に長く、一覧に入るリポジトリが少なかった（2026-10-29 利用者の指示） */
 #tree .project:not([hidden]) {
-  margin: 0 0 var(--space-2);
-  padding: var(--space-1);
+  margin: 0 0 6px;
+  padding: 2px var(--space-1);
   border: 1px solid var(--color-border);
   border-radius: var(--radius);
   background: color-mix(in srgb, var(--color-bg-hover) 55%, transparent);
@@ -315,7 +299,7 @@ body[data-sidebar='hidden'] .topbar {
   display: flex;
   align-items: center;
   gap: var(--space-1);
-  height: 28px;
+  height: 24px;
   padding: 0 var(--space-1) 0 var(--space-2);
   font-size: var(--text-sm);
   font-weight: 600;
@@ -341,7 +325,7 @@ body[data-sidebar='hidden'] .topbar {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  height: 32px;
+  height: 26px;
   padding: 0 var(--space-1) 0 var(--space-2);
   border-radius: var(--radius);
   font-size: var(--text-md);
@@ -439,13 +423,13 @@ body[data-sidebar='hidden'] .topbar {
 .session {
   position: relative;
   display: grid;
-  /* 右の2列は、1行目がキーの番号、2行目がお気に入りと閉じる */
+  /* 右の2列は、1行目がキーの番号、2行目が閉じる */
   grid-template-columns: 10px 1fr auto auto;
   grid-template-rows: auto auto;
   column-gap: var(--space-2);
   align-items: center;
   min-height: var(--row-h);
-  padding: var(--space-1) var(--space-2);
+  padding: 2px var(--space-2);
   border-radius: var(--radius);
   cursor: pointer;
 }
@@ -809,6 +793,9 @@ button.subagent:hover,
   padding: 0 var(--space-2);
   -webkit-app-region: drag;
 }
+
+/* 右の面を開いている間は、面の上の切り替えと重なるため隠す（2026-10-29 利用者の指摘） */
+.topbar__actions[hidden] { display: none; }
 
 .topbar__actions {
   flex: none;
@@ -1244,6 +1231,17 @@ button.subagent:hover,
   padding: var(--space-2) var(--space-3) 0;
 }
 
+.history__title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.history__title .history__work { flex: 1; }
+
+/* 読み直すボタンは git の操作と並べる。右の面の切り替えの隣だと、git の機能でないものと混ざって見える（2026-10-29 利用者の指摘） */
+.git__sync .icon-btn { flex: none; align-self: center; }
+
 .git__sync .btn {
   flex: 1;
   justify-content: center;
@@ -1474,11 +1472,12 @@ button.subagent:hover,
   color: var(--color-text-muted);
 }
 
-/* ---- AI エージェントの起動のボタン（新しいターミナルの上） ---- */
+/* ---- AI エージェントの起動のボタン（新しいターミナルの上） ----
+   アイコンだけを1列に並べ、名前は載せたときの title で出す。名前付きの2列は場所を取りすぎた（2026-10-29 利用者の指示） */
 .agents {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
-  gap: var(--space-2);
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
 }
 
 .agents[hidden] {
@@ -1486,16 +1485,10 @@ button.subagent:hover,
 }
 
 .btn--agent {
+  width: 32px;
   height: 32px;
+  padding: 0;
   justify-content: center;
-  min-width: 0;
-  font-size: var(--text-md);
-}
-
-.btn--agent span {
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
 }
 
 /* 確認なしで起動するボタンは、縁を危険の色にして普段と見分ける */
@@ -2515,7 +2508,7 @@ button.subagent:hover,
   border-bottom: 1px solid var(--color-border);
   font-size: var(--text-sm);
 }
-.history__work,
+.history__title,
 .history__path-filter {
   grid-column: 1 / -1;
   min-width: 0;
@@ -3253,20 +3246,6 @@ button.subagent:hover,
   cursor: default;
 }
 
-.session__draft {
-  grid-column: 3;
-  grid-row: 2;
-  width: 20px;
-  height: 20px;
-  visibility: hidden;
-}
-
-/* ドラフトに出ている星は塗る。ドラフトの中では全部がドラフトのため、載せたときだけ出す（押すと外す） */
-.session:hover .session__draft,
-.session:focus-within .session__draft {
-  visibility: visible;
-}
-
 /* リポジトリの見出しでは、隠れているボタンの場所も空けず、名前をなるべく長く出す。載せたときだけ並べる */
 .project__head .icon-btn--hover {
   display: none;
@@ -3319,12 +3298,20 @@ button.subagent:hover,
   display: none;
 }
 
-/* 「ドラフト」「すべて」の切り替え */
-.sidebar-views {
+/* 「ドラフト」「すべて」の切り替えと、リポジトリを追加するボタン。追加はリポジトリの一覧を扱う場所に置く（2026-10-29 利用者の指示） */
+.sidebar-views-row {
   display: flex;
   flex: none;
+  align-items: center;
   gap: var(--space-1);
   margin: 0 var(--space-2) var(--space-2);
+}
+
+.sidebar-views {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  gap: var(--space-1);
   padding: 2px;
   border-radius: var(--radius);
   background: var(--color-bg-hover);
@@ -3383,35 +3370,6 @@ button.subagent:hover,
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
-
-/* 左の一覧で隠したリポジトリの数。押すと出すリポジトリを選び直す。要対応の印は隠していても出す */
-.draft-out {
-  display: flex;
-  align-items: center;
-  gap: var(--space-1);
-  padding-right: var(--space-1);
-}
-
-.draft-out__open {
-  display: flex;
-  flex: 1;
-  align-items: center;
-  gap: var(--space-2);
-  min-width: 0;
-  height: 28px;
-  padding: 0 var(--space-2);
-  border: 0;
-  border-radius: var(--radius);
-  background: transparent;
-  color: var(--color-text-muted);
-  font: inherit;
-  font-size: var(--text-sm);
-  cursor: pointer;
-}
-
-.draft-out__open:hover { background: var(--color-bg-hover); color: var(--color-text); }
-
-.draft-out__count { font-variant-numeric: tabular-nums; }
 
 /* Finder のフォルダを左の一覧に落とす間は、受け取れることを強調色の枠と一言で示す。
    一言は下端のボタンと重ねると字が入れ替わったように見えるため、真ん中に出す */
@@ -3608,3 +3566,24 @@ button.subagent:hover,
   grid-column: 3 / -1;
   justify-self: end;
 }
+
+/* アイコンだけのボタンの説明（tooltip.js）。1秒重ねると出し、押す・離す・スクロールで消す */
+.tooltip {
+  position: fixed;
+  z-index: 100;
+  max-width: 280px;
+  padding: 2px var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: var(--color-bg);
+  box-shadow: 0 4px 12px rgb(0 0 0 / 0.35);
+  color: var(--color-text);
+  font-size: var(--text-sm);
+  line-height: 1.6;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+
+.tooltip[hidden] { display: none; }

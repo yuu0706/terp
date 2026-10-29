@@ -3,7 +3,7 @@
 const terp = window.terp;
 
 const panel = document.getElementById('git-view');
-const toggleCount = document.getElementById('git-toggle-count');
+const toggleCounts = [document.getElementById('git-toggle-count'), document.getElementById('panel-tab-git-count')];
 const emptyEl = document.getElementById('git-empty');
 const content = document.getElementById('git-content');
 const branchEl = document.getElementById('git-branch');
@@ -79,8 +79,10 @@ export async function refresh(force) {
   const res = cwd ? await terp.gitStatus(cwd) : { ok: true, value: null };
   const next = res.ok ? res.value : null;
   const count = next ? next.staged.length + next.unstaged.length + next.conflicted.length : 0;
-  toggleCount.textContent = String(count);
-  toggleCount.hidden = count === 0;
+  for (const el of toggleCounts) {
+    el.textContent = String(count);
+    el.hidden = count === 0;
+  }
   const json = JSON.stringify(res);
   if (!force && json === lastJson) return;
   lastJson = json;
@@ -218,18 +220,18 @@ async function commit() {
   await refresh(true);
 }
 
-// プッシュとプルのボタンに、送る件数と取り込む件数を添える
+// Push と Pull のボタンに、送る件数と取り込む件数を添える。ボタンの名前は git のコマンドと同じ英語にする（2026-10-29 利用者の指示）
 function syncLabels() {
   if (busy || !state) return;
-  document.getElementById('git-fetch').textContent = 'フェッチ';
-  document.getElementById('git-pull').textContent = state.behind ? `プル ↓${state.behind}` : 'プル';
-  document.getElementById('git-push').textContent = state.ahead ? `プッシュ ↑${state.ahead}` : 'プッシュ';
+  document.getElementById('git-fetch').textContent = 'Fetch';
+  document.getElementById('git-pull').textContent = state.behind ? `Pull ↓${state.behind}` : 'Pull';
+  document.getElementById('git-push').textContent = state.ahead ? `Push ↑${state.ahead}` : 'Push';
 }
 
 const SYNC = {
-  fetch: { run: (top) => terp.gitFetch(top), label: 'フェッチ' },
-  pull: { run: (top) => terp.gitPull(top), label: 'プル' },
-  push: { run: (top) => terp.gitPush(top), label: 'プッシュ' },
+  fetch: { run: (top) => terp.gitFetch(top), label: 'Fetch' },
+  pull: { run: (top) => terp.gitPull(top), label: 'Pull' },
+  push: { run: (top) => terp.gitPush(top), label: 'Push' },
 };
 
 async function runSync(kind) {
@@ -237,14 +239,14 @@ async function runSync(kind) {
   const button = document.getElementById(`git-${kind}`);
   busy = true;
   for (const k of Object.keys(SYNC)) document.getElementById(`git-${k}`).disabled = true;
-  button.textContent = `${SYNC[kind].label}中…`;
+  button.textContent = `${SYNC[kind].label} 中…`;
   const res = await SYNC[kind].run(state.top);
   busy = false;
   for (const k of Object.keys(SYNC)) document.getElementById(`git-${k}`).disabled = false;
   button.textContent = SYNC[kind].label;
   syncLabels();
   // git は進み具合を標準エラーに出すため、成功でも出力があれば見せる
-  if (res.ok) showResult(res.value || `${SYNC[kind].label}しました`);
+  if (res.ok) showResult(res.value || `${SYNC[kind].label} しました`);
   else showResult(res.error, 'error');
   await refresh(true);
 }
