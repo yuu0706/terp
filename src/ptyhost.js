@@ -5,6 +5,7 @@
 const net = require('net');
 const fs = require('fs');
 const pty = require('node-pty');
+const { createModeTracker } = require('./hostmodes');
 
 const [, , SOCKET, VERSION] = process.argv;
 // つなぎ直したときに画面を作り直すため、出力の末尾をこの大きさまで残す
@@ -28,13 +29,17 @@ function broadcast(id, msg) {
 function create(client, { cols, rows, cwd, env, shell }) {
   const id = nextId++;
   const proc = pty.spawn(shell, ['-l'], { name: 'xterm-256color', cols, rows, cwd, env });
-  const s = { id, proc, cwd, pid: proc.pid, chunks: [], size: 0, meta: {}, createdAt: Date.now() };
+  const s = { id, proc, cwd, pid: proc.pid, chunks: [], size: 0, modes: createModeTracker(), meta: {}, createdAt: Date.now() };
   sessions.set(id, s);
   client.attached.add(id);
   proc.onData((data) => {
     s.chunks.push(data);
     s.size += data.length;
-    while (s.size > REPLAY_LIMIT && s.chunks.length > 1) s.size -= s.chunks.shift().length;
+    while (s.size > REPLAY_LIMIT && s.chunks.length > 1) {
+      const dropped = s.chunks.shift();
+      s.size -= dropped.length;
+      s.modes.drop(dropped);
+    }
     broadcast(id, { t: 'data', id, data });
   });
   proc.onExit(({ exitCode }) => {
@@ -68,8 +73,8 @@ function handle(client, msg) {
     case 'attach':
       if (!s) return reply({ error: `ターミナル ${msg.id} はありません` });
       client.attached.add(msg.id);
-      // 残っている出力を先に流し、その後の出力を続けて流す
-      return reply({ value: { replay: s.chunks.join('') } });
+      // 残っている出力を先に流し、その後の出力を続けて流す。捨てた出力の中の画面の切り替えを先頭に付ける
+      return reply({ value: { replay: s.modes.prefix() + s.chunks.join('') } });
     case 'write':
       return s?.proc.write(msg.data);
     case 'resize':

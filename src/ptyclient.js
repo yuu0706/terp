@@ -14,8 +14,12 @@ const HOST_SCRIPT = path.join(__dirname, 'ptyhost.js');
 const SOCKET = path.join(os.tmpdir(), `terp-${crypto.createHash('sha1').update(CONFIG_DIR).digest('hex').slice(0, 10)}.sock`);
 
 // 常駐のプロセスのコードが変わったかを見分ける版。変わっていても、シェルを守るため古いものを使い続ける
+// 常駐のプロセスが読むファイル。どれかが変わったら版も変わる
+const HOST_FILES = [HOST_SCRIPT, path.join(__dirname, 'hostmodes.js')];
 function hostVersion() {
-  return crypto.createHash('sha1').update(fs.readFileSync(HOST_SCRIPT)).digest('hex').slice(0, 10);
+  const hash = crypto.createHash('sha1');
+  for (const file of HOST_FILES) hash.update(fs.readFileSync(file));
+  return hash.digest('hex').slice(0, 10);
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));

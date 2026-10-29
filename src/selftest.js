@@ -2607,6 +2607,36 @@ render();
     const sizeB = await js(`({ cols: window.__terp.sessions.get(${b}).term.cols, rows: window.__terp.sessions.get(${b}).term.rows })`);
     check('作り直すと、大きさを1桁変えて今の大きさに戻す', redraws.length === 2 && redraws[1] === `${sizeB.cols}x${sizeB.rows}` && redraws[0] === `${sizeB.cols - 1}x${sizeB.rows}`, redraws.join(' / '));
     check('作り直した後、画面とシェルの大きさが合っている', !(await report(b)).issues.some((issue) => issue.kind === 'size-mismatch'));
+
+    // 全画面表示へ切り替えた合図が、常駐のプロセスの残す末尾（2 MB）より前に押し出されても、
+    // 開き直したら全画面表示で戻り、描き直させて一度しか描いていない行も戻る（2026-10-29 利用者の指摘）
+    const full = path.join(dir, 'full.js');
+    fs.writeFileSync(full, `const fs = require('fs');
+const log = process.argv[2];
+const out = process.stdout;
+const paint = () => out.write('\\x1b[2J\\x1b[H' + 'FULL-TOP' + '\\x1b[' + out.rows + ';1H' + 'STATUS-LINE');
+out.write('\\x1b[?1049h\\x1b[?1000h');
+paint();
+let n = 0;
+// 差分だけを送り続け、最初の切り替えと最初の描画を押し出す
+while (n < 60000) out.write('\\x1b[2;1H' + 'tick ' + String(n++).padStart(8, '0') + ' '.repeat(20));
+out.write('\\x1b[2;1Hflood-done');
+out.on('resize', () => { fs.appendFileSync(log, out.columns + 'x' + out.rows + '\\n'); paint(); });
+setInterval(() => {}, 1000);
+`);
+    const c = await js(`window.__terp.open(${JSON.stringify(dir)})`);
+    await js(`window.terp.write(${c}, ${JSON.stringify(`clear; ${quote(node)} ${quote(full)} ${quote(logOf('c'))}\r`)})`);
+    check('全画面の偽物が差分を流し終える', await wait(`window.__terp.bufferText(${c}, { visible: true }).includes('flood-done')`, 300));
+    const countC = resizes('c').length;
+    win.webContents.reload();
+    await sleep(1500);
+    check('押し出された後も読み直してつなぎ直す', await wait(`window.__terp && window.__terp.sessions.has(${c})`, 150));
+    await js(`window.__terp.activate(${c})`);
+    await sleep(2000);
+    check('全画面表示の切り替えが押し出されても、全画面表示で戻る', (await js(`window.__terp.sessions.get(${c}).term.buffer.active.type`)) === 'alternate');
+    check('開き直すと描き直させ、一度しか描いていない行も戻る', resizes('c').length > countC
+      && (await js(`window.__terp.bufferText(${c}, { visible: true })`)).includes('STATUS-LINE'), resizes('c').slice(countC).join(' / '));
+    fs.writeFileSync(path.join(outDir, 'redraw-full.png'), (await win.webContents.capturePage()).toPNG());
   } finally {
     await js(`window.__terp.setSidebarWidth(null)`).catch(() => {});
     fs.rmSync(dir, { recursive: true, force: true });
