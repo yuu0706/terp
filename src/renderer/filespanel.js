@@ -24,6 +24,12 @@ const expandedByRoot = new Map();
 // フォルダの中身の控え。開いているフォルダだけを読み直す
 const children = new Map();
 let rendering = false;
+// git の変更の状態。root からの相対パス → 種類（conflict・modified・deleted・added）
+let changes = new Map();
+// フォルダは中の変更のうち、いちばん重いものの色にする
+const WEIGHT = { conflict: 4, modified: 3, deleted: 2, added: 1 };
+const LETTER = { conflict: 'U', modified: 'M', deleted: 'D', added: 'A' };
+const LABEL = { conflict: '競合', modified: '変更', deleted: '削除', added: '追加' };
 
 export function initFilesPanel({ activeCwd, activePath, openFile }) {
   getCwd = activeCwd;
@@ -62,7 +68,7 @@ export async function refreshFiles(force) {
   emptyEl.hidden = true;
   rootEl.textContent = root.split('/').pop();
   rootEl.title = root;
-  if (rootChanged || force) await load([...expanded()]);
+  if (rootChanged || force) await Promise.all([load([...expanded()]), loadChanges()]);
   render();
 }
 
@@ -82,6 +88,36 @@ async function load(dirs) {
   }
 }
 
+// 「変更」の面と同じ git status を読み、ファイルとその親のフォルダの色を決める
+async function loadChanges() {
+  const res = await terp.gitStatus(root);
+  const next = new Map();
+  const st = res.ok ? res.value : null;
+  // worktree の一番上と木の root が食い違うときは色を付けない
+  if (st && st.top === root) {
+    const put = (file, kind) => {
+      if (WEIGHT[kind] > (WEIGHT[next.get(file)] || 0)) next.set(file, kind);
+    };
+    for (const f of st.conflicted) put(f.path, 'conflict');
+    for (const f of [...st.staged, ...st.unstaged]) {
+      put(f.path, f.code === 'D' ? 'deleted' : ['A', '?', 'R', 'C'].includes(f.code) ? 'added' : 'modified');
+    }
+    // 追加したファイルを後から直しても、まだ HEAD に無いものは「追加」のままにする
+    for (const f of st.staged) if (f.code === 'A' && next.get(f.path) === 'modified') next.set(f.path, 'added');
+  }
+  changes = next;
+}
+
+function changeOf(item) {
+  const rel = item.path.slice(root.length + 1);
+  if (!item.dir) return changes.get(rel) || null;
+  let found = null;
+  for (const [file, kind] of changes) {
+    if (file.startsWith(`${rel}/`) && WEIGHT[kind] > (WEIGHT[found] || 0)) found = kind;
+  }
+  return found;
+}
+
 function render() {
   const active = getActivePath();
   treeEl.textContent = '';
@@ -98,6 +134,16 @@ function render() {
       li.setAttribute('aria-current', String(item.path === active));
       li.innerHTML = `${item.dir ? CHEVRON : '<span class="files__spacer"></span>'}${item.dir ? FOLDER : FILE}<span class="files__name"></span>`;
       li.querySelector('.files__name').textContent = item.name;
+      const change = changeOf(item);
+      if (change) {
+        li.dataset.change = change;
+        // ファイルは記号、フォルダは中に変更がある印の点を右端に出す
+        const mark = document.createElement('span');
+        mark.className = 'files__change';
+        mark.textContent = item.dir ? '' : LETTER[change];
+        mark.setAttribute('aria-label', item.dir ? `中に${LABEL[change]}あり` : LABEL[change]);
+        li.append(mark);
+      }
       if (!item.dir) makeTabDraggable(li, `f:${item.path}`);
       li.draggable = true;
       li.addEventListener('dragstart', (event) => {

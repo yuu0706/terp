@@ -922,6 +922,12 @@ async function runFilesTest({ win, js, check, outDir }) {
   fs.copyFileSync(path.join(__dirname, '..', 'build', 'icon.png'), path.join(repo, 'icon.png'));
   fs.writeFileSync(path.join(repo, 'data.bin'), Buffer.from([0, 1, 2, 3, 0, 255]));
   execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repo });
+  // 木の git の色を確かめるため、一度コミットしてから1つ直し、1つ足す
+  const gitEnv = { ...process.env, GIT_AUTHOR_NAME: 'test', GIT_AUTHOR_EMAIL: 'test@example.com', GIT_COMMITTER_NAME: 'test', GIT_COMMITTER_EMAIL: 'test@example.com' };
+  execFileSync('git', ['add', '-A'], { cwd: repo });
+  execFileSync('git', ['commit', '-q', '-m', 'init'], { cwd: repo, env: gitEnv });
+  fs.appendFileSync(path.join(repo, 'src', 'a.js'), '// changed\n');
+  fs.writeFileSync(path.join(repo, 'new.txt'), 'new\n');
   const shot = (name) => win.webContents.capturePage().then((img) => fs.writeFileSync(path.join(outDir, `${name}.png`), img.toPNG()));
   const tabs = () => js(`[...document.querySelectorAll('#tabs .tab')].map((t) => t.querySelector('.tab__name').textContent)`);
   const treeNames = () => js(`[...document.querySelectorAll('#files-tree .files__name')].map((n) => n.textContent)`);
@@ -934,10 +940,14 @@ async function runFilesTest({ win, js, check, outDir }) {
   await sleep(1000);
   const names = await treeNames();
   check('右の面にリポジトリの中身が出る', names.includes('src') && names.includes('README.md') && !names.includes('.git'), names.join(', '));
+  const changeOf = (name) => js(`(() => { const li = [...document.querySelectorAll('#files-tree .files__item')].find((li) => li.querySelector('.files__name').textContent === ${JSON.stringify(name)}); return li ? [li.dataset.change || '', li.querySelector('.files__change')?.textContent ?? null] : null; })()`);
+  const marks = { folder: await changeOf('src'), added: await changeOf('new.txt'), clean: await changeOf('README.md') };
+  check('git の変更を色で分け、親のフォルダにも中の変更の色を付ける', JSON.stringify(marks) === JSON.stringify({ folder: ['modified', ''], added: ['added', 'A'], clean: ['', null] }), JSON.stringify(marks));
   await clickTree('src');
   await sleep(800);
   check('フォルダを開くと中身が出る', (await treeNames()).includes('a.js'));
-
+  check('直したファイルに M の印を付ける', JSON.stringify(await changeOf('a.js')) === JSON.stringify(['modified', 'M']), JSON.stringify(await changeOf('a.js')));
+  await shot('0-changes');
   await clickTree('a.js');
   await sleep(1200);
   check('ファイルを押すとタブで開く', (await js('window.__terp.activeKey')) === `f:${path.join(repo, 'src', 'a.js')}`, await js('window.__terp.activeKey'));
@@ -948,7 +958,7 @@ async function runFilesTest({ win, js, check, outDir }) {
     const editor = window.__terp.editorOf(${editorPath});
     return editor ? { language: editor.getModel().getLanguageId(), lines: editor.getModel().getLineCount() } : null;
   })()`);
-  check('ファイルに色付けと行番号が付く', editorInfo?.language === 'javascript' && editorInfo.lines === 5, JSON.stringify(editorInfo));
+  check('ファイルに色付けと行番号が付く', editorInfo?.language === 'javascript' && editorInfo.lines === 6, JSON.stringify(editorInfo));
   check('開いているファイルが木で分かる', await js(`document.querySelector('#files-tree [aria-current="true"] .files__name')?.textContent === 'a.js'`));
   await shot('1-file');
 

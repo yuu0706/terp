@@ -1605,6 +1605,34 @@ button.subagent:hover,
   text-overflow: ellipsis;
 }
 
+/* git の変更の色。「変更」の面の記号と同じ色にし、親のフォルダにも中の変更の色を付ける */
+.files__item[data-change='modified'] { --change-color: var(--color-warning); }
+.files__item[data-change='added'] { --change-color: var(--color-busy); }
+.files__item[data-change='deleted'],
+.files__item[data-change='conflict'] { --change-color: var(--color-danger); }
+
+.files__item[data-change] .files__name {
+  color: var(--change-color);
+}
+
+.files__change {
+  flex: none;
+  margin-left: auto;
+  padding-left: var(--space-2);
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: var(--text-sm);
+  color: var(--change-color);
+}
+
+.files__change:empty::before {
+  content: '';
+  display: block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--change-color);
+}
+
 /* ---- タブで開いたファイル ---- */
 .fileview {
   position: absolute;
