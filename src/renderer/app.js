@@ -20,6 +20,7 @@ import { createTermSearch } from './termsearch.js';
 import { checkScreen } from './screencheck.js';
 import { MARK_LENGTH, appendTail, recordSize, planReplay } from './replay.js';
 import { initTooltips } from './tooltip.js';
+import { initDialogPlacement } from './dialogplace.js';
 
 // xterm.js の WebGL の描画は blendFunc(SRC_ALPHA, ONE_MINUS_SRC_ALPHA) で重ねるため、透明な面に描いた画素の透明度が
 // a×a になる。窓を透かすと薄い文字（\e[2m）や文字の縁が後ろの色で白く抜け、明るいテーマで文字が読みにくくなった
@@ -3775,6 +3776,7 @@ window.__terp = {
 
 applyConfig(config);
 initTooltips();
+initDialogPlacement();
 initGitPanel({ activeCwd });
 initHistoryPanel({ activeCwd, openCommit });
 initSettings({

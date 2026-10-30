@@ -111,6 +111,8 @@ export function createOverview({ host, snapshot, preview, renderStatus, activate
   const dialog = document.createElement('dialog');
   dialog.id = 'overview';
   dialog.className = 'overview';
+  // 一覧は探す場所なので、押したボタンのそばではなく中央に出す
+  dialog.dataset.placement = 'center';
   dialog.setAttribute('aria-labelledby', 'overview-title');
   dialog.innerHTML = `<header class="overview__head">
     <h1 id="overview-title">全体の一覧</h1>

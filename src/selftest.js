@@ -937,6 +937,7 @@ async function runFilesTest({ win, js, check, outDir }) {
   await clickTree('src');
   await sleep(800);
   check('フォルダを開くと中身が出る', (await treeNames()).includes('a.js'));
+
   await clickTree('a.js');
   await sleep(1200);
   check('ファイルを押すとタブで開く', (await js('window.__terp.activeKey')) === `f:${path.join(repo, 'src', 'a.js')}`, await js('window.__terp.activeKey'));
@@ -1793,6 +1794,7 @@ async function runGitTest({ win, js, check, outDir }) {
   await sleep(3000);
   check('追跡先の無いブランチもプッシュできる', sh(['branch', '--list', 'topic'], remote).includes('topic'), await text('#git-result'));
   await shot('3-pushed');
+
 }
 
 // TERP_SELFTEST_HISTORY は一時リポジトリだけにコミットし、履歴の閲覧を確かめる
@@ -2038,6 +2040,15 @@ async function runDraftTest({ win, js, check, outDir }) {
     const dialogOpen = `document.getElementById('draft-dialog').open`;
     await js(`${section(b)}.querySelector('[data-action="draft"]').click()`);
     check('ドラフトから外す前に確認を出す', await wait(`${dialogOpen} && document.getElementById('draft-dialog-title').textContent === 'repo-b をドラフトから外しますか？'`));
+    // 確認は押したボタンのすぐ下（入らなければ上）に出し、窓からはみ出さない
+    check('確認を押したボタンのそばに出す', await js(`(() => {
+      // 星は載せたときだけ出るため、試しでは見出しの位置を起点にする
+      const button = ${section(b)}.querySelector('.project__head').getBoundingClientRect();
+      const box = document.getElementById('draft-dialog').getBoundingClientRect();
+      const near = Math.abs(box.top - button.bottom - 8) <= 1 || Math.abs(button.top - 8 - box.bottom) <= 1;
+      const inside = box.left >= 15 && box.top >= 15 && box.right <= innerWidth - 15 && box.bottom <= innerHeight - 15;
+      return near && inside;
+    })()`), JSON.stringify(await js(`[${section(b)}.querySelector('.project__head').getBoundingClientRect().toJSON(), document.getElementById('draft-dialog').getBoundingClientRect().toJSON(), innerWidth, innerHeight]`)));
     fs.writeFileSync(path.join(outDir, 'draft-confirm.png'), (await win.webContents.capturePage()).toPNG());
     await js(`document.querySelector('#draft-dialog [value="cancel"]').click()`);
     check('キャンセルすると外さない', await wait(`!${dialogOpen}`) && await js(`Boolean(${section(b)}) && window.__terp.projects.find((p) => p.path === ${JSON.stringify(b)}).draft`));
