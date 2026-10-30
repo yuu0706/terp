@@ -4206,6 +4206,41 @@ exports.run = (win) => {
       await send(id, tui + '\r');
       await sleep(9000);
       titles.push(`起動後: ${await title()}`);
+      // TERP_SELFTEST_TYPE を指定したら、送らずに打つだけ打って、表示範囲の文字と背景色・カーソルの位置を控える
+      const typed = process.env.TERP_SELFTEST_TYPE;
+      if (typed) {
+        for (const part of typed.split('\\n')) {
+          await send(id, part);
+          await sleep(300);
+          await send(id, '\x1b\r');
+          await sleep(300);
+        }
+        await sleep(1500);
+        const dump = await js(`(() => {
+          const s = window.__terp.sessions.get(${id});
+          const buf = s.term.buffer.active;
+          const rows = [];
+          for (let y = 0; y < s.term.rows; y++) {
+            const line = buf.getLine(buf.viewportY + y);
+            const cell = line.getCell(2);
+            rows.push(String(y).padStart(2) + ' bg=' + (cell ? cell.getBgColorMode() + ':' + cell.getBgColor() : '-') + ' |' + line.translateToString(true));
+          }
+          return rows.join('\\n') + '\\ncursor ' + buf.cursorX + ',' + buf.cursorY;
+        })()`);
+        fs.writeFileSync(path.join(outDir, 'buffer.txt'), dump + '\n');
+        // ⌘A で入力欄だけを選び、⌘C で印と字下げを除いた文を写せるか
+        const { clipboard } = require('electron');
+        clipboard.writeText('');
+        // 自己診断の窓は手前に出さないため、キーの代わりにメニューの「すべて選択」を端末に焦点がある状態で送る
+        await js(`window.__terp.sessions.get(${id}).term.focus()`);
+        win.webContents.send('menu', 'select-all');
+        await sleep(500);
+        const selected = await js(`window.__terp.sessions.get(${id}).term.getSelection()`);
+        win.webContents.copy();
+        await sleep(500);
+        fs.writeFileSync(path.join(outDir, 'select.txt'), `selection:\n${selected}\n---\nclipboard:\n${await clipboard.readText()}\n`);
+        fs.writeFileSync(path.join(outDir, 'select.png'), (await win.webContents.capturePage()).toPNG());
+      }
       // TERP_SELFTEST_PROMPT を指定したら、送って応答の後のタイトルも控える
       const prompt = process.env.TERP_SELFTEST_PROMPT;
       if (prompt) {

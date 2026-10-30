@@ -94,6 +94,14 @@ export const SECTIONS = [
           ...ctx.agents().map((a) => ({ value: a.command, label: `${a.command.split('/').pop()}（${a.label}）` })),
         ],
       },
+      {
+        key: 'agentInputSelect',
+        label: '⌘A で入力欄だけを選ぶ',
+        type: 'toggle',
+        default: true,
+        beta: true,
+        help: 'エージェントの画面で ⌘A を押すと、出力を含めず入力欄の文字だけを選ぶ。入力欄はカーソルの周りの枠や背景色から探すため、見つからないときは画面全体を選ぶ',
+      },
       { key: 'agents', type: 'registry' },
     ],
   },
@@ -528,6 +536,8 @@ async function renderField(field) {
     label.className = 'settings__label';
     label.htmlFor = id;
     label.textContent = field.label;
+    // 見た目に頼るなど、まだ外れることがある機能に印を付ける
+    if (field.beta) label.append(' ', element('span', 'chip chip--beta', 'beta'));
     if (field.type === 'theme') {
       const heading = document.createElement('div');
       heading.className = 'settings__field-heading';

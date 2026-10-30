@@ -55,6 +55,8 @@ const DEFAULT_CONFIG = {
   notifyMessage: true,
   // 表示していないエージェントの許可待ちを、右下のカードから移らずに答えられるようにする
   permissionCard: true,
+  // ⌘A でエージェントの入力欄だけを選ぶ（beta。入力欄を画面の文字から探すため、見つからなければ画面全体を選ぶ）
+  agentInputSelect: true,
   // AI の手伝い。aiAssist で全体を切り、機能ごとにも切れる。aiAutoTitle は画面の文字を claude に送るため既定で切る。
   // aiDailyLimit は1日に claude を呼ぶ回数の上限（0 なら上限なし）
   aiAssist: true,
@@ -329,6 +331,7 @@ function loadConfig() {
     notifySound: config.notifySound === true,
     notifyMessage: config.notifyMessage === true,
     permissionCard: config.permissionCard !== false,
+    agentInputSelect: config.agentInputSelect !== false,
     confirmDraftRemove: config.confirmDraftRemove !== false,
     ai: {
       enabled: config.aiAssist,

@@ -2800,6 +2800,35 @@ function buildTerminal() {
   return { el, term, fit, search, hoverLink };
 }
 
+// エージェントの入力欄だけを選ぶ（2026-10-30 利用者の指示。設定の agentInputSelect、beta）。
+// 入力欄は画面の文字から探すため、見つからなければ false を返し、呼び出し側は画面全体を選ぶ
+function selectAgentInput(s) {
+  if (config.agentInputSelect === false || !isAgent(s)) return false;
+  const buf = s.term.buffer.active;
+  const lines = [];
+  for (let y = 0; y < s.term.rows; y++) {
+    const line = buf.getLine(buf.viewportY + y);
+    const first = line?.getCell(0);
+    // 行の背景は、枠の縦線や印に色が付くことがあるため、行の中ほどの文字で見る
+    const cell = line?.getCell(Math.floor(s.term.cols / 2)) || first;
+    lines.push({
+      text: line ? line.translateToString(true) : '',
+      bg: cell && !cell.isBgDefault() ? `${cell.getBgColorMode()}:${cell.getBgColor()}` : null,
+      isDim: (col) => Boolean(line?.getCell(col)?.isDim()),
+    });
+  }
+  const box = window.terpInputBox.findInputBox(lines, s.term.cols, { row: buf.cursorY + buf.baseY - buf.viewportY, col: buf.cursorX });
+  if (!box) return false;
+  s.term.clearSelection();
+  s.inputSelection = null;
+  if (!box.text) return true;
+  const length = (box.end.row - box.start.row) * s.term.cols + box.end.col - box.start.col;
+  s.term.select(box.start.col, buf.viewportY + box.start.row, length);
+  // 写すときは、画面の選択ではなく印と字下げを除いた文を渡す
+  s.inputSelection = { shown: s.term.getSelection(), text: box.text };
+  return true;
+}
+
 function registerSession(id, { el, term, fit, search, hoverLink }, extra = {}) {
   const s = {
     id,
@@ -2840,6 +2869,14 @@ function registerSession(id, { el, term, fit, search, hoverLink }, extra = {}) {
   s.li = createItem(s);
 
   term.attachCustomKeyEventHandler((event) => handleKey(s, event));
+  // ⌘A で入力欄だけを選んだまま写すときは、印と字下げを除いた文を渡す。xterm の受け口より先に捕捉の段階で受ける
+  el.addEventListener('copy', (event) => {
+    const picked = s.inputSelection;
+    if (!picked || !term.hasSelection() || term.getSelection() !== picked.shown) return;
+    event.clipboardData.setData('text/plain', picked.text);
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  }, true);
   term.onData((data) => {
     updateAgentStatus(s, { type: 'input' });
     terp.write(id, data);
@@ -3523,10 +3560,11 @@ terp.onMenu((action, arg) => {
       s?.term.clear();
       break;
     case 'select-all': {
-      const editor = activeKey?.startsWith('f:') && fileViews.get(activeKey.slice(2))?.view?.editor;
+      const editor = activeKey?.startsWith('f:') ? fileViews.get(activeKey.slice(2))?.view?.editor : null;
       if (editor?.hasTextFocus()) editor.setSelection(editor.getModel().getFullModelRange());
-      else if (!s || ['INPUT', 'TEXTAREA'].includes(document.activeElement?.tagName)) document.execCommand('selectAll');
-      else s.term.selectAll();
+      // 端末に焦点があるときの入力の受け口は xterm の TEXTAREA のため、ほかの入力欄と分けて端末として扱う
+      else if (!s || (['INPUT', 'TEXTAREA'].includes(document.activeElement?.tagName) && document.activeElement !== s.term.textarea)) document.execCommand('selectAll');
+      else if (!selectAgentInput(s)) s.term.selectAll();
       break;
     }
     case 'select-index': {
