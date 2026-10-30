@@ -1805,6 +1805,34 @@ async function runGitTest({ win, js, check, outDir }) {
   check('追跡先の無いブランチもプッシュできる', sh(['branch', '--list', 'topic'], remote).includes('topic'), await text('#git-result'));
   await shot('3-pushed');
 
+  // 未ステージの変更を取り消す。確かめの画面でキャンセルなら何もしない。取り消す前の中身は控え（ゴミ箱の代わりのフォルダ）に残る
+  const trashDir = process.env.TERP_SELFTEST_TRASH;
+  fs.writeFileSync(path.join(work, 'a.txt'), 'changed for discard\n');
+  fs.writeFileSync(path.join(work, 'd.txt'), 'untracked\n');
+  await settle();
+  const row = (name) => `[...document.querySelectorAll('[data-group="unstaged"] .git__file')].find((li) => li.title === ${JSON.stringify(name)})`;
+  const dialogOpen = `document.getElementById('git-discard-dialog').open`;
+  await js(`${row('a.txt')}.querySelector('[data-discard]').click()`);
+  await sleep(300);
+  check('取り消す前に確かめる', await js(dialogOpen) && (await text('#git-discard-title')) === 'a.txt の変更を取り消しますか？', await text('#git-discard-title'));
+  await shot('4-discard-confirm');
+  await click('#git-discard-dialog [value="cancel"]');
+  await sleep(500);
+  check('キャンセルなら取り消さない', fs.readFileSync(path.join(work, 'a.txt'), 'utf8') === 'changed for discard\n');
+  await js(`${row('a.txt')}.querySelector('[data-discard]').click()`);
+  await sleep(300);
+  await click('#git-discard-dialog [value="accept"]');
+  await sleep(1200);
+  const kept = fs.readdirSync(trashDir);
+  const backup = kept.length === 1 ? path.join(trashDir, kept[0], 'a.txt') : '';
+  check('追跡しているファイルは最後のコミットに戻し、今の中身を控える', fs.readFileSync(path.join(work, 'a.txt'), 'utf8') === 'one\nTWO\nthree\n' && backup && fs.readFileSync(backup, 'utf8') === 'changed for discard\n', JSON.stringify(kept));
+  await js(`${row('d.txt')}.querySelector('[data-discard]').click()`);
+  await sleep(300);
+  check('追跡外のファイルはゴミ箱へ移すと確かめる', (await text('#git-discard-title')) === 'd.txt をゴミ箱へ移しますか？', await text('#git-discard-title'));
+  await click('#git-discard-dialog [value="accept"]');
+  await sleep(1200);
+  check('追跡外のファイルはゴミ箱へ移る', !fs.existsSync(path.join(work, 'd.txt')) && fs.readdirSync(trashDir).some((name) => name.endsWith('-d.txt')));
+  check('取り消した後は未ステージが空になる', (await count('unstaged')) === 0);
 }
 
 // TERP_SELFTEST_HISTORY は一時リポジトリだけにコミットし、履歴の閲覧を確かめる

@@ -467,6 +467,15 @@ ipcMain.handle('git:status', safe((_e, dir) => gitpanel.status(dir)));
 ipcMain.handle('git:diff', safe((_e, { top, file, kind }) => gitpanel.diff(top, file, kind)));
 ipcMain.handle('git:stage', safe((_e, { top, files }) => gitpanel.stage(top, files)));
 ipcMain.handle('git:unstage', safe((_e, { top, files }) => gitpanel.unstage(top, files)));
+// 自己診断は利用者のゴミ箱を汚さないよう、TERP_SELFTEST_TRASH のフォルダへ移す
+function trashItem(file) {
+  const dir = process.env.TERP_SELFTEST_TRASH;
+  if (!dir) return shell.trashItem(file);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.renameSync(file, path.join(dir, `${Date.now()}-${path.basename(file)}`));
+  return Promise.resolve();
+}
+ipcMain.handle('git:discard', safe((_e, { top, files }) => gitpanel.discard(top, files, { trash: trashItem })));
 ipcMain.handle('git:commit', safe((_e, { top, message }) => gitpanel.commit(top, message)));
 ipcMain.handle('git:push', safe((_e, top) => gitpanel.push(top)));
 ipcMain.handle('git:pull', safe((_e, top) => gitpanel.pull(top)));

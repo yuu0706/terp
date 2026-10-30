@@ -1,5 +1,8 @@
-// 「変更」の面で使う git の操作。変更を捨てる操作（restore・reset --hard など）は取り返しがつかないため持たない
+// 「変更」の面で使う git の操作。履歴ごと捨てる操作（reset --hard など）は取り返しがつかないため持たない。
+// 未ステージの変更の取り消し（discard）だけは、今の中身をゴミ箱へ控えてから行う（2026-10-30 利用者の指示）
 const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const { git } = require('./git');
 
 // 差分が大きすぎると画面が固まるため、この行数で打ち切る
@@ -91,6 +94,42 @@ async function unstage(top, files) {
   else await git(['rm', '--cached', '--quiet', '--', ...files], top);
 }
 
+// 未ステージの変更を取り消す（2026-10-30 利用者の指示。押す前に画面で確かめる）。
+// 取り消した変更は git では戻せないため、今の中身を先にゴミ箱へ控える。ゴミ箱へ移す処理（trash）は本体から受け取る。
+// 追跡外のファイルはファイルそのものをゴミ箱へ移す。追跡しているファイルはステージした内容（無ければコミット済み）に戻し、ステージは変えない
+async function discard(top, files, { trash }) {
+  const st = await status(top);
+  if (!st || st.top !== top) throw new Error('リポジトリが見つかりません');
+  const unstaged = new Map(st.unstaged.map((f) => [f.path, f.code]));
+  const outside = files.filter((file) => {
+    const full = path.resolve(top, file);
+    return full === top || !full.startsWith(`${top}${path.sep}`);
+  });
+  if (outside.length) throw new Error(`リポジトリの外のファイルは取り消せません: ${outside.join(', ')}`);
+  const missing = files.filter((file) => !unstaged.has(file));
+  if (missing.length) throw new Error(`未ステージの変更がありません: ${missing.join(', ')}`);
+  const untracked = files.filter((file) => unstaged.get(file) === '?');
+  const tracked = files.filter((file) => unstaged.get(file) !== '?');
+  if (tracked.length) {
+    const kept = tracked.filter((file) => fs.existsSync(path.join(top, file)));
+    if (kept.length) {
+      // ゴミ箱で見分けられるよう、控えのフォルダにリポジトリの名前と時刻を付け、元のフォルダの形のまま写す
+      const now = new Date();
+      const pad = (n) => String(n).padStart(2, '0');
+      const stamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}.${pad(now.getMinutes())}.${pad(now.getSeconds())}`;
+      const backup = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'terp-discard-')), `${path.basename(top)} の取り消し前 ${stamp}`);
+      for (const file of kept) {
+        fs.mkdirSync(path.dirname(path.join(backup, file)), { recursive: true });
+        fs.copyFileSync(path.join(top, file), path.join(backup, file));
+      }
+      await trash(backup);
+    }
+    await git(['restore', '--worktree', '--', ...tracked], top);
+  }
+  for (const file of untracked) await trash(path.join(top, file));
+  return { restored: tracked.length, trashed: untracked.length };
+}
+
 // フック（pre-commit など）もターミナルと同じく走る
 async function commit(top, message) {
   return git(['commit', '--file=-'], top, { input: message, timeout: NETWORK_TIMEOUT });
@@ -128,4 +167,4 @@ async function stagedSummary(top) {
   };
 }
 
-module.exports = { toplevel, status, diff, stage, unstage, commit, push, pull, fetch, parseStatus, stagedSummary, DIFF_LINE_LIMIT };
+module.exports = { toplevel, status, diff, stage, unstage, discard, commit, push, pull, fetch, parseStatus, stagedSummary, DIFF_LINE_LIMIT };

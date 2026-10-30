@@ -21,6 +21,7 @@ const diffBody = document.getElementById('diff-body');
 const KIND_LABELS = { staged: 'ステージ済み', unstaged: '未ステージ', untracked: '追跡外', conflicted: '競合' };
 const PLUS_ICON = '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>';
 const MINUS_ICON = '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14" /></svg>';
+const DISCARD_ICON = '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 14L4 9l5-5" /><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11" /></svg>';
 
 let getCwd = () => null;
 let state = null;
@@ -146,6 +147,20 @@ function renderGroup(group, files) {
     // 長いパスは先頭を省き、ファイル名が見えるようにする（direction: rtl）。記号が崩れないよう前後に印を置く
     name.textContent = `‎${f.path}‎`;
     li.append(code, name);
+    if (group === 'unstaged') {
+      const discardButton = document.createElement('button');
+      discardButton.className = 'icon-btn';
+      discardButton.type = 'button';
+      discardButton.dataset.discard = '';
+      discardButton.innerHTML = DISCARD_ICON;
+      discardButton.setAttribute('aria-label', `${f.path} の変更を取り消す`);
+      discardButton.title = '変更を取り消す';
+      discardButton.addEventListener('click', (e) => {
+        e.stopPropagation();
+        discardFiles([f]);
+      });
+      li.append(discardButton);
+    }
     if (group !== 'conflicted') {
       const btn = document.createElement('button');
       btn.className = 'icon-btn';
@@ -181,6 +196,31 @@ async function runFileAction(action, files) {
   if (!state || busy) return;
   const res = await (action === 'stage' ? terp.gitStage : terp.gitUnstage)({ top: state.top, files });
   if (!res.ok) showResult(res.error, 'error');
+  await refresh(true);
+}
+
+// 未ステージの変更を取り消す前に確かめる。取り消す前の中身は本体がゴミ箱へ控える
+function confirmDiscard(files) {
+  return new Promise((resolve) => {
+    const dialog = document.getElementById('git-discard-dialog');
+    const untracked = files.filter((f) => f.code === '?');
+    const name = files.length === 1 ? files[0].path : `${files.length} 件のファイル`;
+    dialog.querySelector('.dialog__title').textContent = untracked.length === files.length
+      ? `${name} をゴミ箱へ移しますか？` : `${name} の変更を取り消しますか？`;
+    dialog.querySelector('[data-field="message"]').textContent = untracked.length === files.length
+      ? 'git で追跡していないファイルのため、ファイルそのものをゴミ箱へ移します。'
+      : 'ステージしていない変更を捨て、ステージした内容（無ければ最後のコミット）に戻します。今の中身はゴミ箱に控えを置くので、Finder のゴミ箱から戻せます。';
+    dialog.returnValue = 'cancel';
+    dialog.addEventListener('close', () => resolve(dialog.returnValue === 'accept'), { once: true });
+    dialog.showModal();
+  });
+}
+
+async function discardFiles(files) {
+  if (!state || busy || !(await confirmDiscard(files))) return;
+  const res = await terp.gitDiscard({ top: state.top, files: files.map((f) => f.path) });
+  if (!res.ok) showResult(res.error, 'error');
+  if (res.ok && files.some((f) => openDiff?.path === f.path && openDiff?.group === 'unstaged')) closeDiff();
   await refresh(true);
 }
 

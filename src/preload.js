@@ -84,6 +84,7 @@ contextBridge.exposeInMainWorld('terp', {
   gitDiff: (opts) => ipcRenderer.invoke('git:diff', opts),
   gitStage: (opts) => ipcRenderer.invoke('git:stage', opts),
   gitUnstage: (opts) => ipcRenderer.invoke('git:unstage', opts),
+  gitDiscard: (opts) => ipcRenderer.invoke('git:discard', opts),
   gitCommit: (opts) => ipcRenderer.invoke('git:commit', opts),
   gitPush: (top) => ipcRenderer.invoke('git:push', top),
   gitPull: (top) => ipcRenderer.invoke('git:pull', top),
