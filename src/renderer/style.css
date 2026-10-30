@@ -1350,6 +1350,79 @@ button.subagent:hover,
   visibility: visible;
 }
 
+/* コミットメッセージの上の、引き出して見る履歴 */
+.git__log {
+  flex: none;
+  border-top: 1px solid var(--color-border);
+}
+
+.git__log-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-3);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+
+.git__log-head::-webkit-details-marker { display: none; }
+
+.git__log-head:hover { color: var(--color-text); }
+
+.git__log-chevron {
+  width: 12px;
+  height: 12px;
+  transition: transform 120ms ease;
+}
+
+.git__log[open] .git__log-chevron { transform: rotate(90deg); }
+
+.git__log-list {
+  max-height: min(240px, 30vh);
+  overflow-y: auto;
+  margin: 0;
+  padding: 0 var(--space-2) var(--space-1);
+  list-style: none;
+}
+
+.git__log-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: 26px;
+  padding: 0 var(--space-1);
+  border-radius: var(--radius);
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+
+.git__log-row:hover,
+.git__log-row:focus-visible { background: var(--color-bg-hover); outline: none; }
+
+.git__log-subject {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.git__log-meta {
+  flex: none;
+  color: var(--color-text-muted);
+}
+
+.git__log-row[data-unpushed='true'] .git__log-meta { color: var(--color-warning); }
+
+.git__log .git__note {
+  margin: 0;
+  padding: 0 var(--space-3) var(--space-2);
+}
+
 .git__commit {
   flex: none;
   display: flex;

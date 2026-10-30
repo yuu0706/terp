@@ -3815,7 +3815,7 @@ window.__terp = {
 applyConfig(config);
 initTooltips();
 initDialogPlacement();
-initGitPanel({ activeCwd });
+initGitPanel({ activeCwd, openCommit });
 initHistoryPanel({ activeCwd, openCommit });
 initSettings({
   agents: () => agentList,

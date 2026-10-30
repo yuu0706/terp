@@ -23,6 +23,17 @@ const PLUS_ICON = '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><pat
 const MINUS_ICON = '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14" /></svg>';
 const DISCARD_ICON = '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 14L4 9l5-5" /><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11" /></svg>';
 
+// コミットメッセージの上の、引き出して見る履歴（2026-10-30 利用者の指示）。押すとコミットをタブで開く
+const logEl = document.getElementById('git-log');
+const logList = document.getElementById('git-log-list');
+const logNote = document.getElementById('git-log-note');
+const logCount = document.getElementById('git-log-count');
+const LOG_LIMIT = 30;
+const LOG_OPEN_KEY = 'terp.gitLogOpen';
+let logKey = '';
+let logSerial = 0;
+let openCommit = () => {};
+
 let getCwd = () => null;
 let state = null;
 let lastJson = '';
@@ -31,8 +42,15 @@ let busy = false;
 let openDiff = null;
 let visible = false;
 
-export function initGitPanel({ activeCwd }) {
+export function initGitPanel({ activeCwd, openCommit: open }) {
   getCwd = activeCwd;
+  openCommit = open;
+  // 引き出したかどうかは、この窓の好みとして覚える（読めない環境でも閉じた状態で動く）
+  try { logEl.open = localStorage.getItem(LOG_OPEN_KEY) === 'true'; } catch {}
+  logEl.addEventListener('toggle', () => {
+    try { localStorage.setItem(LOG_OPEN_KEY, String(logEl.open)); } catch {}
+    if (logEl.open) loadLog(true);
+  });
   document.getElementById('git-fetch').addEventListener('click', () => runSync('fetch'));
   document.getElementById('git-pull').addEventListener('click', () => runSync('pull'));
   document.getElementById('git-push').addEventListener('click', () => runSync('push'));
@@ -117,6 +135,7 @@ function render(res) {
   for (const group of ['staged', 'unstaged']) panel.querySelector(`[data-group="${group}"]`).hidden = clean;
   syncLabels();
   updateCommitButton();
+  loadLog(false);
   // 開いている差分のファイルが一覧から消えたら閉じ、残っていれば読み直す
   if (openDiff) {
     const still = state[openDiff.group]?.some((f) => f.path === openDiff.path);
@@ -197,6 +216,62 @@ async function runFileAction(action, files) {
   const res = await (action === 'stage' ? terp.gitStage : terp.gitUnstage)({ top: state.top, files });
   if (!res.ok) showResult(res.error, 'error');
   await refresh(true);
+}
+
+// 引き出しているときだけ読む。HEAD・ブランチ・上流との差が変わったときに読み直す
+async function loadLog(force) {
+  if (!state || !logEl.open) return;
+  const key = `${state.top}\n${state.branch}\n${state.oid}\n${state.ahead}`;
+  if (!force && key === logKey) return;
+  logKey = key;
+  const request = ++logSerial;
+  const res = await terp.historyLog({ dir: state.top, limit: LOG_LIMIT });
+  if (request !== logSerial) return;
+  const rows = res.ok && res.value ? res.value.rows.filter((r) => r.commit) : [];
+  const unpushed = new Set(res.ok && res.value ? res.value.unpushed : []);
+  logList.textContent = '';
+  for (const { commit } of rows) {
+    const li = document.createElement('li');
+    li.className = 'git__log-row';
+    li.tabIndex = 0;
+    li.dataset.hash = commit.hash;
+    li.title = `${commit.shortHash} · ${commit.author} · ${commit.date}\n${commit.subject}`;
+    const subject = document.createElement('span');
+    subject.className = 'git__log-subject';
+    subject.textContent = commit.subject;
+    const meta = document.createElement('span');
+    meta.className = 'git__log-meta';
+    meta.textContent = ago(commit.date);
+    if (unpushed.has(commit.hash)) {
+      // まだプッシュしていないコミットに印を付ける
+      li.dataset.unpushed = 'true';
+      meta.textContent = `↑ ${meta.textContent}`;
+    }
+    li.append(subject, meta);
+    const show = () => openCommit(state.top, commit.hash, commit.subject);
+    li.addEventListener('click', show);
+    li.addEventListener('keydown', (e) => { if (e.key === 'Enter') show(); });
+    logList.append(li);
+  }
+  logCount.textContent = rows.length ? String(rows.length) : '';
+  logNote.hidden = rows.length > 0 && res.ok;
+  logNote.textContent = !res.ok ? `履歴を読めません: ${res.error}` : rows.length ? '' : 'まだコミットがありません';
+  if (rows.length === LOG_LIMIT) {
+    logNote.hidden = false;
+    logNote.textContent = `最近の ${LOG_LIMIT} 件。それより前は「履歴」の面で見られます`;
+  }
+}
+
+// 「3分前」のような短い時刻。1週間を超えたら日付にする
+function ago(iso) {
+  const then = new Date(iso);
+  const minutes = Math.floor((Date.now() - then.getTime()) / 60000);
+  if (!Number.isFinite(minutes)) return '';
+  if (minutes < 1) return 'たった今';
+  if (minutes < 60) return `${minutes}分前`;
+  if (minutes < 60 * 24) return `${Math.floor(minutes / 60)}時間前`;
+  if (minutes < 60 * 24 * 7) return `${Math.floor(minutes / 60 / 24)}日前`;
+  return `${then.getFullYear()}/${then.getMonth() + 1}/${then.getDate()}`;
 }
 
 // 未ステージの変更を取り消す前に確かめる。取り消す前の中身は本体がゴミ箱へ控える

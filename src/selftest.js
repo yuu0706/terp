@@ -1780,10 +1780,23 @@ async function runGitTest({ win, js, check, outDir }) {
   await settle();
   check('上流より1件進んでいると出る', (await text('#git-ab')).startsWith('↑1'), await text('#git-ab'));
   check('Push のボタンに送る件数が出る', (await text('#git-push')) === 'Push ↑1', await text('#git-push'));
+  // コミットメッセージの上の履歴を引き出す。まだ送っていないコミットには印が付き、押すとタブで開く
+  check('履歴は初めは畳んである', !(await js(`document.getElementById('git-log').open`)));
+  await click('#git-log summary');
+  await sleep(1200);
+  const logRows = await js(`[...document.querySelectorAll('#git-log-list .git__log-row')].map((li) => [li.querySelector('.git__log-subject').textContent, li.dataset.unpushed === 'true'])`);
+  check('引き出すと最近のコミットが新しい順に出て、送っていないものに印が付く', JSON.stringify(logRows) === JSON.stringify([['テストのコミット', true], ['init', false]]), JSON.stringify(logRows));
   await shot('2-committed');
+  await click('#git-log-list .git__log-row');
+  await sleep(800);
+  check('履歴の行を押すとコミットをタブで開く', (await js('window.__terp.activeKey')).startsWith('c:'), await js('window.__terp.activeKey'));
+  await js(`window.__terp.activateKey(window.__terp.visibleKeys().find((key) => key.startsWith('t:')))`);
+  await sleep(500);
 
   await click('#git-push');
   await sleep(3000);
+  await settle();
+  check('送った後は履歴の印が消える', await js(`![...document.querySelectorAll('#git-log-list .git__log-row')].some((li) => li.dataset.unpushed === 'true')`));
   check('プッシュできる', sh(['log', '-1', '--format=%s', 'main'], remote).trim() === 'テストのコミット', await text('#git-result'));
 
   // 別の複製から1件送り、プルで取り込む

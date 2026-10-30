@@ -223,6 +223,14 @@
             <ul class="git__files"></ul>
           </section>
         </div>
+        <details id="git-log" class="git__log">
+          <summary class="git__log-head">
+            <svg class="icon git__log-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6" /></svg>
+            <span>履歴</span><span id="git-log-count" class="git__count"></span>
+          </summary>
+          <ol id="git-log-list" class="git__log-list"></ol>
+          <p id="git-log-note" class="git__note" hidden></p>
+        </details>
         <form id="git-commit" class="git__commit">
           <p id="git-identity" class="git__note"></p>
           <textarea name="message" class="input git__message" rows="3" placeholder="コミットメッセージ" spellcheck="false"></textarea>
