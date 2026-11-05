@@ -112,6 +112,12 @@ let saveTabsTimer = null;
 let activeId = null;
 // 最近表示したタブのキーの順。⌃Tab で直前へ戻るのに使う
 let recent = [];
+// よく戻るタブの印（2026-11-04 利用者の指示。設定の frequentTabs、beta）。どのタブへ戻ればよいか迷わないよう、
+// 直近の窓の中で何度も戻ったタブの背景に色を付ける。⌘1〜9 で通り過ぎただけのタブは数えないよう、とどまった時間で数える。
+// 控えは開いている間だけ持ち、開き直したら数え直す
+const frequent = { dwell: 3000, window: 30 * 60 * 1000, low: 3, high: 5 };
+const visits = new Map();
+let visitTimer = null;
 // どの作業にも入らないタブのまとまり
 const LOOSE = '(loose)';
 let config = await terp.getConfig();
@@ -426,6 +432,7 @@ function renderItem(s, index = visibleKeys().indexOf(termKey(s.id))) {
     li.dataset.agentIcon = kind;
   }
   li.setAttribute('aria-current', String(activeKey === termKey(s.id)));
+  markFrequent(li, termKey(s.id));
   li.title = [s.title, shortPath(s.cwd)].filter(Boolean).join('\n');
   const nameEl = li.querySelector('.session__name');
   if (nameEl) nameEl.textContent = displayName(s);
@@ -515,6 +522,7 @@ function renderTabs(visible) {
   for (const tab of tabsEl.children) {
     const key = tab.dataset.key;
     tab.setAttribute('aria-selected', String(key === activeKey));
+    markFrequent(tab, key);
     const dirty = key.startsWith('f:') && fileViews.get(key.slice(2))?.view?.dirty;
     tab.querySelector('.tab__name').textContent = tabLabel(key) + (dirty ? ' ●' : '');
     tab.dataset.dirty = String(Boolean(dirty));
@@ -2270,6 +2278,8 @@ function activateKey(key, focus = true) {
   }
   activeKey = key;
   recent = [key, ...recent.filter((k) => k !== key)];
+  clearTimeout(visitTimer);
+  visitTimer = setTimeout(() => { if (activeKey === key) countVisit(key); }, frequent.dwell);
   target.lastActive = Date.now();
   syncPanes();
   if (key.startsWith('t:')) {
@@ -2394,6 +2404,25 @@ function movePane(side) {
 
 function activate(id) {
   activateKey(termKey(id));
+}
+
+function countVisit(key) {
+  const now = Date.now();
+  visits.set(key, [...(visits.get(key) || []).filter((t) => now - t < frequent.window), now]);
+}
+
+// 直近の窓の中で戻った回数から印の濃さを決める。0 なら印なし
+function frequencyOf(key) {
+  if (config.frequentTabs === false) return 0;
+  const now = Date.now();
+  const count = (visits.get(key) || []).filter((t) => now - t < frequent.window).length;
+  return count >= frequent.high ? 2 : count >= frequent.low ? 1 : 0;
+}
+
+function markFrequent(el, key) {
+  const level = frequencyOf(key);
+  if (level) el.dataset.frequent = String(level);
+  else delete el.dataset.frequent;
 }
 
 // ---- タブで開くファイル ----
@@ -3711,6 +3740,8 @@ setInterval(() => {
 // 自己診断（TERP_SELFTEST）から操作するための口
 window.__terp = {
   setFocusForTest: (focused) => { focusForTest = focused; },
+  // 自己診断で、とどまる時間と数える窓を短くする
+  setFrequentForTest: (values) => { Object.assign(frequent, values); visits.clear(); },
   sessions,
   get workspaces() { return workspaces; },
   get activeWorkspace() { return activeWorkspace; },

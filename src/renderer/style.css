@@ -442,6 +442,17 @@ body[data-sidebar='hidden'] .topbar {
   background: var(--color-bg-active);
 }
 
+/* よく戻るタブ（左の行と上のタブ）。表示中・載せたときの色はこの上に重ねる */
+.session[data-frequent='1']:not([aria-current='true']):not(:hover),
+.tab[data-frequent='1']:not([aria-selected='true']):not(:hover) {
+  background: color-mix(in srgb, var(--color-accent) 8%, transparent);
+}
+
+.session[data-frequent='2']:not([aria-current='true']):not(:hover),
+.tab[data-frequent='2']:not([aria-selected='true']):not(:hover) {
+  background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+}
+
 /* 状態の印。出力中・未読・通知を色と形で分ける */
 .session__dot {
   grid-row: 1;

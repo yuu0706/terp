@@ -1022,6 +1022,31 @@ async function runFilesTest({ win, js, check, outDir }) {
   await sleep(1500);
   const fromHome = await js('window.__terp.activeId');
   check('リポジトリの外を見ているときは、ホームで開く', fromHome !== looseId && (await cwdOf(fromHome)) === os.homedir(), await cwdOf(fromHome));
+
+  // よく戻るタブの印。とどまる時間を 300ms に縮め、3 回戻ったタブだけに付くことを確かめる
+  await js(`window.__terp.setFrequentForTest({ dwell: 300 })`);
+  const visit = async (id, ms) => { await js(`window.__terp.activate(${id})`); await sleep(ms); };
+  for (let i = 0; i < 3; i++) {
+    await visit(termId, 500);
+    await visit(fromRepo, 500);
+    // 通り過ぎるだけのタブ（とどまる時間より短い）
+    await visit(subId, 50);
+  }
+  await visit(fromRepo, 500);
+  await sleep(700);
+  const frequentMarks = async () => js(`(() => {
+    const row = (id) => window.__terp.sessions.get(id).li.dataset.frequent || '';
+    const tab = (id) => document.querySelector('#tabs .tab[data-key="t:' + id + '"]')?.dataset.frequent || '';
+    return { stayed: [row(${termId}), tab(${termId})], passed: [row(${subId}), tab(${subId})] };
+  })()`);
+  const marked = await frequentMarks();
+  check('3 回以上とどまって戻ったタブは、左の行と上のタブに印が付き、通り過ぎたタブには付かない', JSON.stringify(marked) === JSON.stringify({ stayed: ['1', '1'], passed: ['', ''] }), JSON.stringify(marked));
+  await shot('3-frequent');
+  await js(`window.terp.updateConfig({ frequentTabs: false })`);
+  await sleep(1200);
+  const off = await frequentMarks();
+  check('設定で切ると印が消える', JSON.stringify(off) === JSON.stringify({ stayed: ['', ''], passed: ['', ''] }), JSON.stringify(off));
+  await js(`window.terp.updateConfig({ frequentTabs: true })`);
 }
 
 // 合成イベントでも本物と同じ境目の処理を通し、端末の fit まで待って確かめる。
