@@ -2119,6 +2119,7 @@ async function nameWithAi(s, { auto = false } = {}) {
   } else {
     s.customName = res.value;
     terp.setMeta(s.id, { customName: s.customName });
+    queueAgentRename(s, s.customName);
   }
   renderAll();
   return true;
@@ -2156,6 +2157,7 @@ function startRename(s, name = s.li.querySelector('.session__name')) {
     if (save) {
       s.customName = input.value.trim() || null;
       terp.setMeta(s.id, { customName: s.customName });
+      queueAgentRename(s, s.customName);
     }
     const span = document.createElement('span');
     span.className = nameClass;
@@ -2829,10 +2831,8 @@ function buildTerminal() {
   return { el, term, fit, search, hoverLink };
 }
 
-// エージェントの入力欄だけを選ぶ（2026-10-30 利用者の指示。設定の agentInputSelect、beta）。
-// 入力欄は画面の文字から探すため、見つからなければ false を返し、呼び出し側は画面全体を選ぶ
-function selectAgentInput(s) {
-  if (config.agentInputSelect === false || !isAgent(s)) return false;
+// 表示範囲の画面からエージェントの入力欄を探す（src/inputbox.js）。見つからなければ null
+function agentInputBox(s) {
   const buf = s.term.buffer.active;
   const lines = [];
   for (let y = 0; y < s.term.rows; y++) {
@@ -2846,7 +2846,15 @@ function selectAgentInput(s) {
       isDim: (col) => Boolean(line?.getCell(col)?.isDim()),
     });
   }
-  const box = window.terpInputBox.findInputBox(lines, s.term.cols, { row: buf.cursorY + buf.baseY - buf.viewportY, col: buf.cursorX });
+  return window.terpInputBox.findInputBox(lines, s.term.cols, { row: buf.cursorY + buf.baseY - buf.viewportY, col: buf.cursorX });
+}
+
+// エージェントの入力欄だけを選ぶ（2026-10-30 利用者の指示。設定の agentInputSelect、beta）。
+// 入力欄は画面の文字から探すため、見つからなければ false を返し、呼び出し側は画面全体を選ぶ
+function selectAgentInput(s) {
+  if (config.agentInputSelect === false || !isAgent(s)) return false;
+  const buf = s.term.buffer.active;
+  const box = agentInputBox(s);
   if (!box) return false;
   s.term.clearSelection();
   s.inputSelection = null;
@@ -2857,6 +2865,36 @@ function selectAgentInput(s) {
   s.inputSelection = { shown: s.term.getSelection(), text: box.text };
   return true;
 }
+
+// 利用者が付けた名前を、claude・codex の会話の名前にも /rename で写す（2026-11-05 利用者の指示。設定の agentRename、beta）。
+// terp の名前は表示だけで、/resume の一覧ではどの会話か分からなかったため。打ち込みが利用者の入力と混ざらないよう、
+// 考え中・許可待ちでなく、入力欄が空のときだけ送る。送れないうちは待ち、待つ間に名前を変えたら最後の名前だけを送る。
+// 自動で予測した題名（aiTitle）は、利用者の付けた名前ではないため送らない
+const RENAME_AGENTS = new Set(['claude', 'codex']);
+const RENAME_LIMIT = 80;
+
+function queueAgentRename(s, name) {
+  if (config.agentRename === false || !name || !isAgent(s) || !RENAME_AGENTS.has(s.program)) return;
+  s.pendingRename = name.replace(/\s+/g, ' ').trim().slice(0, RENAME_LIMIT);
+  flushAgentRename(s);
+}
+
+function flushAgentRename(s) {
+  const name = s.pendingRename;
+  if (!name) return;
+  // エージェントを抜けたら、送る相手がいないため捨てる
+  if (config.agentRename === false || !isAgent(s) || !RENAME_AGENTS.has(s.program)) { s.pendingRename = null; return; }
+  if (['working', 'waiting'].includes(agentState(s, Date.now()))) return;
+  const box = agentInputBox(s);
+  if (!box || box.text) return;
+  s.pendingRename = null;
+  terp.write(s.id, `/rename ${name}\r`);
+  showAiToast(`${s.program} の会話の名前も「${name}」に変えました`);
+}
+
+setInterval(() => {
+  for (const s of sessions.values()) if (s.pendingRename) flushAgentRename(s);
+}, 2000);
 
 function registerSession(id, { el, term, fit, search, hoverLink }, extra = {}) {
   const s = {
@@ -3835,6 +3873,7 @@ window.__terp = {
     s.customName = name;
     terp.setMeta(id, { customName: name });
     renderItem(s);
+    queueAgentRename(s, name);
   },
   openWorkDialog,
   openRemoveDialog,

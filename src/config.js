@@ -57,6 +57,8 @@ const DEFAULT_CONFIG = {
   permissionCard: true,
   // ⌘A でエージェントの入力欄だけを選ぶ（beta。入力欄を画面の文字から探すため、見つからなければ画面全体を選ぶ）
   agentInputSelect: true,
+  // 利用者が付けた名前を claude・codex の会話の名前にも /rename で写す（beta）
+  agentRename: true,
   // よく戻るタブの背景に色を付ける（beta。直近 30 分で 3 回以上、3 秒以上とどまって戻ったタブ）
   frequentTabs: true,
   // AI の手伝い。aiAssist で全体を切り、機能ごとにも切れる。aiAutoTitle は画面の文字を claude に送るため既定で切る。
@@ -334,6 +336,7 @@ function loadConfig() {
     notifyMessage: config.notifyMessage === true,
     permissionCard: config.permissionCard !== false,
     agentInputSelect: config.agentInputSelect !== false,
+    agentRename: config.agentRename !== false,
     frequentTabs: config.frequentTabs !== false,
     confirmDraftRemove: config.confirmDraftRemove !== false,
     ai: {

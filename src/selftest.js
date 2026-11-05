@@ -4271,6 +4271,8 @@ exports.run = (win) => {
     };
 
     await sleep(2500);
+    // 起動したときの最初のターミナルは、2.5 秒では間に合わないことがある。表示中のターミナルが決まるまで待つ（最大 15 秒）
+    for (let i = 0; i < 75 && (await js('window.__terp.activeId').catch(() => null)) == null; i++) await sleep(200);
     // TERP_SELFTEST_DIAG を付けると、何も操作せずに起動の様子だけを書き出して終わる。
     // 利用者の設定のまま使うため、常駐のプロセスもシェルも止めない
     if (process.env.TERP_SELFTEST_DIAG) {
@@ -4289,13 +4291,30 @@ exports.run = (win) => {
     }
     const tui = process.env.TERP_SELFTEST_CMD;
     if (tui) {
-      // TERP_SELFTEST_CMD を指定したときは、その TUI を起動した画面を撮る
+      // TERP_SELFTEST_CMD を指定したときは、その TUI を起動した画面を撮る。最初のターミナルができるのを待つ
+      for (let i = 0; i < 50 && (await js('window.__terp.activeId')) == null; i++) await sleep(200);
       const id = await js('window.__terp.activeId');
       const titles = [];
       const title = () => js(`window.__terp.sessions.get(${id}).title`);
       await send(id, tui + '\r');
       await sleep(9000);
       titles.push(`起動後: ${await title()}`);
+      // TERP_SELFTEST_RENAME を指定したら、その名前を付け、入力の途中は待ち、入力欄が空いたら /rename を送ることを確かめる
+      const renameTo = process.env.TERP_SELFTEST_RENAME;
+      if (renameTo) {
+        const pending = () => js(`window.__terp.sessions.get(${id}).pendingRename || ''`);
+        await send(id, 'abc');
+        await sleep(1000);
+        await js(`window.__terp.rename(${id}, ${JSON.stringify(renameTo)})`);
+        await sleep(4500);
+        const waiting = await pending();
+        await send(id, '\x7f\x7f\x7f');
+        await sleep(4500);
+        const after = await pending();
+        await sleep(3000);
+        const screen = await js(`window.__terp.bufferText(${id}, { visible: true })`).catch(() => '');
+        fs.writeFileSync(path.join(outDir, 'rename.txt'), `入力の途中で待つ: ${waiting === renameTo}\n空いたら送る: ${after === ''}\n---\n${screen}\n`);
+      }
       // TERP_SELFTEST_TYPE を指定したら、送らずに打つだけ打って、表示範囲の文字と背景色・カーソルの位置を控える
       const typed = process.env.TERP_SELFTEST_TYPE;
       if (typed) {
