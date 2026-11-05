@@ -3334,10 +3334,13 @@ function switchOffset(offset) {
   activateKey(order[(index + offset + order.length) % order.length]);
 }
 
-// 新しいターミナルはいつもホーム（~）で開く（2026-10-28 利用者の指示。表示中のタブの場所で開くと、直前の場所を引き継いだように見えた）。
-// リポジトリで開くときは左の一覧の作業の行を押す。エージェントとコマンドは今までどおり表示中のタブの場所で開く
+// 新しいターミナルは、表示中のタブが作業（リポジトリ・worktree）に属していればその一番上で、それ以外はホーム（~）で開く
+// （2026-10-30 利用者の指示。リポジトリの作業中にホームから始まるのが不便だった）。
+// 表示中のタブの場所そのものは引き継がない。サブフォルダまで引き継ぐと、直前の場所を引き継いだように見えたため（2026-10-28 の指摘）。
+// エージェントとコマンドは今までどおり表示中のタブの場所で開く
 function newTerminal() {
-  return openTerminal();
+  const work = workOfPath(activeCwd());
+  return openTerminal(work ? { cwd: work.path } : undefined);
 }
 
 terp.onData((id, data) => {

@@ -933,6 +933,8 @@ async function runFilesTest({ win, js, check, outDir }) {
   const treeNames = () => js(`[...document.querySelectorAll('#files-tree .files__name')].map((n) => n.textContent)`);
   const clickTree = (name) => js(`[...document.querySelectorAll('#files-tree .files__item')].find((li) => li.querySelector('.files__name').textContent === ${JSON.stringify(name)}).click()`);
 
+  // 起動したときの最初のターミナルができる前にリポジトリを足すと、最初のターミナルもリポジトリで開いてタブが増えるため待つ
+  for (let i = 0; i < 50 && !(await js('window.__terp.sessions.size')); i++) await sleep(200);
   await js(`window.__terp.addProject(${JSON.stringify(repo)})`);
   const termId = await js(`window.__terp.open(${JSON.stringify(repo)})`);
   await sleep(2500);
@@ -998,6 +1000,28 @@ async function runFilesTest({ win, js, check, outDir }) {
   check('右の面を変更に切り替えられる', (await js(`document.getElementById('git-view').hidden`)) === false && (await js(`document.getElementById('files-view').hidden`)) === true);
   await shot('2-git');
   await js(`window.__terp.activateKey('t:${looseId}')`);
+
+  // 新しいターミナルは、表示中のタブがリポジトリに属していればその一番上で、それ以外はホームで開く
+  const cwdOf = async (id) => {
+    for (let i = 0; i < 30; i++) {
+      const cwd = await js(`window.__terp.sessions.get(${id})?.cwd || ''`);
+      if (cwd) return cwd;
+      await sleep(200);
+    }
+    return '';
+  };
+  const subId = await js(`window.__terp.open(${JSON.stringify(path.join(repo, 'src'))})`);
+  await sleep(1500);
+  win.webContents.send('menu', 'new');
+  await sleep(1500);
+  const fromRepo = await js('window.__terp.activeId');
+  check('リポジトリのサブフォルダを見ているときは、リポジトリの一番上で開く', fromRepo !== subId && (await cwdOf(fromRepo)) === repo, await cwdOf(fromRepo));
+  await js(`window.__terp.activateKey('t:${looseId}')`);
+  await sleep(500);
+  win.webContents.send('menu', 'new');
+  await sleep(1500);
+  const fromHome = await js('window.__terp.activeId');
+  check('リポジトリの外を見ているときは、ホームで開く', fromHome !== looseId && (await cwdOf(fromHome)) === os.homedir(), await cwdOf(fromHome));
 }
 
 // 合成イベントでも本物と同じ境目の処理を通し、端末の fit まで待って確かめる。
@@ -4573,13 +4597,13 @@ exports.run = (win) => {
     await send(id2, 'codex --version\r');
     check('2枚目で codex が動く', await waitFor(id2, /codex-cli/));
 
-    // ⌘T 相当: 表示中（2枚目）の場所に関わらず、ホームで開く
+    // ⌘T 相当: 表示中（2枚目）は登録していないリポジトリのため、ホームで開く
     win.webContents.send('menu', 'new');
     await sleep(1500);
     const id3 = await js('window.__terp.activeId');
     await send(id3, 'pwd; cd /tmp\r');
     await sleep(2500);
-    check('新しいターミナルは表示中の場所に関わらずホームで開く', id3 !== id2 && (await buffer(id3)).split('\n').some((line) => line.trim() === os.homedir()), (await buffer(id3)).split('\n').slice(-4).join(' | '));
+    check('登録していない場所を見ているときは、新しいターミナルをホームで開く', id3 !== id2 && (await buffer(id3)).split('\n').some((line) => line.trim() === os.homedir()), (await buffer(id3)).split('\n').slice(-4).join(' | '));
     check('cd が一覧に反映される', (await sidebar()).includes('/tmp'), (await sidebar()).replace(/\n/g, ' | '));
 
     // 裏で出力があったものは未読になる
