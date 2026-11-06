@@ -4057,6 +4057,53 @@ async function runWorkTest({ win, js, check, outDir }) {
   await js('window.__terp.refreshProjects()');
   await sleep(500);
   check('読み直しても並びが保たれる', (await order()).join() === 'sample-repo,second-repo');
+
+  // 一覧に収まりきらないほどリポジトリを足し、ドラッグ中に下端へ寄せると一覧が送られ、見えていなかったカードと入れ替えられる
+  for (let i = 0; i < 12; i++) {
+    const extra = path.join(outDir, `more-repo-${String(i).padStart(2, '0')}`);
+    fs.mkdirSync(extra, { recursive: true });
+    sh(['init', '-q', '-b', 'main'], extra);
+    await js(`window.__terp.addProject(${JSON.stringify(extra)})`);
+  }
+  await sleep(800);
+  const last = (await order()).at(-1);
+  await js(`document.getElementById('tree').scrollTop = 0`);
+  const hiddenAtFirst = await js(`(() => {
+    const box = document.getElementById('tree').getBoundingClientRect();
+    return document.querySelector('.project[data-path$="/${last}"]').getBoundingClientRect().top >= box.bottom;
+  })()`);
+  await js(`(() => {
+    window.__dragTest = new DataTransfer();
+    const from = document.querySelector('.project[data-path=${JSON.stringify(repo)}] .project__head');
+    from.dispatchEvent(new DragEvent('dragstart', { bubbles: true, cancelable: true, dataTransfer: window.__dragTest }));
+  })()`);
+  // 下端の 8px 上にカーソルを置いたまま、dragover を続けて送る
+  for (let i = 0; i < 60; i++) {
+    await js(`(() => {
+      const box = document.getElementById('tree').getBoundingClientRect();
+      const x = box.left + 40;
+      const y = box.bottom - 8;
+      const target = document.elementFromPoint(x, y) || document.getElementById('tree');
+      target.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: window.__dragTest, clientX: x, clientY: y }));
+    })()`);
+    await sleep(40);
+  }
+  const scrolled = await js(`document.getElementById('tree').scrollTop`);
+  await js(`(() => {
+    const to = document.querySelector('.project[data-path$="/${last}"]');
+    const r = to.getBoundingClientRect();
+    const at = { bubbles: true, cancelable: true, dataTransfer: window.__dragTest, clientX: r.left + 10, clientY: r.bottom - 2 };
+    to.dispatchEvent(new DragEvent('dragover', at));
+    to.dispatchEvent(new DragEvent('drop', at));
+    document.querySelector('.project[data-path=${JSON.stringify(repo)}] .project__head').dispatchEvent(new DragEvent('dragend', at));
+  })()`);
+  await sleep(800);
+  check('ドラッグ中に下端へ寄せると一覧が送られる', hiddenAtFirst && scrolled > 0, `初めは見えない ${hiddenAtFirst} / 送った量 ${scrolled}`);
+  check('送った先の、初めは見えなかったカードと入れ替えられる', (await order()).at(-1) === 'sample-repo', (await order()).slice(-3).join());
+  await sleep(500);
+  const after = await js(`document.getElementById('tree').scrollTop`);
+  await sleep(500);
+  check('落としたら送るのが止まる', (await js(`document.getElementById('tree').scrollTop`)) === after);
 }
 
 exports.prepareThemeIconTarget = () => {

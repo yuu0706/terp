@@ -3720,6 +3720,31 @@ document.querySelector('[data-show-view="all"]').addEventListener('click', () =>
 // （2026-10-28 利用者の指摘）。そのため、その先に面が無い向きでは一覧を動かさない
 const SWIPE_DISTANCE = 30;
 const tree = document.getElementById('tree');
+
+// 左の一覧の中でドラッグしている間、カーソルが枠の上端か下端に近づいたら一覧を送る（2026-11-05 利用者の指示。
+// 見えている範囲でしか並べ替え・まとめができなかった）。端に近いほど速く送る。
+// 並べ替え・ターミナルのまとめ・Finder からの登録のどのドラッグにも効かせる
+const DRAG_SCROLL_EDGE = 48;
+const DRAG_SCROLL_MAX = 16;
+const dragScroll = { speed: 0, frame: 0, lastOver: 0 };
+function stepDragScroll() {
+  dragScroll.frame = 0;
+  // dragover はカーソルが止まっていても続けて届く。届かなくなったら（枠の外へ出た・取り消した）止める
+  if (!dragScroll.speed || performance.now() - dragScroll.lastOver > 150) { dragScroll.speed = 0; return; }
+  tree.scrollTop += dragScroll.speed;
+  dragScroll.frame = requestAnimationFrame(stepDragScroll);
+}
+tree.addEventListener('dragover', (e) => {
+  const r = tree.getBoundingClientRect();
+  const top = e.clientY - r.top;
+  const bottom = r.bottom - e.clientY;
+  const near = top < DRAG_SCROLL_EDGE ? -(1 - top / DRAG_SCROLL_EDGE) : bottom < DRAG_SCROLL_EDGE ? 1 - bottom / DRAG_SCROLL_EDGE : 0;
+  dragScroll.speed = near ? Math.sign(near) * Math.max(1, Math.round(Math.abs(near) * DRAG_SCROLL_MAX)) : 0;
+  dragScroll.lastOver = performance.now();
+  if (dragScroll.speed && !dragScroll.frame) dragScroll.frame = requestAnimationFrame(stepDragScroll);
+}, true);
+for (const type of ['drop', 'dragend']) document.addEventListener(type, () => { dragScroll.speed = 0; }, true);
+
 const freshSwipe = () => ({ dx: 0, done: false, sign: 0, timer: null });
 let swipe = freshSwipe();
 function settleSwipe() {
