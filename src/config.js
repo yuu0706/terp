@@ -158,6 +158,25 @@ function readableOn(base, candidates) {
     || candidates.reduce((a, b) => (contrastRatio(b, base) > contrastRatio(a, base) ? b : a));
 }
 
+// 強調色が地の色（ターミナルの背景と左の一覧の背景）に溶けるときは、明るさをずらして見分けられる色にする（2026-11-06 利用者の指示）。
+// 測り方は WCAG のコントラスト比で、下限は字以外の部品の基準の 3.0。地が明るければ黒へ、暗ければ白へ少しずつ寄せ、
+// 下限に届いた最初の色を使う。届かなければ、いちばん離れた色で止める。もとから離れている色は変えない
+const ACCENT_MIN_CONTRAST = 3;
+
+function visibleAccent(accent, grounds) {
+  if (!/^#[0-9a-f]{6}$/i.test(accent || '')) return accent;
+  const worst = (c) => Math.min(...grounds.map((g) => contrastRatio(c, g)));
+  if (worst(accent) >= ACCENT_MIN_CONTRAST) return accent;
+  const toward = worst('#000000') >= worst('#ffffff') ? '#000000' : '#ffffff';
+  let best = accent;
+  for (let step = 1; step <= 50; step++) {
+    const c = mix(accent, toward, step / 50);
+    if (worst(c) >= ACCENT_MIN_CONTRAST) return c;
+    if (worst(c) > worst(best)) best = c;
+  }
+  return best;
+}
+
 // 端末の色から、左の一覧などアプリの枠の色を作る
 // アプリの背景色（appBackground）を決めていれば、地の色をそれにし、行の強調・枠・薄い文字もその色から作る。
 // 決めていなければ、ターミナルの背景色を少し暗くして地の色にする
@@ -166,16 +185,17 @@ function chromeColors(t, accent) {
   // アプリの背景色をテーマと別に決めると、暗いテーマの白い文字が明るい地に乗って読めなくなる（2026-10-29 利用者の指摘）。
   // 地の色と見分けにくければ、読める色に替える
   const text = readableOn(base, [t.foreground, t.background, '#000000', '#ffffff']);
+  const bg = t.appBackground || mix(t.background, '#000000', 0.2);
   return {
     'term-bg': t.background,
-    bg: t.appBackground || mix(t.background, '#000000', 0.2),
+    bg,
     'bg-hover': mix(base, text, 0.07),
     'bg-active': mix(base, text, 0.14),
     // 枠の線は行の強調より濃くし、地に溶けないようにする（2026-11-06 利用者の指示）
     border: mix(base, text, 0.22),
     text,
     'text-muted': mix(text, base, 0.35),
-    accent,
+    accent: visibleAccent(accent, [t.background, bg]),
     busy: t.palette[2],
     warning: t.palette[3],
     danger: t.palette[1],

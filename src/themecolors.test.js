@@ -52,3 +52,24 @@ test('既定のテーマで決めたアプリの背景色は、空の印で既�
   fs.writeFileSync(config.CONFIG_PATH, JSON.stringify({ theme: 'Night', appBackground: '#20304a', appBackgroundTheme: '' }));
   assert.notEqual(config.loadConfig().chrome.bg, '#20304a');
 });
+
+test('明るい地に薄い強調色なら、暗くして地とのコントラスト比を 3 以上にする', () => {
+  const light = { ...dark, background: '#f8f9fa', foreground: '#5c6166', cursor: '#ffaa33' };
+  const chrome = config.chromeColors(light, '#ffaa33');
+  assert.notEqual(chrome.accent, '#ffaa33');
+  assert.ok(config.contrastRatio(chrome.accent, chrome.bg) >= 3, chrome.accent);
+  assert.ok(config.contrastRatio(chrome.accent, chrome['term-bg']) >= 3, chrome.accent);
+  assert.ok(config.contrastRatio(chrome.accent, '#000000') < config.contrastRatio('#ffaa33', '#000000'), '暗い向きに寄せる');
+});
+
+test('暗い地に暗い強調色なら、明るくして地とのコントラスト比を 3 以上にする', () => {
+  const chrome = config.chromeColors(dark, '#202040');
+  assert.ok(config.contrastRatio(chrome.accent, chrome.bg) >= 3, chrome.accent);
+  assert.ok(config.contrastRatio(chrome.accent, chrome['term-bg']) >= 3, chrome.accent);
+  assert.ok(config.contrastRatio(chrome.accent, '#ffffff') < config.contrastRatio('#202040', '#ffffff'), '明るい向きに寄せる');
+});
+
+test('地から十分離れた強調色は変えない', () => {
+  assert.equal(config.chromeColors(dark, '#ff2bd6').accent, '#ff2bd6');
+  assert.equal(config.chromeColors({ ...dark, background: '#ffffff', foreground: '#1a1a1a', appBackground: '#e6ecf5' }, '#1a1a1a').accent, '#1a1a1a');
+});
