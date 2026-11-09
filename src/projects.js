@@ -4,7 +4,7 @@ const path = require('path');
 const { randomUUID } = require('crypto');
 const { CONFIG_DIR } = require('./config');
 const gitops = require('./git');
-const { normalizeProjects } = require('./workspaces');
+const { normalizeProjects, normalizeParked } = require('./workspaces');
 
 const PROJECTS_PATH = path.join(CONFIG_DIR, 'projects.json');
 
@@ -71,6 +71,11 @@ function update(repo, patch) {
     project.workspace = patch.workspace;
   }
   if ('draft' in patch) project.draft = Boolean(patch.draft);
+  if ('parked' in patch) {
+    const parked = normalizeParked(patch.parked);
+    if (parked.length) project.parked = parked;
+    else delete project.parked;
+  }
   save(data);
 }
 

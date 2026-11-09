@@ -26,6 +26,23 @@ function normalizeProjects(value = {}) {
   return { ...value, projects, workspaces, activeWorkspace: valid(value.activeWorkspace) ? value.activeWorkspace : fallback };
 }
 
+// ドラフトから外したときに閉じたターミナルの控え（projects.json の各リポジトリの parked）。
+// 開き直しに使う項目だけを、型を確かめて残す。作業場所の無いものは捨てる
+function normalizeParked(value) {
+  const text = (v) => (typeof v === 'string' && v ? v : null);
+  return (Array.isArray(value) ? value : []).filter((e) => e && text(e.cwd)).map((e) => ({
+    cwd: e.cwd,
+    workspace: text(e.workspace),
+    customName: text(e.customName),
+    agentTitle: text(e.agentTitle),
+    workPath: text(e.workPath),
+    agent: e.agent === 'claude' || e.agent === 'codex' ? e.agent : null,
+    agentSession: text(e.agentSession),
+    configDir: text(e.configDir),
+    bypass: e.bypass === true,
+  }));
+}
+
 function containsPath(root, cwd) {
   return typeof root === 'string' && typeof cwd === 'string' && (cwd === root || cwd.startsWith(root.replace(/\/$/, '') + '/'));
 }
@@ -38,4 +55,4 @@ function sessionWorkspace(session, state) {
   return candidates[0]?.workspace || state.activeWorkspace;
 }
 
-module.exports = { DEFAULT_WORKSPACE, normalizeProjects, containsPath, sessionWorkspace };
+module.exports = { DEFAULT_WORKSPACE, normalizeProjects, normalizeParked, containsPath, sessionWorkspace };

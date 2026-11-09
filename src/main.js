@@ -541,6 +541,17 @@ ipcMain.handle('pty:replace-plan', safe(async () => {
   return publicPlan(await replacePlan());
 }));
 
+// ドラフトから外すリポジトリのターミナルの控え。外すと閉じ、ドラフトに戻すとこの控えから開き直す（2026-11-09 利用者の指示）。
+// 再開できない会話（missing）と、止まって戻らないプログラム（stopped）も返し、外す前の確認に出す
+ipcMain.handle('pty:park-plan', safe(async (_e, ids) => {
+  if (replacingHost || snapshotHold) throw new Error('入れ替えか開き直しの最中です');
+  await ensureClient();
+  const wanted = new Set(Array.isArray(ids) ? ids : []);
+  const plan = await replacePlan();
+  const pick = (list) => list.filter((e) => wanted.has(e.id));
+  return { entries: pick(plan.entries), missing: pick(plan.missing), stopped: pick(plan.stopped) };
+}));
+
 // acceptMissing は、会話を再開せずに開き直すと利用者が選んだターミナルの ID。
 // 確かめた後に、会話の ID が見つからないターミナルが増えていたら入れ替えず、新しい中身を返す
 ipcMain.handle('pty:replace-host', safe(async (_e, { acceptMissing = [] } = {}) => {

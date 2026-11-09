@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { normalizeProjects, sessionWorkspace, containsPath } = require('./workspaces');
+const { normalizeProjects, normalizeParked, sessionWorkspace, containsPath } = require('./workspaces');
 let checked = 0;
 function equal(actual, expected) { assert.deepEqual(actual, expected); checked++; }
 function ok(value) { assert.ok(value); checked++; }
@@ -28,6 +28,13 @@ async function run() {
   equal(normalizeProjects({ projects: [{ path: '/a', hidden: true }, { path: '/b' }] }).projects.map((p) => [p.draft, 'hidden' in p]), [[false, false], [true, false]]);
   equal(normalizeProjects({ projects: [{ path: '/a', draft: false, favorite: true }, { path: '/b', favorite: false }] }).projects.map((p) => p.draft), [false, false]);
   equal(migrated.projects.map((p) => p.draft), [true, true]);
+  // ドラフトから外したときの控え（parked）は、開き直しに使う項目だけを残し、場所の無いものと知らない会話の種類を捨てる
+  equal(normalizeParked([{ cwd: '/repo', agent: 'claude', agentSession: 'id-1', bypass: true, extra: 'x' }, { cwd: '' }, null, { cwd: '/b', agent: 'other' }]), [
+    { cwd: '/repo', workspace: null, customName: null, agentTitle: null, workPath: null, agent: 'claude', agentSession: 'id-1', configDir: null, bypass: true },
+    { cwd: '/b', workspace: null, customName: null, agentTitle: null, workPath: null, agent: null, agentSession: null, configDir: null, bypass: false },
+  ]);
+  equal(normalizeParked(undefined), []);
+  equal(normalizeProjects({ projects: [{ path: '/a', draft: false, parked: [{ cwd: '/a' }] }] }).projects[0].parked, [{ cwd: '/a' }]);
   equal(normalizeProjects({ ...state, activeWorkspace: 'missing' }).activeWorkspace, 'a');
   equal(normalizeProjects({ ...state, projects: [{ path: '/x', workspace: 'missing' }] }).projects[0].workspace, 'a');
   equal(normalizeProjects({ workspaces: [{ id: 'a', name: ' A ' }, { id: 'a', name: '重複' }] }).workspaces, [{ id: 'a', name: 'A' }]);

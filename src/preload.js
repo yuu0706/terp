@@ -39,6 +39,7 @@ contextBridge.exposeInMainWorld('terp', {
   shutdownHost: () => ipcRenderer.invoke('pty:shutdown-host'),
   replacePlan: () => ipcRenderer.invoke('pty:replace-plan'),
   replaceHost: (opts) => ipcRenderer.invoke('pty:replace-host', opts),
+  parkPlan: (ids) => ipcRenderer.invoke('pty:park-plan', ids),
   restored: () => ipcRenderer.send('pty:restored'),
   onHostStale: (fn) => ipcRenderer.on('host-stale', () => fn()),
   onWallpaper: (fn) => ipcRenderer.on('fullscreen:wallpaper', (_e, url) => fn(url)),

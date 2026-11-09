@@ -841,14 +841,22 @@ let sidebarView = 'draft';
 // ドラフトで畳んだリポジトリ。tabs.json の collapsedRepos に残す
 const collapsedRepos = new Set();
 
-async function setProjectDraft(repo, draft) {
+// ドラフトに戻すときは、外したときに閉じたターミナル（parked）を開き直し、控えを消す。
+// 外すときの parked は、閉じるターミナルの控え（toggleProjectDraft が作る）
+async function setProjectDraft(repo, draft, { parked = [] } = {}) {
   projectRevision++;
   const project = projects.find((p) => p.path === repo);
-  if (project) project.draft = draft;
-  const res = await terp.updateProject(repo, { draft });
-  if (!res.ok) { workspaceUI.error(res.error); return; }
+  const reopen = draft && project?.parked?.length ? project.parked : [];
+  if (project) {
+    project.draft = draft;
+    project.parked = draft ? [] : parked;
+  }
+  const res = await terp.updateProject(repo, { draft, parked: draft ? [] : parked });
+  if (!res.ok) { workspaceUI.error(res.error); return false; }
+  for (const snap of reopen) await reopenFromEntry(snap);
   await refreshProjects();
   renderAll();
+  return true;
 }
 
 // ドラフトから外す前に確かめる。「今後は確認しない」を選んで外すと、設定の confirmDraftRemove を切る
@@ -871,12 +879,28 @@ function confirmDraftRemove({ title, message }) {
   });
 }
 
+// ドラフトから外すと、中のターミナルを閉じる。claude・codex の会話は控えに残し、ドラフトに戻すと再開する（2026-11-09 利用者の指示）
 async function toggleProjectDraft(p) {
-  if (p.draft && !(await confirmDraftRemove({
-    title: `${p.name} をドラフトから外しますか？`,
-    message: '中のターミナルも一覧から外れます。シェルは止まりません。「すべて」からいつでも戻せます。',
-  }))) return;
-  await setProjectDraft(p.path, !p.draft);
+  if (!p.draft) {
+    await setProjectDraft(p.path, true);
+    return;
+  }
+  const ids = [...sessions.values()].filter((s) => workOf(s)?.repo === p.path).map((s) => s.id);
+  let plan = { entries: [], missing: [], stopped: [] };
+  if (ids.length) {
+    const res = await terp.parkPlan(ids);
+    if (!res.ok) { workspaceUI.error(res.error); return; }
+    plan = res.value;
+  }
+  const lost = [...plan.missing, ...plan.stopped].map((e) => e.program ? `${e.name}（${e.program}）` : e.name);
+  const message = [
+    ids.length ? '中のターミナルを閉じます。claude・codex の会話は、ドラフトに戻すと再開します。' : '',
+    lost.length ? `次のものは止まり、戻りません: ${lost.join('、')}。` : '',
+    '「すべて」からいつでも戻せます。',
+  ].join('');
+  if (!(await confirmDraftRemove({ title: `${p.name} をドラフトから外しますか？`, message }))) return;
+  if (!(await setProjectDraft(p.path, false, { parked: plan.entries }))) return;
+  for (const id of ids) closeSession(id, { remember: false });
 }
 
 // ターミナルをリポジトリ（の作業）にまとめる。シェルの作業場所は変えず、terp の一覧の上での置き場所（workPath）だけを変える。
@@ -3086,6 +3110,28 @@ async function redrawTerminal(id = activeId) {
   s.term.refresh(0, s.term.rows - 1);
 }
 
+// 控えの1件から、同じ作業場所でターミナルを開き直す。名前・置き場所・題名を戻し、claude・codex の会話を再開する。
+// Mac の再起動の後と、ドラフトに戻したリポジトリの両方で使う
+async function reopenFromEntry(snap) {
+  const s = await openTerminal({ cwd: snap.cwd, workspace: snap.workspace, show: false, restore: true });
+  if (snap.customName) {
+    s.customName = snap.customName;
+    terp.setMeta(s.id, { customName: snap.customName });
+  }
+  if (snap.workPath) {
+    s.workPath = snap.workPath;
+    terp.setMeta(s.id, { workPath: snap.workPath });
+  }
+  if (snap.agentTitle) {
+    s.agentTitle = snap.agentTitle;
+    terp.setMeta(s.id, { agentTitle: snap.agentTitle });
+  }
+  // 会話は止める前と同じ起動の仕方（確認を飛ばすか）で再開する。claudeSession は前の版の控え
+  if (snap.agent && snap.agentSession) resumeAgentIn(s, snap.agent, snap.agentSession, Boolean(snap.bypass), snap.configDir);
+  else if (snap.claudeSession) terp.write(s.id, `claude --resume ${snap.claudeSession}\r`);
+  return s;
+}
+
 // 起動したとき: 生きているシェルがあればつなぎ直す。無ければ前回の控えから開き直し、
 // claude の会話は --resume で再開する。どちらも無ければ1枚開く
 // tabs.json があれば、表示する端末と枠はその後の restoreTabs が決める。ここで表示すると大きさが2回変わるため、控えが無いときだけ表示する
@@ -3100,23 +3146,8 @@ async function restoreSessions({ show = true } = {}) {
   }
   if (snapshot.length > 0) {
     for (const snap of snapshot) {
-      const s = await openTerminal({ cwd: snap.cwd, workspace: snap.workspace, show: false, restore: true });
+      const s = await reopenFromEntry(snap);
       if (snap.id) restoredKeys.set(termKey(snap.id), termKey(s.id));
-      if (snap.customName) {
-        s.customName = snap.customName;
-        terp.setMeta(s.id, { customName: snap.customName });
-      }
-      if (snap.workPath) {
-        s.workPath = snap.workPath;
-        terp.setMeta(s.id, { workPath: snap.workPath });
-      }
-      if (snap.agentTitle) {
-        s.agentTitle = snap.agentTitle;
-        terp.setMeta(s.id, { agentTitle: snap.agentTitle });
-      }
-      // 会話は止める前と同じ起動の仕方（確認を飛ばすか）で再開する。claudeSession は前の版の控え
-      if (snap.agent && snap.agentSession) resumeAgentIn(s, snap.agent, snap.agentSession, Boolean(snap.bypass), snap.configDir);
-      else if (snap.claudeSession) terp.write(s.id, `claude --resume ${snap.claudeSession}\r`);
     }
     renderAll();
     // 開き直し終わるまで、本体は控えを書き直さない
