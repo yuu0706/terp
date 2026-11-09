@@ -2188,8 +2188,11 @@ function attachWebgl(s) {
 }
 
 function detachWebgl(s) {
-  s.webgl?.dispose();
+  if (!s.webgl) return;
+  s.webgl.dispose();
   s.webgl = null;
+  // 外した後は DOM の描画に替わる。表示中なら全体を描き直す
+  if (!s.el.hidden) s.term.refresh(0, s.term.rows - 1);
 }
 
 function hideView(key) {
@@ -2232,7 +2235,10 @@ function syncPanes() {
     if (view.el.parentElement !== el) el.appendChild(view.el);
     view.el.hidden = false;
     if (pane.key.startsWith('t:')) {
-      attachWebgl(view);
+      // WebGL は操作中の枠の端末にだけ付け、ほかの枠は DOM で描く。WebGL の字の置き場は同じ設定の端末で共有され、
+      // 1枚で置き場を消す（表示を作り直す・つなぎ直し）と、描き直していない別の枠が消えた場所を引いて字が化けた（2026-11-06 利用者の指摘）
+      if (pane.id === activePaneId) attachWebgl(view);
+      else detachWebgl(view);
       view.fit.fit();
     } else view.view?.editor?.layout();
   }

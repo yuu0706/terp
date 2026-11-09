@@ -1112,7 +1112,46 @@ async function runSplitTest({ win, js, check, outDir }) {
     const r = el.getBoundingClientRect();
     return !el.hidden && r.width > 0 && r.height > 0;
   })`));
-  check('表示中の端末には両方 WebGL が付く', await js(`[${first}, ${second}].every((id) => Boolean(window.__terp.sessions.get(id).webgl))`));
+  // WebGL の字の置き場は同じ設定の端末で共有される。1枚で置き場を消すと、描き直していない別の枠が
+  // 消えた場所を引いて字が化けたため（2026-11-06 利用者の指摘）、WebGL は操作中の枠の端末にだけ付ける
+  const webglOwners = () => js(`[${first}, ${second}].filter((id) => Boolean(window.__terp.sessions.get(id).webgl))`);
+  const activeTerm = await js('window.__terp.activeId');
+  check('WebGL は操作中の枠の端末にだけ付く', JSON.stringify(await webglOwners()) === JSON.stringify([activeTerm]), JSON.stringify({ owners: await webglOwners(), activeTerm }));
+  {
+    const idle = activeTerm === first ? second : first;
+    const idleRect = await js(`(() => { const r = window.__terp.sessions.get(${idle}).el.getBoundingClientRect(); return { x: Math.round(r.x), y: Math.round(r.y), width: Math.round(r.width), height: Math.round(r.height) }; })()`);
+    // シェルの入力待ちの表示とカーソルが後から描かれて差に見えないよう、落ち着くのを待ってカーソルを隠す
+    await sleep(1500);
+    await js(`window.__terp.sessions.get(${idle}).term.write('\\x1b[?25l\\x1b[2J\\x1b[H' + Array.from({ length: 12 }, (_, i) => '表示の確かめ ' + i + ' あいうえお カタカナ 漢字').join('\\r\\n'))`);
+    await sleep(800);
+    const idleShot = async () => {
+      // 崩れは、ほかの枠が描き直したときに出る。中身は同じまま全体を描き直させてから撮る
+      await js(`window.__terp.sessions.get(${idle}).term.refresh(0, window.__terp.sessions.get(${idle}).term.rows - 1)`);
+      await sleep(800);
+      return (await win.webContents.capturePage(idleRect)).toBitmap();
+    };
+    const atlas = () => js(`(() => {
+      const of = (id) => window.__terp.sessions.get(id).webgl?._renderer?._charAtlas;
+      const a = of(${activeTerm}), b = of(${idle});
+      return { pages: a?.pages.map((p) => p.canvas.width), shared: Boolean(a && a === b) };
+    })()`);
+    const before = await idleShot();
+    // 操作中の枠で「表示を作り直す」（字の置き場を消す）をしてから別の字を描いても、ほかの枠の字は抜けない
+    await js(`window.__terp.redrawTerminal(${activeTerm})`);
+    await js(`window.__terp.sessions.get(${activeTerm}).term.write('\\r\\n' + Array.from({ length: 300 }, (_, i) => String.fromCodePoint(0x5e00 + i)).join(''))`);
+    await sleep(300);
+    const afterClear = await idleShot();
+    if (outDir) fs.writeFileSync(path.join(outDir, 'split-atlas-clear.png'), (await win.webContents.capturePage()).toPNG());
+    check('操作中の枠で表示を作り直しても、ほかの枠の表示は変わらない', before.equals(afterClear), JSON.stringify(await atlas()));
+    // 操作中の枠に、違う漢字を数千字流して字の置き場をあふれさせる
+    for (let start = 0x4e00; start < 0x4e00 + 6000; start += 500) {
+      await js(`window.__terp.sessions.get(${activeTerm}).term.write(Array.from({ length: 500 }, (_, i) => String.fromCodePoint(${start} + i)).join(''))`);
+      await sleep(120);
+    }
+    const afterFlood = await idleShot();
+    if (outDir) fs.writeFileSync(path.join(outDir, 'split-atlas.png'), (await win.webContents.capturePage()).toPNG());
+    check('操作中の枠に多くの字を流しても、ほかの枠の表示は変わらない', before.equals(afterFlood), JSON.stringify(await atlas()));
+  }
 
   const third = await js('window.__terp.open(window.terp.home)');
   await js(`(() => {
