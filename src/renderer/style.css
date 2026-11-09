@@ -4,7 +4,7 @@
   --color-bg: #181825;
   --color-bg-hover: #26263a;
   --color-bg-active: #313244;
-  --color-border: #313244;
+  --color-border: #45465a;
   --color-text: #cdd6f4;
   --color-text-muted: #a6adc8;
   --color-accent: #89b4fa;
@@ -339,6 +339,13 @@ body[data-sidebar='hidden'] .topbar {
 
 .work__row[aria-current='true'] {
   color: var(--color-accent);
+  font-weight: 600;
+  background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+}
+
+/* 表示中のターミナルを含むカードは、枠を強調色寄りにする。一覧を送っても開いているリポジトリが分かるように（2026-11-06 利用者の指示） */
+#tree .project:not([hidden]):has(:is(.session, .subagent)[aria-current='true']) {
+  border-color: color-mix(in srgb, var(--color-accent) 50%, var(--color-border));
 }
 
 .work__row .icon {
@@ -438,8 +445,11 @@ body[data-sidebar='hidden'] .topbar {
   background: var(--color-bg-hover);
 }
 
-.session[aria-current='true'] {
-  background: var(--color-bg-active);
+/* 表示中の行は、強調色の面と左端の線で示す。よく戻る行（線なし）と見分けるため（2026-11-06 利用者の指示） */
+.session[aria-current='true'],
+.subagent[aria-current='true'] {
+  background: color-mix(in srgb, var(--color-accent) 22%, transparent);
+  box-shadow: inset 3px 0 0 var(--color-accent);
 }
 
 /* よく戻るタブ（左の行と上のタブ）。表示中・載せたときの色はこの上に重ねる */
@@ -603,10 +613,6 @@ button.subagent {
 button.subagent:hover,
 .subagents__finished:hover {
   background: var(--color-bg-hover);
-}
-
-.subagent[aria-current='true'] {
-  background: var(--color-bg-active);
 }
 
 .subagent__dot {

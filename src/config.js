@@ -171,7 +171,8 @@ function chromeColors(t, accent) {
     bg: t.appBackground || mix(t.background, '#000000', 0.2),
     'bg-hover': mix(base, text, 0.07),
     'bg-active': mix(base, text, 0.14),
-    border: mix(base, text, 0.14),
+    // 枠の線は行の強調より濃くし、地に溶けないようにする（2026-11-06 利用者の指示）
+    border: mix(base, text, 0.22),
     text,
     'text-muted': mix(text, base, 0.35),
     accent,

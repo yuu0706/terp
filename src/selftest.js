@@ -1042,6 +1042,19 @@ async function runFilesTest({ win, js, check, outDir }) {
   const marked = await frequentMarks();
   check('3 回以上とどまって戻ったタブは、左の行と上のタブに印が付き、通り過ぎたタブには付かない', JSON.stringify(marked) === JSON.stringify({ stayed: ['1', '1'], passed: ['', ''] }), JSON.stringify(marked));
   await shot('3-frequent');
+  // 表示中の行は左端に強調色の線があり、よく戻る行には無い。表示中の行を含むカードの枠は、ほかのカードと違う色になる
+  const looks = await js(`(() => {
+    const li = (id) => window.__terp.sessions.get(id).li;
+    const shadow = (el) => getComputedStyle(el).boxShadow;
+    const card = (el) => getComputedStyle(el.closest('.project')).borderTopColor;
+    const other = [...document.querySelectorAll('#tree .project:not([hidden])')].find((p) => !p.querySelector('[aria-current="true"]'));
+    return {
+      currentLine: shadow(li(${fromRepo})) !== 'none',
+      frequentLine: shadow(li(${termId})) !== 'none',
+      cardDiffers: !!other && card(li(${fromRepo})) !== getComputedStyle(other).borderTopColor,
+    };
+  })()`);
+  check('表示中の行には左端の線があり、よく戻る行には無い。表示中のカードの枠は色が変わる', looks.currentLine && !looks.frequentLine && looks.cardDiffers, JSON.stringify(looks));
   await js(`window.terp.updateConfig({ frequentTabs: false })`);
   await sleep(1200);
   const off = await frequentMarks();
