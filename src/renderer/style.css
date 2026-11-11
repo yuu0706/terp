@@ -855,6 +855,10 @@ button.subagent:hover,
   user-select: none;
 }
 
+.tab[data-group-start] {
+  margin-left: var(--space-3);
+}
+
 .tab:hover {
   background: var(--color-bg-hover);
 }

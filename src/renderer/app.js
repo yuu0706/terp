@@ -390,11 +390,22 @@ function groupOf(key) {
   return workOfPath(key.slice(2))?.path || LOOSE;
 }
 
-// ⌘1〜⌘9 と前後の移動は、上のタブに見えている順に従う
+// タブの属するリポジトリ。どの作業にも入らなければ LOOSE
+function repoOfKey(key) {
+  const group = groupOf(key);
+  return group === LOOSE ? LOOSE : allWorks().find((w) => w.path === group)?.repo || LOOSE;
+}
+
+// 上のタブには、表示中のワークスペースのうちドラフトのリポジトリとその他のタブを、左の一覧のカードの順に並べる
+// （2026-11-11 利用者の指示。以前は表示中のタブと同じ作業のものだけを出していた）。同じリポジトリの中は開いた順にする。
+// 表示中のタブは、ドラフトに無いリポジトリのものでも出す。⌘1〜⌘9 と前後の移動は、この順に従う
 function visibleKeys() {
   if (!activeKey) return [];
-  const group = groupOf(activeKey);
-  return tabOrder.filter((k) => workspaceOfKey(k) === activeWorkspace && groupOf(k) === group);
+  const activeRepo = repoOfKey(activeKey);
+  const order = [...currentProjects().filter((p) => p.draft || p.path === activeRepo).map((p) => p.path), LOOSE];
+  const keys = tabOrder.filter((k) => workspaceOfKey(k) === activeWorkspace).map((k) => [k, repoOfKey(k)])
+    .filter(([k, repo]) => repo === LOOSE || repoDrafted(repo) || k === activeKey);
+  return order.flatMap((repo) => keys.filter(([, r]) => r === repo).map(([k]) => k));
 }
 
 // 新しいターミナルやエージェントを開く場所: ファイルのタブならそのフォルダ、ターミナルならその作業場所
@@ -519,8 +530,13 @@ function renderTabs(visible) {
       tabsEl.append(tab);
     }
   }
+  // リポジトリの境目は、次のリポジトリの最初のタブの前を少し空けて示す
+  let previousRepo = null;
   for (const tab of tabsEl.children) {
     const key = tab.dataset.key;
+    const repo = repoOfKey(key);
+    tab.toggleAttribute('data-group-start', previousRepo !== null && repo !== previousRepo);
+    previousRepo = repo;
     tab.setAttribute('aria-selected', String(key === activeKey));
     markFrequent(tab, key);
     const dirty = key.startsWith('f:') && fileViews.get(key.slice(2))?.view?.dirty;

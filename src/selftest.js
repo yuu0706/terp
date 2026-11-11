@@ -632,7 +632,7 @@ async function runNotifyTest({ win, js, check, outDir }) {
     check('置き換えた古い通知は押せない', await js(`window.__terp.activeKey === 't:${loose}'`));
     notify.__test.click(records.length - 1);
     await wait(() => js(`window.__terp.activeKey === 't:${id}'`));
-    check('通知を押すと別の作業から元のターミナルへ移る', await js(`window.__terp.visibleKeys().includes('t:${id}') && !window.__terp.visibleKeys().includes('t:${loose}')`));
+    check('通知を押すと別の作業から元のターミナルへ移る', await js(`window.__terp.activeKey === 't:${id}' && window.__terp.visibleKeys().includes('t:${id}')`));
     check('通知を押して表示すると一覧の印が消える', !(await js(`window.__terp.sessions.get(${id}).notify`)));
     check('自己診断の通知を押しても窓は焦点を奪わない', !win.isFocused());
 
@@ -954,7 +954,8 @@ async function runFilesTest({ win, js, check, outDir }) {
   await sleep(1200);
   check('ファイルを押すとタブで開く', (await js('window.__terp.activeKey')) === `f:${path.join(repo, 'src', 'a.js')}`, await js('window.__terp.activeKey'));
   const t1 = await tabs();
-  check('上のタブにターミナルとファイルが並ぶ', t1.length === 2 && t1[1] === 'a.js', t1.join(', '));
+  // 起動したときの ~ のターミナルはその他のため、リポジトリのタブの後ろに並ぶ
+  check('上のタブにターミナルとファイルが並ぶ', t1.length === 3 && t1[1] === 'a.js', t1.join(', '));
   const editorPath = JSON.stringify(path.join(repo, 'src', 'a.js'));
   const editorInfo = await js(`(() => {
     const editor = window.__terp.editorOf(${editorPath});
@@ -976,17 +977,43 @@ async function runFilesTest({ win, js, check, outDir }) {
   await sleep(500);
   check('1つ目のタブへ移れる', (await js('window.__terp.activeKey')) === `t:${termId}`);
 
-  // 作業の外のターミナルを開くと、上のタブはそのまとまりに切り替わる
+  // 作業の外のターミナルを開いても、上のタブはドラフトのリポジトリのタブを残し、その他のタブを後ろに並べる
   const looseId = await js(`window.__terp.open(${JSON.stringify(os.homedir())})`);
   await sleep(2000);
-  const t2 = await tabs();
-  // 起動したときの ~ のターミナルも作業の外のため、同じまとまりに並ぶ
-  check('作業の外のターミナルではタブが切り替わる', !t2.includes('a.js') && t2.every((n) => n === 'ターミナル'), t2.join(', '));
+  const k2 = await js('window.__terp.visibleKeys()');
+  const repoKeys = k2.filter((k) => k === `t:${termId}` || k.startsWith(`f:${repo}/`));
+  // 起動したときの ~ のターミナルも作業の外のため、その他として後ろに並ぶ
+  check('作業の外のターミナルを開いても、リポジトリのタブを残してその他を後ろに並べる',
+    repoKeys.length === 4 && k2.length > 4 && k2.slice(0, 4).join() === repoKeys.join() && k2.at(-1) === `t:${looseId}`, k2.join(', '));
+  check('リポジトリの境目のタブの前を空ける', await js(`(() => {
+    const tabs = [...document.querySelectorAll('#tabs .tab')];
+    return tabs.map((t) => t.hasAttribute('data-group-start')).join() === tabs.map((_, i) => i === 4).join()
+      && parseFloat(getComputedStyle(tabs[4]).marginLeft) > parseFloat(getComputedStyle(tabs[1]).marginLeft);
+  })()`));
   // 作業の行を押すと、その作業のタブに戻る
   await js(`document.querySelector('.work[data-path=${JSON.stringify(repo)}] .work__row').click()`);
   await sleep(800);
   const t3 = await tabs();
-  check('作業の行を押すとその作業のタブに戻る', t3.length === 4, t3.join(', '));
+  check('作業の行を押すとその作業のタブに戻り、上のタブの並びは変わらない', repoKeys.includes(await js('window.__terp.activeKey')) && t3.length === k2.length, t3.join(', '));
+  // ドラフトに無いリポジトリのタブは、表示している間だけ出す
+  const other = path.join(fs.realpathSync(outDir), 'files-other');
+  fs.mkdirSync(other, { recursive: true });
+  fs.writeFileSync(path.join(other, 'b.txt'), 'b\n');
+  execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: other });
+  await js(`window.__terp.addProject(${JSON.stringify(other)})`);
+  await js(`window.terp.updateConfig({ confirmDraftRemove: false })`);
+  const otherFile = `f:${path.join(other, 'b.txt')}`;
+  await js(`window.__terp.openFile(${JSON.stringify(path.join(other, 'b.txt'))})`);
+  await sleep(1500);
+  check('ドラフトの別のリポジトリのタブも上に並ぶ', (await js('window.__terp.visibleKeys()')).includes(otherFile));
+  await js(`document.querySelector('.project[data-path=${JSON.stringify(other)}] [data-action="draft"]').click()`);
+  for (let i = 0; i < 30 && (await js(`window.__terp.projects.find((p) => p.path === ${JSON.stringify(other)}).draft`)); i++) await sleep(100);
+  check('表示中なら、ドラフトから外したリポジトリのタブも出す', (await js('window.__terp.visibleKeys()')).includes(otherFile));
+  await js(`window.__terp.activateKey('t:${termId}')`);
+  await sleep(500);
+  check('ドラフトに無いリポジトリのタブは、表示していなければ出さない', !(await js('window.__terp.visibleKeys()')).includes(otherFile) && (await js('window.__terp.tabOrder')).includes(otherFile));
+  await js(`window.__terp.activateKey(${JSON.stringify(`f:${path.join(repo, 'src', 'a.js')}`)})`);
+  await sleep(500);
 
   // タブの × で閉じる
   const before = (await tabs()).length;
