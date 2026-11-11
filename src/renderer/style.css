@@ -8,6 +8,8 @@
   --color-text: #cdd6f4;
   --color-text-muted: #a6adc8;
   --color-accent: #89b4fa;
+  --color-accent-fill: 22%;
+  --color-accent-fill-row: 12%;
   --color-busy: #a6e3a1;
   --color-warning: #f9e2af;
   --color-danger: #f38ba8;
@@ -340,7 +342,7 @@ body[data-sidebar='hidden'] .topbar {
 .work__row[aria-current='true'] {
   color: var(--color-accent);
   font-weight: 600;
-  background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+  background: color-mix(in srgb, var(--color-accent) var(--color-accent-fill-row), transparent);
 }
 
 /* 表示中のターミナルを含むカードは、枠を強調色寄りにする。一覧を送っても開いているリポジトリが分かるように（2026-11-06 利用者の指示） */
@@ -448,7 +450,7 @@ body[data-sidebar='hidden'] .topbar {
 /* 表示中の行は、強調色の面と左端の線で示す。よく戻る行（線なし）と見分けるため（2026-11-06 利用者の指示） */
 .session[aria-current='true'],
 .subagent[aria-current='true'] {
-  background: color-mix(in srgb, var(--color-accent) 22%, transparent);
+  background: color-mix(in srgb, var(--color-accent) var(--color-accent-fill), transparent);
   box-shadow: inset 3px 0 0 var(--color-accent);
 }
 

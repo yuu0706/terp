@@ -73,3 +73,20 @@ test('地から十分離れた強調色は変えない', () => {
   assert.equal(config.chromeColors(dark, '#ff2bd6').accent, '#ff2bd6');
   assert.equal(config.chromeColors({ ...dark, background: '#ffffff', foreground: '#1a1a1a', appBackground: '#e6ecf5' }, '#1a1a1a').accent, '#1a1a1a');
 });
+
+test('鮮やかで地から離れた強調色なら、表示中の行の面は 22% のまま', () => {
+  const chrome = config.chromeColors(dark, '#ff2bd6');
+  assert.equal(chrome['accent-fill'], '22%');
+  assert.equal(chrome['accent-fill-row'], '12%');
+});
+
+test('地に近い強調色なら、表示中の行の面を濃くする', () => {
+  const chrome = config.chromeColors({ ...dark, background: '#d9b591', appBackground: '#ad9173', foreground: '#2d2006' }, '#60430e');
+  assert.ok(parseInt(chrome['accent-fill'], 10) > 22, chrome['accent-fill']);
+  assert.ok(parseInt(chrome['accent-fill-row'], 10) > 12, chrome['accent-fill-row']);
+});
+
+test('濃くしても地との差が届かなければ 40% で止める', () => {
+  assert.equal(config.accentFill('#cccccc', '#cccccc'), 40);
+  assert.equal(config.accentFill('rgba(0,0,0,0)', '#cccccc'), 22);
+});

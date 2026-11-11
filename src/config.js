@@ -177,6 +177,38 @@ function visibleAccent(accent, grounds) {
   return best;
 }
 
+// 色の見た目の差（OKLab の距離）。明るさと色みの両方の違いを1つの数で比べる
+function oklab(hex) {
+  const lin = (v) => (v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4);
+  const [r, g, b] = [1, 3, 5].map((i) => lin(parseInt(hex.slice(i, i + 2), 16) / 255));
+  const l = Math.cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b);
+  const m = Math.cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b);
+  const s = Math.cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b);
+  return [
+    0.2104542553 * l + 0.7936177850 * m - 0.0040720468 * s,
+    1.9779984951 * l - 2.4285922050 * m + 0.4505937099 * s,
+    0.0259040371 * l + 0.7827717662 * m - 0.8086757660 * s,
+  ];
+}
+
+function colorDistance(a, b) {
+  const [x, y] = [oklab(a), oklab(b)];
+  return Math.hypot(x[0] - y[0], x[1] - y[1], x[2] - y[2]);
+}
+
+// 表示中の行に敷く強調色の面の濃さ（%）。22% から始め、地との差が 0.12 に届くまで 40% を上限に濃くする。
+// 灰色に近い強調色や地に近い強調色は 22% では地に溶けるため、そのテーマだけ濃くする（2026-11-09 利用者の指示）
+const ACCENT_FILL_MIN = 22;
+const ACCENT_FILL_MAX = 40;
+const ACCENT_FILL_DISTANCE = 0.12;
+
+function accentFill(accent, ground) {
+  if (![accent, ground].every((c) => /^#[0-9a-f]{6}$/i.test(c || ''))) return ACCENT_FILL_MIN;
+  let fill = ACCENT_FILL_MIN;
+  while (fill < ACCENT_FILL_MAX && colorDistance(ground, mix(ground, accent, fill / 100)) < ACCENT_FILL_DISTANCE) fill++;
+  return fill;
+}
+
 // 端末の色から、左の一覧などアプリの枠の色を作る
 // アプリの背景色（appBackground）を決めていれば、地の色をそれにし、行の強調・枠・薄い文字もその色から作る。
 // 決めていなければ、ターミナルの背景色を少し暗くして地の色にする
@@ -186,6 +218,8 @@ function chromeColors(t, accent) {
   // 地の色と見分けにくければ、読める色に替える
   const text = readableOn(base, [t.foreground, t.background, '#000000', '#ffffff']);
   const bg = t.appBackground || mix(t.background, '#000000', 0.2);
+  const visible = visibleAccent(accent, [t.background, bg]);
+  const fill = accentFill(visible, bg);
   return {
     'term-bg': t.background,
     bg,
@@ -195,7 +229,10 @@ function chromeColors(t, accent) {
     border: mix(base, text, 0.22),
     text,
     'text-muted': mix(text, base, 0.35),
-    accent: visibleAccent(accent, [t.background, bg]),
+    accent: visible,
+    // 表示中のターミナルの行の面と、表示中の作業の行の面（行の面の 12/22 の濃さ）。画面には --color-accent-fill などで渡る
+    'accent-fill': `${fill}%`,
+    'accent-fill-row': `${Math.round(fill * 12 / 22)}%`,
     busy: t.palette[2],
     warning: t.palette[3],
     danger: t.palette[1],
@@ -478,4 +515,4 @@ function listThemes() {
   return [...names];
 }
 
-module.exports = { CONFIG_DIR, CONFIG_PATH, ensureConfigFile, loadConfig, watchConfig, parseGhosttyTheme, updateConfig, rawConfig, listThemes, getThemeColors, themeColors, applyColorOverrides, chromeColors, contrastRatio };
+module.exports = { CONFIG_DIR, CONFIG_PATH, ensureConfigFile, loadConfig, watchConfig, parseGhosttyTheme, updateConfig, rawConfig, listThemes, getThemeColors, themeColors, applyColorOverrides, chromeColors, contrastRatio, accentFill };
