@@ -408,6 +408,13 @@ function visibleKeys() {
   return order.flatMap((repo) => keys.filter(([, r]) => r === repo).map(([k]) => k));
 }
 
+// 表示中のタブでなくても上に並ぶタブ（表示中のワークスペースの、ドラフトのリポジトリかその他のもの）
+function draftTab(key) {
+  if (workspaceOfKey(key) !== activeWorkspace) return false;
+  const repo = repoOfKey(key);
+  return repo === LOOSE || repoDrafted(repo);
+}
+
 // 新しいターミナルやエージェントを開く場所: ファイルのタブならそのフォルダ、ターミナルならその作業場所
 function activeCwd() {
   if (activeKey?.startsWith('c:')) return commitViews.get(activeKey)?.top || null;
@@ -508,6 +515,7 @@ function tabLabel(key) {
   return key.split('/').pop();
 }
 
+let scrolledTabKey = null;
 function renderTabs(visible) {
   // 状態の印は 0.5 秒ごとに変わるため、タブの並びが同じなら中身だけ書き換える
   const same = tabsEl.children.length === visible.length && [...tabsEl.children].every((t, i) => t.dataset.key === visible[i]);
@@ -548,7 +556,11 @@ function renderTabs(visible) {
       renderStatus(tab, s, stateOf(s));
     }
   }
-  tabsEl.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  // 表示中のタブが替わったときだけ見える所へ送る。0.5 秒ごとの描き直しで送ると、横に送って見ている途中で引き戻されるため
+  if (activeKey !== scrolledTabKey) {
+    scrolledTabKey = activeKey;
+    tabsEl.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }
 }
 
 function renderPaneTitles() {
@@ -2679,7 +2691,11 @@ function dropTab(key, group = groupOf(key)) {
   const pane = paneList(layout).find((p) => p.key === key);
   if (pane) {
     const displayed = new Set(paneList(layout).map((p) => p.key));
-    const next = recent.find((k) => workspaceOfKey(k) === activeWorkspace && tabOrder.includes(k) && groupOf(k) === group && !displayed.has(k));
+    let next = recent.find((k) => workspaceOfKey(k) === activeWorkspace && tabOrder.includes(k) && groupOf(k) === group && !displayed.has(k));
+    // 最後の枠が空になるなら、上に並ぶほかのタブを出す。空にすると表示中のタブが無くなり、上のタブも消えるため
+    if (!next && paneList(layout).length === 1) {
+      next = recent.find((k) => tabOrder.includes(k) && draftTab(k)) || tabOrder.find(draftTab);
+    }
     if (next) layout = replacePane(layout, pane.id, next);
     else layout = closePane(layout, pane.id);
   }

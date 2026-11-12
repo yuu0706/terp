@@ -1087,6 +1087,27 @@ async function runFilesTest({ win, js, check, outDir }) {
   const off = await frequentMarks();
   check('設定で切ると印が消える', JSON.stringify(off) === JSON.stringify({ stayed: ['', ''], passed: ['', ''] }), JSON.stringify(off));
   await js(`window.terp.updateConfig({ frequentTabs: true })`);
+
+  // 上のタブを右の端まで送ったら、描き直しで表示中のタブへ引き戻さない
+  await js(`window.__terp.activateKey(window.__terp.visibleKeys()[0])`);
+  await sleep(600);
+  const scrolled = await js(`(() => { const el = document.getElementById('tabs'); el.scrollLeft = el.scrollWidth; return { left: el.scrollLeft, overflow: el.scrollWidth > el.clientWidth }; })()`);
+  await sleep(1600);
+  const after = await js(`document.getElementById('tabs').scrollLeft`);
+  check('右の端まで送った上のタブは、描き直しても動かない', scrolled.overflow && scrolled.left > 0 && after === scrolled.left, JSON.stringify({ ...scrolled, after }));
+
+  // その他のタブを全部閉じても、ドラフトのリポジトリのタブを出して上のタブを残す
+  const looseKeys = await js(`window.__terp.visibleKeys().filter((k) => k.startsWith('t:') && !window.__terp.workOf(Number(k.slice(2))))`);
+  await js(`window.__terp.activateKey(${JSON.stringify(looseKeys[0])})`);
+  await sleep(300);
+  for (const key of looseKeys) {
+    await js(`window.__terp.activateKey(${JSON.stringify(key)})`);
+    await js(`window.__terp.closeKey(${JSON.stringify(key)})`);
+    await sleep(600);
+  }
+  const left = { active: await js('window.__terp.activeKey'), tabs: await tabs(), empty: await js(`!document.getElementById('empty').hidden`) };
+  check('その他のタブを全部閉じても、ドラフトのリポジトリのタブを出して上のタブを残す',
+    looseKeys.length >= 2 && Boolean(left.active) && !looseKeys.includes(left.active) && left.tabs.length > 0 && !left.empty, JSON.stringify({ looseKeys, ...left }));
 }
 
 // 合成イベントでも本物と同じ境目の処理を通し、端末の fit まで待って確かめる。
