@@ -4,19 +4,25 @@
   --color-bg: #181825;
   --color-bg-hover: #26263a;
   --color-bg-active: #313244;
-  --color-border: #313244;
+  --color-border: #45465a;
   --color-text: #cdd6f4;
   --color-text-muted: #a6adc8;
   --color-accent: #89b4fa;
+  --color-accent-fill: 22%;
+  --color-accent-fill-row: 12%;
   --color-busy: #a6e3a1;
   --color-warning: #f9e2af;
+  --color-danger: #f38ba8;
   /* 透過を付けた面の色。app.js が設定の不透明度から作る */
   --surface-term: var(--color-term-bg);
   --surface-sidebar: var(--color-bg);
 
   --sidebar-width: 248px;
+  --panel-width: 320px;
+  --font-mono: Menlo, monospace;
+  --diff-font-size: 13px;
   --titlebar-height: 40px;
-  --row-h: 48px;
+  --row-h: 40px;
   --control-h: 28px;
   --control-h-lg: 40px;
   --space-1: 4px;
@@ -24,6 +30,16 @@
   --space-3: 12px;
   --text-sm: 12px;
   --text-md: 14px;
+  --text-lg: 18px;
+  /* 強調色の面は単色にせず、明るさと色相をわずかにずらしたぼかしにする（2026-10-26 利用者の指示）。
+     ずらしは小さく保ち、強調色に合わせて決めた文字の色（--draft-text など）の見やすさを崩さない */
+  --window-alpha: 1;
+  --gradient-accent: linear-gradient(135deg,
+    oklch(from var(--color-accent) calc(l + 0.04) c calc(h - 12)),
+    oklch(from var(--color-accent) calc(l - 0.04) c calc(h + 18)));
+  --gradient-draft: linear-gradient(90deg,
+    oklch(from var(--color-accent) calc(l + 0.03) c calc(h - 12) / var(--window-alpha)),
+    oklch(from var(--color-accent) calc(l - 0.03) c calc(h + 18) / var(--window-alpha)));
   --radius: 6px;
   --icon-sm: 16px;
   --term-padding-x: 10px;
@@ -45,8 +61,26 @@ body {
   display: flex;
 }
 
+/* 全画面のときに窓の後ろへ敷く壁紙。透過していないときは上の面に隠れて見えない。
+   ぼかしは窓のぼかしと同じ半径。縁がぼけて透けないよう少し大きく敷く */
+#wallpaper {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background: center / cover no-repeat;
+  filter: blur(var(--window-blur, 0px));
+  transform: scale(1.06);
+}
+
+#wallpaper[hidden] {
+  display: none;
+}
+
 /* ---- 左の一覧 ---- */
 #sidebar {
+  position: relative;
+  container: sidebar / inline-size;
   width: var(--sidebar-width);
   flex: none;
   display: flex;
@@ -54,6 +88,48 @@ body {
   background: var(--surface-sidebar);
   border-right: 1px solid var(--color-border);
   user-select: none;
+}
+
+/* 左の一覧の右端をドラッグして幅を変える。つかむ所は線の左右に少し広げる */
+#sidebar-resize {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: -3px;
+  width: 6px;
+  z-index: 5;
+  cursor: col-resize;
+  -webkit-app-region: no-drag;
+}
+
+#sidebar-resize:hover,
+#sidebar-resize:focus-visible,
+body[data-sidebar-resizing] #sidebar-resize {
+  background: linear-gradient(to right, transparent 2px, var(--color-accent) 2px, var(--color-accent) 4px, transparent 4px);
+  outline: none;
+}
+
+body[data-sidebar-resizing] {
+  cursor: col-resize;
+  user-select: none;
+}
+
+/* 左の一覧を隠したら、上の帯の左端に出すボタンを置く。信号機ボタンの分だけ空ける */
+body[data-sidebar='hidden'] #sidebar {
+  display: none;
+}
+
+body[data-sidebar='hidden'] .topbar {
+  padding-left: 80px;
+}
+
+#sidebar-show {
+  flex: none;
+  -webkit-app-region: no-drag;
+}
+
+#sidebar-show[hidden] {
+  display: none;
 }
 
 /* 設定の誤りは、直すまで一覧の下に出し続ける */
@@ -78,14 +154,14 @@ body {
   flex: none;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 0 var(--space-3) 0 80px;
+  justify-content: flex-end;
+  padding: 0 var(--space-2) 0 80px;
   -webkit-app-region: drag;
 }
 
-.sidebar__title {
-  font-size: var(--text-sm);
-  color: var(--color-text-muted);
+.sidebar__actions {
+  display: flex;
+  gap: var(--space-1);
 }
 
 .btn {
@@ -111,8 +187,18 @@ body {
 /* 端末の入力欄は画面の下にあるため、新規作成も下に置いて視線の移動を減らす */
 .sidebar__foot {
   flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
   padding: var(--space-2);
   border-top: 1px solid var(--color-border);
+}
+
+.btn--block-sm {
+  width: 100%;
+  height: 32px;
+  padding: 0 var(--space-3);
+  font-size: var(--text-md);
 }
 
 .btn--block {
@@ -130,13 +216,13 @@ body {
 }
 
 .btn--primary {
-  background: var(--color-accent);
+  background: var(--gradient-accent);
   border-color: var(--color-accent);
   color: var(--color-bg);
 }
 
 .btn--primary:hover {
-  background: var(--color-accent);
+  background: var(--gradient-accent);
   filter: brightness(1.08);
 }
 
@@ -149,23 +235,210 @@ body {
   stroke-linecap: round;
 }
 
+/* ---- 一覧: リポジトリ > 作業（worktree） > ターミナル ---- */
+.tree {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  position: relative;
+  padding: 0 var(--space-2) var(--space-2);
+}
+
+.tree__empty {
+  padding: var(--space-3) var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+.tree__empty p {
+  margin: 0 0 var(--space-2);
+}
+
+.tree__empty[hidden],
+.project[hidden] {
+  display: none;
+}
+
+/* リポジトリごと（その他のターミナルも）を角の丸い枠のカードで囲み、カードの間の隙間で分ける（2026-10-28 利用者の指示。
+   以前の強調色の境目の線はやめた）。「すべて」のカードは見出しだけで、ドラフト済みは見出しの背景をぼかしにする */
+/* 縦の余白は詰める。カードが縦に長く、一覧に入るリポジトリが少なかった（2026-10-29 利用者の指示） */
+#tree .project:not([hidden]) {
+  margin: 0 0 6px;
+  padding: 2px var(--space-1);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--color-bg-hover) 55%, transparent);
+}
+
+/* ドラフトの見出しは押すと畳む・開く。載せたら明るくして、押せることを示す（印は付けない） */
+#sidebar[data-view='draft'] #projects .project__head {
+  border-radius: calc(var(--radius) - 2px);
+  cursor: pointer;
+}
+
+#sidebar[data-view='draft'] #projects .project__head:hover {
+  background: color-mix(in srgb, var(--color-text) 10%, transparent);
+  color: var(--color-text);
+}
+
+/* ターミナルの行を作業やカードの見出しに載せている間、落とす先を強調色の枠で示す */
+:is(.work, .project__head)[data-drop-terminal] {
+  border-radius: calc(var(--radius) - 2px);
+  outline: 2px solid var(--color-accent);
+  outline-offset: -2px;
+}
+
+#sidebar[data-view='draft'] .project[data-collapsed='true'] > :not(.project__head) {
+  display: none;
+}
+
+#sidebar[data-view='all'] #tree .project:not([hidden]) {
+  padding: 0;
+  overflow: hidden;
+}
+
+.project__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  height: 24px;
+  padding: 0 var(--space-1) 0 var(--space-2);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--color-text-muted);
+}
+
+.project__name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.project__error {
+  margin: 0 var(--space-2) var(--space-1);
+  font-size: var(--text-sm);
+  color: var(--color-warning);
+  overflow-wrap: anywhere;
+}
+
+.work__row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: 26px;
+  padding: 0 var(--space-1) 0 var(--space-2);
+  border-radius: var(--radius);
+  font-size: var(--text-md);
+  cursor: pointer;
+  outline-offset: -2px;
+}
+
+.work__row:hover {
+  background: var(--color-bg-hover);
+}
+
+.work__row[aria-current='true'] {
+  color: var(--color-accent);
+  font-weight: 600;
+  background: color-mix(in srgb, var(--color-accent) var(--color-accent-fill-row), transparent);
+}
+
+/* 表示中のターミナルを含むカードは、枠を強調色寄りにする。一覧を送っても開いているリポジトリが分かるように（2026-11-06 利用者の指示） */
+#tree .project:not([hidden]):has(:is(.session, .subagent)[aria-current='true']) {
+  border-color: color-mix(in srgb, var(--color-accent) 50%, var(--color-border));
+}
+
+.work__row .icon {
+  flex: none;
+  color: var(--color-text-muted);
+}
+
+.work__row[aria-current='true'] .icon {
+  color: var(--color-accent);
+}
+
+.work__name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.work__tag,
+.badge {
+  flex: none;
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: var(--text-sm);
+  line-height: 18px;
+}
+
+.work__tag {
+  color: var(--color-text-muted);
+  border: 1px solid var(--color-border);
+}
+
+.badge {
+  color: var(--color-bg);
+  background: var(--color-warning);
+  font-variant-numeric: tabular-nums;
+}
+
+.icon-btn {
+  -webkit-app-region: no-drag;
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+}
+
+.icon-btn:hover {
+  background: var(--color-bg-active);
+  color: var(--color-text);
+}
+
+/* 消す・外すのボタンは、行にマウスを載せたときとキーボードで選んだときだけ出す */
+.icon-btn--hover {
+  visibility: hidden;
+}
+
+.project__head:hover .icon-btn--hover,
+.work__row:hover .icon-btn--hover,
+.icon-btn--hover:focus-visible {
+  visibility: visible;
+}
+
 .session-list {
   list-style: none;
   margin: 0;
-  padding: 0 var(--space-2) var(--space-2);
-  overflow-y: auto;
-  flex: 1;
+  padding: 0;
+}
+
+/* 作業の下のターミナルは1段下げる */
+.work .session {
+  margin-left: var(--space-3);
 }
 
 .session {
   position: relative;
   display: grid;
-  grid-template-columns: 10px 1fr auto;
+  /* 右の2列は、1行目がキーの番号、2行目が閉じる */
+  grid-template-columns: 10px 1fr auto auto;
   grid-template-rows: auto auto;
   column-gap: var(--space-2);
   align-items: center;
   min-height: var(--row-h);
-  padding: var(--space-1) var(--space-2);
+  padding: 2px var(--space-2);
   border-radius: var(--radius);
   cursor: pointer;
 }
@@ -174,8 +447,22 @@ body {
   background: var(--color-bg-hover);
 }
 
-.session[aria-current='true'] {
-  background: var(--color-bg-active);
+/* 表示中の行は、強調色の面と左端の線で示す。よく戻る行（線なし）と見分けるため（2026-11-06 利用者の指示） */
+.session[aria-current='true'],
+.subagent[aria-current='true'] {
+  background: color-mix(in srgb, var(--color-accent) var(--color-accent-fill), transparent);
+  box-shadow: inset 3px 0 0 var(--color-accent);
+}
+
+/* よく戻るタブ（左の行と上のタブ）。表示中・載せたときの色はこの上に重ねる */
+.session[data-frequent='1']:not([aria-current='true']):not(:hover),
+.tab[data-frequent='1']:not([aria-selected='true']):not(:hover) {
+  background: color-mix(in srgb, var(--color-accent) 8%, transparent);
+}
+
+.session[data-frequent='2']:not([aria-current='true']):not(:hover),
+.tab[data-frequent='2']:not([aria-selected='true']):not(:hover) {
+  background: color-mix(in srgb, var(--color-accent) 14%, transparent);
 }
 
 /* 状態の印。出力中・未読・通知を色と形で分ける */
@@ -189,19 +476,19 @@ body {
   opacity: 0.6;
 }
 
-.session[data-state='busy'] .session__dot {
+:is(.session, .overview__tile, .pane__title)[data-state='busy'] .session__dot {
   background: var(--color-busy);
   border-color: var(--color-busy);
   opacity: 1;
 }
 
-.session[data-state='unread'] .session__dot {
+:is(.session, .overview__tile, .pane__title)[data-state='unread'] .session__dot {
   background: var(--color-accent);
   border-color: var(--color-accent);
   opacity: 1;
 }
 
-.session[data-state='notify'] .session__dot {
+:is(.session, .overview__tile, .pane__title)[data-state='notify'] .session__dot {
   background: var(--color-warning);
   border-color: var(--color-warning);
   opacity: 1;
@@ -217,25 +504,255 @@ body {
 
 .session__name {
   grid-column: 2;
+  grid-row: 1;
   font-size: var(--text-md);
 }
 
-.session__sub {
+/* 動いているエージェントのアイコン。名前と同じ升の左端に重ね、名前はその分だけ右へずらす */
+.session__agent {
+  grid-column: 2;
+  grid-row: 1;
+  display: flex;
+  align-items: center;
+  justify-self: start;
+  pointer-events: none;
+}
+
+.session__agent:empty { display: none; }
+.session__agent .agent-icon { width: 14px; height: 14px; }
+.session__terminal-icon { color: var(--color-text-muted); }
+.session[data-agent-icon] :is(.session__name, .session__rename) { padding-left: 20px; }
+
+.session__line2 {
   grid-column: 2;
   grid-row: 2;
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+/* 確認を飛ばして起動したターミナルの印。無防備なものを一目で見分けられるようにする */
+.session__bypass {
+  flex: none;
+  padding: 0 5px;
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--color-bg);
+  background: var(--color-danger);
+}
+
+.session__bypass[hidden] {
+  display: none;
+}
+
+/* 同じファイルを、ほかのエージェントも書き換えた印 */
+.session__clash {
+  flex: none;
+  padding: 0 5px;
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--color-bg);
+  background: var(--history-yellow);
+}
+
+.session__clash[hidden] {
+  display: none;
+}
+
+.session__sub {
+  flex: 1;
   font-size: var(--text-sm);
   color: var(--color-text-muted);
 }
 
 .session__key {
-  grid-column: 3;
+  grid-column: 3 / 5;
+  justify-self: end;
   grid-row: 1;
   font-size: var(--text-sm);
   color: var(--color-text-muted);
 }
 
-.session__close {
+/* サブエージェントは、親のターミナルからさらに1段下げる */
+.subagents {
+  margin-left: var(--space-3);
+}
+
+.work .subagents {
+  margin-left: calc(var(--space-3) * 2);
+}
+
+.subagents[hidden] {
+  display: none;
+}
+
+.subagent {
+  display: grid;
+  grid-template-columns: var(--space-2) minmax(0, 1fr) auto;
+  grid-template-rows: auto auto;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+  width: 100%;
+  min-height: var(--row-h);
+  box-sizing: border-box;
+  padding: var(--space-1) var(--space-2);
+  border: 0;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--color-text);
+  text-align: left;
+  font: inherit;
+  font-size: var(--text-sm);
+}
+
+button.subagent {
+  cursor: pointer;
+}
+
+button.subagent:hover,
+.subagents__finished:hover {
+  background: var(--color-bg-hover);
+}
+
+.subagent__dot {
+  background: var(--color-busy);
+  border-color: var(--color-busy);
+  opacity: 0.3;
+}
+
+.subagent[data-running='true'] .subagent__dot {
+  opacity: 1;
+}
+
+.subagent__name,
+.subagent__action {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.subagent__name {
+  grid-column: 2;
+}
+
+.subagent__time {
   grid-column: 3;
+  white-space: nowrap;
+  color: var(--color-text-muted);
+}
+
+.subagent__action {
+  grid-column: 2 / 4;
+  grid-row: 2;
+  color: var(--color-text-muted);
+}
+
+.subagents__finished {
+  width: 100%;
+  padding: var(--space-1) var(--space-2);
+  border: 0;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--color-text-muted);
+  text-align: left;
+  font: inherit;
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+
+/* 記録は端末やファイルと同じ面で開く。右の面の開閉にも幅を合わせる */
+.subagent-view {
+  position: absolute;
+  inset: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.subagent-view[hidden] {
+  display: none;
+}
+
+.subagent-view__head {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.subagent-view__title {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: var(--text-md);
+  font-weight: 600;
+}
+
+.subagent-view__meta,
+.subagent-view__notice {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+.subagent-view__notice {
+  flex: none;
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+}
+
+.subagent-view__notice:empty {
+  display: none;
+}
+
+.subagent-view__body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: var(--space-2) var(--space-3);
+  user-select: text;
+}
+
+.subagent-view__entry {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr);
+  align-items: baseline;
+  gap: var(--space-2);
+  padding: var(--space-2) 0;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.subagent-view__entry time,
+.subagent-view__kind {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  white-space: nowrap;
+}
+
+.subagent-view__text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+.subagent-view__entry[data-type='tool'] .subagent-view__text {
+  font-family: var(--font-mono);
+}
+
+.subagent-view__entry[data-type='result'] .subagent-view__text {
+  color: var(--color-text-muted);
+}
+
+.session__close {
+  grid-column: 4;
   grid-row: 2;
   display: grid;
   place-items: center;
@@ -262,6 +779,7 @@ body {
 
 .session__rename {
   grid-column: 2;
+  grid-row: 1;
   font: inherit;
   font-size: var(--text-md);
   color: var(--color-text);
@@ -281,24 +799,211 @@ body {
   padding-top: var(--titlebar-height);
 }
 
-/* 端末の上の帯もウィンドウをつかめるようにする */
-#terminals::before {
-  content: '';
+/* 端末の上の帯。ウィンドウをつかめるようにし、右端に「変更」の面を開くボタンを置く */
+.topbar {
   position: absolute;
   top: 0;
   left: 0;
   right: 0;
   height: var(--titlebar-height);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 0 var(--space-2);
   -webkit-app-region: drag;
+}
+
+/* 右の面を開いている間は、面の上の切り替えと重なるため隠す（2026-10-29 利用者の指摘） */
+.topbar__actions[hidden] { display: none; }
+
+.topbar__actions {
+  flex: none;
+  display: flex;
+  gap: var(--space-1);
+}
+
+/* ---- 上のタブ（表示中の作業のターミナルとファイル） ---- */
+.tabs {
+  flex: 0 1 auto;
+  min-width: 0;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.tab {
+  -webkit-app-region: no-drag;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  max-width: 220px;
+  height: 32px;
+  padding: 0 var(--space-1) 0 var(--space-3);
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  color: var(--color-text-muted);
+  font-size: var(--text-md);
+  cursor: pointer;
+  user-select: none;
+}
+
+.tab[data-group-start] {
+  margin-left: var(--space-3);
+}
+
+.tab:hover {
+  background: var(--color-bg-hover);
+}
+
+.tab[aria-selected='true'] {
+  color: var(--color-text);
+  background: var(--color-bg-active);
+  border-color: var(--color-border);
+}
+
+.tab .icon {
+  flex: none;
+  width: 14px;
+  height: 14px;
+}
+
+.tab__name {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.tab__close {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  visibility: hidden;
+}
+
+.tab:hover .tab__close,
+.tab[aria-selected='true'] .tab__close,
+.tab__close:focus-visible {
+  visibility: visible;
+}
+
+.tab__close:hover {
+  background: var(--color-bg-hover);
+  color: var(--color-text);
+}
+
+/* 状態の印は一覧の行と同じ色の決まりを使う */
+.tab__dot {
+  flex: none;
+}
+
+.tab[data-state='busy'] .tab__dot {
+  background: var(--color-busy);
+  border-color: var(--color-busy);
+  opacity: 1;
+}
+
+.tab[data-state='unread'] .tab__dot {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  opacity: 1;
+}
+
+.tab[data-state='notify'] .tab__dot {
+  background: var(--color-warning);
+  border-color: var(--color-warning);
+  opacity: 1;
+}
+
+/* エージェントの印は一覧・タブ・作業の行・枠の帯で共通にする。 */
+:is(.session, .tab, .work__status, .overview__tile, .pane__title, .tabs__more, .tabs__more-state, .permission-card)[data-agent-state] .session__dot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: var(--space-3);
+  height: var(--space-3);
+  background: transparent;
+  border: 1.5px solid var(--color-text-muted);
+  opacity: 0.6;
+  font-size: var(--text-sm);
+  font-weight: 700;
+  line-height: 1;
+}
+
+:is(.session, .tab, .work__status, .overview__tile, .pane__title, .tabs__more, .tabs__more-state, .permission-card)[data-agent-state='working'] .session__dot {
+  border-color: var(--color-accent);
+  border-right-color: transparent;
+  opacity: 1;
+  animation: agent-spin 1s linear infinite;
+}
+
+:is(.session, .tab, .work__status, .overview__tile, .pane__title, .tabs__more, .tabs__more-state, .permission-card)[data-agent-state='waiting'] .session__dot {
+  background: var(--history-yellow);
+  border-color: var(--history-yellow);
+  color: var(--color-bg);
+  opacity: 1;
+}
+
+:is(.session, .tab, .work__status, .overview__tile, .pane__title, .tabs__more, .tabs__more-state, .permission-card)[data-agent-state='done'] .session__dot {
+  background: var(--history-green);
+  border-color: var(--history-green);
+  opacity: 1;
+}
+
+.work__status {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  flex: none;
+  min-height: var(--control-h);
+  padding: 0 var(--space-1);
+  border: 0;
+  border-radius: var(--radius);
+  background: transparent;
+  font: inherit;
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+
+.work__status[hidden] { display: none; }
+.work__status:hover { background: var(--color-bg-active); }
+.work__status[data-agent-state='working'] { color: var(--color-accent); }
+.work__status[data-agent-state='waiting'] { color: var(--history-yellow); }
+.work__status[data-agent-state='done'] { color: var(--history-green); }
+
+@keyframes agent-spin { to { transform: rotate(360deg); } }
+@keyframes agent-pulse { 50% { opacity: 0.4; } }
+@media (prefers-reduced-motion: reduce) {
+  :is(.session, .tab, .work__status, .overview__tile, .pane__title, .tabs__more, .tabs__more-state, .permission-card)[data-agent-state='working'] .session__dot {
+    animation: agent-pulse 2s ease-in-out infinite;
+  }
+}
+
+.topbar__btn[aria-pressed='true'] {
+  background: var(--color-bg-active);
 }
 
 .term {
   position: absolute;
-  top: var(--titlebar-height);
-  left: 0;
-  right: 0;
-  bottom: 0;
-  padding: 0 var(--term-padding-x) var(--term-padding-y);
+  inset: 0;
+  padding: var(--term-padding-y) var(--term-padding-x);
 }
 
 .term[hidden],
@@ -322,3 +1027,2792 @@ body {
 .term .xterm .xterm-viewport {
   background-color: transparent;
 }
+
+/* ---- 作業の作成・削除の画面 ---- */
+.btn--danger {
+  border-color: var(--color-danger);
+  color: var(--color-danger);
+}
+
+.btn--danger:hover {
+  background: var(--color-danger);
+  color: var(--color-bg);
+}
+
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.dialog {
+  width: min(440px, calc(100vw - 32px));
+  padding: 0;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  background: var(--color-bg);
+  color: var(--color-text);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+}
+
+.dialog::backdrop {
+  background: rgba(0, 0, 0, 0.45);
+}
+
+.dialog__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: 20px;
+}
+
+.dialog__title {
+  margin: 0;
+  font-size: 16px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.field__label {
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+.input {
+  height: 32px;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-term-bg);
+  color: var(--color-text);
+  font: inherit;
+}
+
+.input:focus {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -1px;
+}
+
+.dialog__facts {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--space-1) var(--space-3);
+  margin: 0;
+  font-size: var(--text-md);
+}
+
+.dialog__facts dt {
+  color: var(--color-text-muted);
+}
+
+.dialog__facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.dialog__note {
+  margin: 0;
+  font-size: var(--text-md);
+}
+
+.dialog__check {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-md);
+  cursor: pointer;
+}
+
+.dialog__note[data-tone='warning'],
+.dialog__error {
+  margin: 0;
+  color: var(--color-warning);
+  overflow-wrap: anywhere;
+}
+
+.dialog__error[hidden] {
+  display: none;
+}
+
+.dialog__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  margin-top: var(--space-1);
+}
+
+.ghostty-import {
+  max-height: calc(100vh - var(--space-3) * 2);
+  overflow: hidden;
+}
+
+.ghostty-import .dialog__body {
+  max-height: calc(100vh - var(--space-3) * 6);
+}
+
+.ghostty-import__detail {
+  overflow: auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  overflow-wrap: anywhere;
+}
+
+.ghostty-import__detail > * {
+  flex-shrink: 0;
+}
+
+/* ---- 右の「変更」の面 ---- */
+.panel {
+  width: var(--panel-width);
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface-sidebar);
+  border-left: 1px solid var(--color-border);
+  min-height: 0;
+}
+
+.panel[hidden] {
+  display: none;
+}
+
+.panel__head {
+  height: var(--titlebar-height);
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 0 var(--space-2) 0 var(--space-3);
+  -webkit-app-region: drag;
+}
+
+.panel__head .icon-btn {
+  -webkit-app-region: no-drag;
+}
+
+.panel__title {
+  flex: 1;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--color-text-muted);
+}
+
+.panel__empty {
+  margin: 0;
+  padding: var(--space-3);
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+.panel__empty[hidden],
+.panel__content[hidden],
+.git__group[hidden],
+.git__note[hidden],
+.git__result[hidden],
+.diff[hidden],
+.badge[hidden] {
+  display: none;
+}
+
+.panel__content {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.git__branch {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 0 var(--space-3);
+  font-size: var(--text-md);
+}
+
+.git__branch-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.git__ab {
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.git__sync {
+  display: flex;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3) 0;
+}
+
+.history__title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.history__title .history__work { flex: 1; }
+
+/* 読み直すボタンは git の操作と並べる。右の面の切り替えの隣だと、git の機能でないものと混ざって見える（2026-10-29 利用者の指摘） */
+.git__sync .icon-btn { flex: none; align-self: center; }
+
+.git__sync .btn {
+  flex: 1;
+  justify-content: center;
+}
+
+.git__note {
+  margin: var(--space-1) var(--space-3) 0;
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+  overflow-wrap: anywhere;
+}
+
+.git__lists {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  position: relative;
+  margin-top: var(--space-2);
+  padding: 0 var(--space-2);
+  border-top: 1px solid var(--color-border);
+}
+
+.git__group-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: 32px;
+  padding: 0 var(--space-1);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--color-text-muted);
+}
+
+.git__count {
+  flex: 1;
+  font-weight: 400;
+}
+
+.btn--xs {
+  height: 22px;
+  padding: 0 var(--space-2);
+  font-size: var(--text-sm);
+}
+
+.git__files {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.git__file {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: 28px;
+  padding: 0 var(--space-1);
+  border-radius: var(--radius);
+  font-size: var(--text-md);
+  cursor: pointer;
+}
+
+.git__file:hover {
+  background: var(--color-bg-hover);
+}
+
+.git__file[aria-current='true'] {
+  background: var(--color-bg-active);
+}
+
+/* 状態の文字。M 変更・A 追加・D 削除・R 名前の変更・? 追跡外・U 競合 */
+.git__code {
+  flex: none;
+  width: 14px;
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: var(--text-sm);
+  text-align: center;
+  color: var(--color-warning);
+}
+
+.git__code[data-code='A'],
+.git__code[data-code='?'] {
+  color: var(--color-busy);
+}
+
+.git__code[data-code='D'],
+.git__code[data-code='U'] {
+  color: var(--color-danger);
+}
+
+.git__path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  direction: rtl;
+  text-align: left;
+}
+
+.git__file .icon-btn {
+  visibility: hidden;
+}
+
+.git__file:hover .icon-btn,
+.git__file .icon-btn:focus-visible {
+  visibility: visible;
+}
+
+/* コミットメッセージの上の、引き出して見る履歴 */
+.git__log {
+  flex: none;
+  border-top: 1px solid var(--color-border);
+}
+
+.git__log-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-3);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+
+.git__log-head::-webkit-details-marker { display: none; }
+
+.git__log-head:hover { color: var(--color-text); }
+
+.git__log-chevron {
+  width: 12px;
+  height: 12px;
+  transition: transform 120ms ease;
+}
+
+.git__log[open] .git__log-chevron { transform: rotate(90deg); }
+
+.git__log-list {
+  max-height: min(240px, 30vh);
+  overflow-y: auto;
+  margin: 0;
+  padding: 0 var(--space-2) var(--space-1);
+  list-style: none;
+}
+
+.git__log-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: 26px;
+  padding: 0 var(--space-1);
+  border-radius: var(--radius);
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+
+.git__log-row:hover,
+.git__log-row:focus-visible { background: var(--color-bg-hover); outline: none; }
+
+.git__log-subject {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.git__log-meta {
+  flex: none;
+  color: var(--color-text-muted);
+}
+
+.git__log-row[data-unpushed='true'] .git__log-meta { color: var(--color-warning); }
+
+.git__log .git__note {
+  margin: 0;
+  padding: 0 var(--space-3) var(--space-2);
+}
+
+.git__commit {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3) var(--space-3);
+  border-top: 1px solid var(--color-border);
+}
+
+.git__commit .git__note {
+  margin: 0;
+}
+
+.git__message {
+  height: auto;
+  min-height: 64px;
+  padding: var(--space-2);
+  resize: vertical;
+  font-size: var(--text-md);
+  line-height: 1.4;
+}
+
+.git__result {
+  flex: none;
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  max-height: 120px;
+  overflow-y: auto;
+  border-top: 1px solid var(--color-border);
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: var(--text-sm);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.git__result[data-tone='error'] {
+  color: var(--color-warning);
+}
+
+/* ---- 差分 ---- */
+.diff {
+  position: absolute;
+  top: var(--titlebar-height);
+  left: var(--space-2);
+  right: var(--space-2);
+  bottom: var(--space-2);
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-term-bg);
+}
+
+.diff__head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: 36px;
+  padding: 0 var(--space-2) 0 var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.diff__title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: var(--text-md);
+}
+
+.diff__body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  position: relative;
+  font-family: var(--font-mono);
+  font-size: var(--diff-font-size);
+  line-height: 1.5;
+}
+
+.diff__table {
+  border-collapse: collapse;
+  min-width: 100%;
+}
+
+.diff__table td {
+  padding: 0 var(--space-2);
+  white-space: pre;
+  vertical-align: top;
+}
+
+.diff__num {
+  width: 1%;
+  text-align: right;
+  color: var(--color-text-muted);
+  opacity: 0.7;
+  user-select: none;
+}
+
+.diff__row--add {
+  background: color-mix(in srgb, var(--color-busy) 16%, transparent);
+}
+
+.diff__row--del {
+  background: color-mix(in srgb, var(--color-danger) 16%, transparent);
+}
+
+.diff__row--hunk td {
+  color: var(--color-accent);
+  background: var(--color-bg);
+}
+
+.diff__notice {
+  margin: 0;
+  padding: var(--space-3);
+  color: var(--color-text-muted);
+}
+
+/* ---- AI エージェントの起動のボタン（新しいターミナルの上） ----
+   アイコンだけを1列に並べ、名前は載せたときの title で出す。名前付きの2列は場所を取りすぎた（2026-10-29 利用者の指示） */
+.agents {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+
+.agents[hidden] {
+  display: none;
+}
+
+.btn--agent {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  justify-content: center;
+}
+
+/* 確認なしで起動するボタンは、縁を危険の色にして普段と見分ける */
+.btn--agent[data-bypass='true'] {
+  border-color: color-mix(in srgb, var(--color-danger) 60%, var(--color-border));
+}
+
+/* ---- 右の面の切り替え ---- */
+.segmented {
+  -webkit-app-region: no-drag;
+  flex: 1;
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+}
+
+.segmented__btn {
+  flex: 1;
+  height: 24px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--color-text-muted);
+  font: inherit;
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+
+.segmented__btn[aria-selected='true'] {
+  background: var(--color-bg-active);
+  color: var(--color-text);
+}
+
+.panel__section {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.panel__section[hidden] {
+  display: none;
+}
+
+/* ---- ファイルの木 ---- */
+.files__root {
+  flex: none;
+  padding: var(--space-1) var(--space-3);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--color-text-muted);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.files__tree {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  position: relative;
+  list-style: none;
+  margin: 0;
+  padding: 0 var(--space-2) var(--space-2);
+}
+
+.files__item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding-left: calc(var(--space-1) + var(--depth) * 14px);
+  padding-right: var(--space-1);
+  border-radius: var(--radius);
+  font-size: var(--text-md);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.files__item:hover {
+  background: var(--color-bg-hover);
+}
+
+.files__item[aria-current='true'] {
+  background: var(--color-bg-active);
+  color: var(--color-accent);
+}
+
+.files__item .icon {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  color: var(--color-text-muted);
+}
+
+.files__chevron {
+  transition: transform 120ms ease;
+}
+
+.files__item[aria-expanded='true'] .files__chevron {
+  transform: rotate(90deg);
+}
+
+.files__spacer {
+  flex: none;
+  width: 14px;
+}
+
+.files__name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* git の変更の色。「変更」の面の記号と同じ色にし、親のフォルダにも中の変更の色を付ける */
+.files__item[data-change='modified'] { --change-color: var(--color-warning); }
+.files__item[data-change='added'] { --change-color: var(--color-busy); }
+.files__item[data-change='deleted'],
+.files__item[data-change='conflict'] { --change-color: var(--color-danger); }
+
+.files__item[data-change] .files__name {
+  color: var(--change-color);
+}
+
+.files__change {
+  flex: none;
+  margin-left: auto;
+  padding-left: var(--space-2);
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: var(--text-sm);
+  color: var(--change-color);
+}
+
+.files__change:empty::before {
+  content: '';
+  display: block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--change-color);
+}
+
+/* ---- タブで開いたファイル ---- */
+.fileview {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  /* 背景は端末と同じ奥の面で塗り、Monaco の透過を保つ */
+  background: transparent;
+}
+
+.fileview[hidden] {
+  display: none;
+}
+
+.fileview__head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: 36px;
+  padding: 0 var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.fileview__title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: var(--text-md);
+}
+
+.fileview__meta {
+  flex: none;
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+.fileview__body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  position: relative;
+  outline: none;
+}
+
+.fileview__editor {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+
+.fileview__editor[hidden] { display: none; }
+
+.fileview__preview-toggle[aria-pressed='true'] {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+
+/* Markdown のプレビュー。読みやすい行の長さに抑え、テーマの色で描く */
+.fileview__preview {
+  position: absolute;
+  inset: 0;
+  overflow: auto;
+  padding: calc(var(--space-3) * 2) calc(var(--space-3) * 3);
+  outline: none;
+  color: var(--color-text);
+  font-size: var(--text-md);
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+
+.fileview__preview[hidden] { display: none; }
+.fileview__preview > * { max-width: 860px; }
+.markdown-body > :first-child { margin-top: 0; }
+
+.markdown-body :is(h1, h2, h3, h4, h5, h6) {
+  margin: 1.6em 0 0.6em;
+  line-height: 1.3;
+  font-weight: 600;
+  scroll-margin-top: var(--space-3);
+}
+
+.markdown-body h1 { font-size: 1.8em; padding-bottom: 0.3em; border-bottom: 1px solid var(--color-border); }
+.markdown-body h2 { font-size: 1.4em; padding-bottom: 0.3em; border-bottom: 1px solid var(--color-border); }
+.markdown-body h3 { font-size: 1.2em; }
+.markdown-body h4 { font-size: 1em; }
+.markdown-body :is(h5, h6) { font-size: 0.9em; color: var(--color-text-muted); }
+.markdown-body :is(p, ul, ol, blockquote, pre, table) { margin: 0 0 1em; }
+.markdown-body :is(ul, ol) { padding-left: 1.8em; }
+.markdown-body li + li { margin-top: 0.2em; }
+.markdown-body li > :is(ul, ol) { margin: 0.2em 0 0; }
+.markdown-body a { color: var(--color-accent); text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+
+.markdown-body code {
+  padding: 0.1em 0.35em;
+  border-radius: 4px;
+  background: var(--color-bg-active);
+  font: 0.9em var(--font-mono);
+}
+
+.markdown-body pre {
+  padding: var(--space-3);
+  border-radius: var(--radius);
+  overflow: auto;
+  background: var(--color-term-bg);
+  line-height: 1.5;
+}
+
+.markdown-body pre code { padding: 0; background: none; font-size: var(--text-sm); }
+
+.markdown-body blockquote {
+  padding: 0 1em;
+  border-left: 3px solid var(--color-border);
+  color: var(--color-text-muted);
+}
+
+.markdown-body table {
+  display: block;
+  width: max-content;
+  max-width: 100%;
+  overflow: auto;
+  border-collapse: collapse;
+}
+
+.markdown-body :is(th, td) { padding: 6px 12px; border: 1px solid var(--color-border); }
+.markdown-body th { font-weight: 600; background: var(--color-bg-hover); }
+.markdown-body img { max-width: 100%; }
+.markdown-body hr { height: 1px; margin: 1.5em 0; border: 0; background: var(--color-border); }
+.markdown-body input[type='checkbox'] { margin: 0 0.4em 0 -1.4em; vertical-align: middle; }
+.markdown-body li:has(> input[type='checkbox']) { list-style: none; }
+
+.fileview__banner {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+  color: var(--color-warning);
+  background: var(--color-bg);
+}
+
+.fileview__banner[hidden],
+#file-dialog .btn[hidden] {
+  display: none;
+}
+
+#file-dialog .dialog__actions {
+  flex-wrap: wrap;
+}
+
+#file-dialog .dialog__note {
+  overflow-wrap: anywhere;
+}
+
+.tab[data-dirty='true'] .tab__name {
+  color: var(--color-warning);
+}
+
+.fileview__image {
+  display: block;
+  max-width: calc(100% - 32px);
+  margin: 16px;
+  background: repeating-conic-gradient(#8882 0 25%, transparent 0 50%) 0 0 / 16px 16px;  border-radius: var(--radius);
+}
+
+.fileview__notice {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  color: var(--color-text-muted);
+}
+
+.fileview__notice p {
+  margin: 0;
+}
+
+/* ---- タブの並びの隣のボタンと、新しいタブのプルダウン ---- */
+.tabs__actions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.icon-btn--tab {
+  width: 28px;
+  height: 28px;
+}
+
+.icon-btn--tab[hidden] {
+  display: none;
+}
+
+/* 確認なしで起動するメインのエージェントのボタンは、危険の色で見分ける */
+#tab-main-agent[data-bypass='true'] {
+  color: var(--color-danger);
+}
+
+/* 空いたところでウィンドウをつかめるようにする */
+.topbar__spacer {
+  flex: 1;
+  align-self: stretch;
+}
+
+.menu {
+  position: absolute;
+  top: calc(var(--titlebar-height) - 2px);
+  z-index: 10;
+  min-width: 200px;
+  padding: var(--space-1);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-bg);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+  -webkit-app-region: no-drag;
+}
+
+.menu[hidden] {
+  display: none;
+}
+
+.menu__item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  height: 32px;
+  padding: 0 var(--space-2);
+  border: 0;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--color-text);
+  font: inherit;
+  font-size: var(--text-md);
+  text-align: left;
+  cursor: pointer;
+}
+
+.menu__item:hover,
+.menu__item:focus-visible {
+  background: var(--color-bg-hover);
+  outline: none;
+}
+
+.menu__item .icon {
+  flex: none;
+  color: var(--color-text-muted);
+}
+
+.menu__label {
+  flex: 1;
+}
+
+.menu__hint {
+  font: inherit;
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+.menu__sep {
+  height: 1px;
+  margin: var(--space-1) 0;
+  background: var(--color-border);
+}
+
+/* ---- リポジトリの並べ替え ---- */
+.project__head[draggable='true'] {
+  cursor: grab;
+  border-radius: var(--radius);
+}
+
+.project__head:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -2px;
+}
+
+.project[data-dragging='true'] {
+  opacity: 0.5;
+}
+
+/* 落とす場所に線を出す */
+.project[data-drop] {
+  position: relative;
+}
+
+.project[data-drop]::before {
+  content: '';
+  position: absolute;
+  left: var(--space-1);
+  right: var(--space-1);
+  height: 2px;
+  border-radius: 1px;
+  background: var(--color-accent);
+}
+
+.project[data-drop='before']::before {
+  top: -6px;
+}
+
+.project[data-drop='after']::before {
+  bottom: -6px;
+}
+
+/* ---- 設定の画面（窓いっぱい。左にメニュー、右に選んだ項目） ---- */
+.settings {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-bg);
+}
+
+.settings[hidden] {
+  display: none;
+}
+
+/* 信号機ボタンの下を空け、ウィンドウをつかめるようにする */
+.settings__titlebar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  height: var(--titlebar-height);
+  padding: 0 var(--space-2) 0 88px;
+  border-bottom: 1px solid var(--color-border);
+  -webkit-app-region: drag;
+}
+
+.settings__titlebar .icon-btn {
+  -webkit-app-region: no-drag;
+}
+
+.settings__heading {
+  margin: 0;
+  font-size: var(--text-md);
+  font-weight: 600;
+}
+
+.settings__status {
+  flex: 1;
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+.settings__status[data-tone='error'] {
+  color: var(--color-warning);
+}
+
+.settings__body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.settings__nav {
+  flex: none;
+  width: 220px;
+  padding: var(--space-3) var(--space-2);
+  border-right: 1px solid var(--color-border);
+  overflow-y: auto;
+}
+
+.settings__nav-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  height: 36px;
+  padding: 0 var(--space-3);
+  border: 0;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--color-text-muted);
+  font: inherit;
+  font-size: var(--text-md);
+  text-align: left;
+  cursor: pointer;
+}
+
+.settings__nav-item:hover {
+  background: var(--color-bg-hover);
+}
+
+.settings__nav-item[aria-current='true'] {
+  background: var(--color-bg-active);
+  color: var(--color-text);
+}
+
+.settings__content {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  position: relative;
+  padding: var(--space-3) 32px 48px;
+}
+
+.settings__title {
+  margin: 0 0 var(--space-3);
+  padding-bottom: var(--space-2);
+  border-bottom: 1px solid var(--color-border);
+  font-size: 20px;
+}
+
+.settings__field {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  max-width: 560px;
+  padding: var(--space-3) 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-border) 60%, transparent);
+}
+
+.settings__field > .input {
+  width: 100%;
+}
+
+.settings__label {
+  font-size: var(--text-md);
+  font-weight: 600;
+}
+
+/* まだ外れることがある機能の印 */
+.chip--beta {
+  display: inline-block;
+  margin-left: var(--space-1);
+  padding: 0 6px;
+  border: 1px solid var(--color-warning);
+  border-radius: 999px;
+  color: var(--color-warning);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  line-height: 1.5;
+  vertical-align: middle;
+}
+
+.settings__help {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+.settings__inline {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.settings__number {
+  width: 96px;
+}
+
+.settings__range {
+  width: 280px;
+  accent-color: var(--color-accent);
+}
+
+.settings__unit {
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.settings__color {
+  width: 40px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: transparent;
+}
+
+.settings__field[data-key='theme'] {
+  align-self: stretch;
+  max-width: none;
+}
+
+.settings__field[data-key='keybindings'] {
+  max-width: none;
+  align-self: stretch;
+}
+
+.shortcut-settings {
+  width: 100%;
+  min-width: 0;
+  container-type: inline-size;
+  --shortcut-key-width: 12em;
+  --shortcut-row-height: calc(var(--control-h) + var(--space-2));
+}
+
+.shortcut-settings__toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  position: sticky;
+  /* 設定の枠の上の余白（.settings__content の padding-top）の分だけ上に貼り付け、その隙間から下の行が覗かないようにする */
+  top: calc(var(--space-3) * -1);
+  z-index: 1;
+  padding: var(--space-3) 0 var(--space-2);
+  background: var(--color-bg);
+}
+
+.shortcut-settings__toolbar .input {
+  flex: 1;
+  min-width: var(--shortcut-key-width);
+}
+
+.shortcut-settings__group {
+  margin-top: var(--space-3);
+}
+
+.shortcut-settings__row {
+  display: grid;
+  grid-template-columns: minmax(var(--shortcut-key-width), 1fr) var(--shortcut-key-width) auto;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--shortcut-row-height);
+  padding: var(--space-1) 0;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.shortcut-settings__row[hidden],
+.shortcut-settings__group[hidden] {
+  display: none;
+}
+
+.shortcut-settings__name {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  overflow-wrap: anywhere;
+}
+
+.shortcut-settings__key {
+  font: inherit;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.shortcut-settings__key[data-capturing='true'] {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+
+.shortcut-settings__actions {
+  display: flex;
+  gap: var(--space-1);
+}
+
+.shortcut-settings__error {
+  margin: var(--space-2) 0;
+  color: var(--color-warning);
+  font-size: var(--text-sm);
+}
+
+/* 左のナビを除いた幅で判定し、狭い設定欄でも操作を切り落とさない。 */
+@container (max-width: 640px) {
+  .shortcut-settings__row {
+    grid-template-columns: minmax(0, 1fr) var(--shortcut-key-width);
+  }
+
+  .shortcut-settings__actions {
+    grid-column: 1 / -1;
+    justify-content: flex-end;
+  }
+}
+
+.settings__field-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  width: 100%;
+}
+
+.theme-picker {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
+  gap: var(--space-3);
+  width: 100%;
+}
+
+.theme-picker__choices,
+.theme-picker__detail {
+  min-width: 0;
+}
+
+.theme-picker__choices > .input {
+  box-sizing: border-box;
+  width: 100%;
+  margin-bottom: var(--space-2);
+}
+
+.theme-picker__list {
+  position: relative;
+  height: var(--panel-width);
+  overflow-y: auto;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+}
+
+.theme-picker__row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--space-2);
+  box-sizing: border-box;
+  width: 100%;
+  min-height: var(--control-h-lg);
+  padding: var(--space-1) var(--space-2);
+  border: 0;
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-bg);
+  color: var(--color-text);
+  font: inherit;
+  text-align: left;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+
+.theme-picker__row[data-preview='true'] {
+  background: var(--color-bg-hover);
+}
+
+.theme-picker__row:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -2px;
+}
+
+.theme-picker__current {
+  flex: none;
+  color: var(--color-accent);
+  font-size: var(--text-sm);
+}
+
+.theme-preview {
+  border: 1px solid;
+  border-radius: var(--radius);
+  overflow: hidden;
+  font-size: var(--text-sm);
+}
+
+.theme-preview__name {
+  padding: var(--space-2);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.theme-preview__terminal {
+  margin: 0;
+  padding: var(--space-2);
+  font: var(--text-sm) / 1.5 var(--font-mono);
+  overflow-x: auto;
+}
+
+.theme-preview__palette {
+  display: grid;
+  grid-template-columns: repeat(8, minmax(0, 1fr));
+  gap: var(--space-1);
+  padding: var(--space-2);
+}
+
+.theme-preview__color {
+  text-align: center;
+}
+
+.theme-preview__swatch {
+  display: block;
+  height: var(--icon-sm);
+}
+
+.theme-preview__chrome {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2);
+}
+
+.theme-preview__sidebar {
+  flex: 1;
+  border: 1px solid;
+}
+
+.theme-preview__item {
+  padding: var(--space-1) var(--space-2);
+}
+
+.theme-preview__button {
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius);
+}
+
+.theme-ai {
+  position: relative;
+  width: min(560px, calc(100vw - var(--space-3) * 2));
+  max-height: calc(100vh - var(--space-3) * 2);
+  overflow-y: auto;
+}
+
+.theme-ai__questions,
+.theme-ai__question {
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+  border: 0;
+}
+
+.theme-ai__legend {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+.theme-ai__question {
+  margin-top: var(--space-3);
+}
+
+.theme-ai__options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-3);
+  padding: var(--space-2) 0;
+}
+
+.theme-ai__options label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.theme-ai__question > .btn {
+  margin-top: var(--space-2);
+}
+
+.theme-ai input {
+  accent-color: var(--color-accent);
+}
+
+.theme-ai .dialog__actions {
+  position: sticky;
+  bottom: 0;
+  padding: var(--space-2) 0;
+  background: var(--color-bg);
+}
+
+.theme-ai [hidden] {
+  display: none;
+}
+
+@media (max-width: 640px) {
+  .settings__body {
+    flex-direction: column;
+  }
+
+  .settings__nav {
+    display: flex;
+    width: auto;
+    overflow-x: auto;
+    border-right: 0;
+    border-bottom: 1px solid var(--color-border);
+  }
+
+  .settings__nav-item {
+    flex: none;
+    width: auto;
+  }
+
+  .settings__content {
+    padding-right: var(--space-3);
+    padding-left: var(--space-3);
+  }
+}
+
+/* 切り替えのスイッチ。危険な設定は入れたときに危険の色にする */
+.switch {
+  position: relative;
+  display: inline-flex;
+  cursor: pointer;
+}
+
+.switch input {
+  position: absolute;
+  opacity: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  cursor: pointer;
+}
+
+.switch input:disabled {
+  cursor: default;
+}
+
+.switch__track {
+  width: 40px;
+  height: 22px;
+  border-radius: 999px;
+  background: var(--color-bg-active);
+  border: 1px solid var(--color-border);
+  position: relative;
+  transition: background 120ms ease;
+}
+
+.switch__track::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--color-text);
+  transition: transform 120ms ease;
+}
+
+.switch input:checked + .switch__track {
+  background: var(--color-accent);
+}
+
+.switch input:checked + .switch__track[data-danger='true'] {
+  background: var(--color-danger);
+}
+
+.switch input:checked + .switch__track::after {
+  transform: translateX(18px);
+}
+
+.switch input:focus-visible + .switch__track {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+.switch input:disabled + .switch__track {
+  background: var(--color-bg-active);
+}
+
+.switch input:disabled + .switch__track::after {
+  background: var(--color-text-muted);
+}
+
+
+/* 枠の中の重なりはここに閉じ込め、差分（2）とメニュー（10）の下に置く。
+   枠は角の丸いカードにし、窓の端との間を空ける（2026-10-28 利用者の指示。最背面の面のほかは丸角にする） */
+.panes {
+  position: absolute;
+  inset: var(--titlebar-height) var(--space-2) var(--space-2);
+  overflow: auto;
+  isolation: isolate;
+  z-index: 0;
+}
+
+.pane-split {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+}
+
+.pane-split[data-dir='column'] { flex-direction: column; }
+
+.pane {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  box-sizing: border-box;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+}
+
+.panes[data-split='true'] .pane[data-active='true'],
+.pane[data-drop-paths] {
+  border-color: var(--color-accent);
+}
+
+.pane__title {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: var(--control-h);
+  padding: 0 var(--space-2);
+  border-bottom: 1px solid var(--color-border);
+  font-size: var(--text-sm);
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.panes[data-split='true'] .pane[data-active='true'] .pane__title {
+  border-bottom-color: var(--color-accent);
+}
+
+.pane__title .session__dot { flex: none; }
+.pane__title .session__dot[hidden] { display: none; }
+
+.pane__name,
+.pane__detail {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 名前を先に収め、補助の文字から縮める。固定の字数では切らない。 */
+.pane__name { flex: 0 1 auto; }
+.pane__detail {
+  flex: 1 1 0;
+  color: var(--color-text-muted);
+}
+
+.pane__title .pane__rename {
+  flex: 1;
+  font-size: var(--text-sm);
+  background: transparent;
+  border-radius: var(--radius);
+}
+
+.pane__body {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.pane__lock {
+  flex: none;
+  margin-left: auto;
+  visibility: hidden;
+}
+
+/* 固定していない枠の錠は、見出しにマウスを載せたときとキーボードで選んだときだけ出す */
+.pane__title:hover .pane__lock,
+.pane__lock:focus-visible,
+.pane[data-locked='true'] .pane__lock {
+  visibility: visible;
+}
+
+.pane[data-locked='true'] .pane__lock { color: var(--color-accent); }
+
+/* 開いた錠。固定すると掛け金を下ろす */
+.pane:not([data-locked='true']) .pane__lock-shackle { transform: translate(3px, -2px); }
+
+.pane__close {
+  flex: none;
+  background: transparent;
+}
+
+.pane__close[hidden] { display: none; }
+
+/* 枠の間は隙間にし、つかんでいる間だけ真ん中に強調色の線を出す */
+.pane-gutter {
+  flex: 0 0 calc(var(--space-1) + 1px);
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.pane-split[data-dir='column'] > .pane-gutter { cursor: row-resize; }
+.pane-gutter:hover,
+.panes[data-resizing] .pane-gutter {
+  background: linear-gradient(to right, transparent calc(50% - 1px), var(--color-accent) calc(50% - 1px), var(--color-accent) calc(50% + 1px), transparent calc(50% + 1px));
+}
+.pane-split[data-dir='column'] > .pane-gutter:hover,
+.panes[data-resizing] .pane-split[data-dir='column'] > .pane-gutter {
+  background: linear-gradient(to bottom, transparent calc(50% - 1px), var(--color-accent) calc(50% - 1px), var(--color-accent) calc(50% + 1px), transparent calc(50% + 1px));
+}
+.panes[data-resizing] { user-select: none; }
+.panes[data-resizing] .pane__body { pointer-events: none; }
+
+.pane[data-drop]::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  background: color-mix(in srgb, var(--color-accent) 25%, transparent);
+  border: 1px solid var(--color-accent);
+  border-radius: calc(var(--radius) - 1px);
+}
+
+.pane[data-drop='left']::after { right: 50%; }
+.pane[data-drop='right']::after { left: 50%; }
+.pane[data-drop='top']::after { bottom: 50%; }
+.pane[data-drop='bottom']::after { top: 50%; }
+
+/* ---- git の履歴とコミットの詳細 ---- */
+.history__head {
+  flex: none;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+  font-size: var(--text-sm);
+}
+.history__title,
+.history__path-filter {
+  grid-column: 1 / -1;
+  min-width: 0;
+}
+.history__work,
+#history-path {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.history__input {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  height: var(--control-h);
+  padding: 0 var(--space-1);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-bg);
+  color: var(--color-text);
+  font: inherit;
+}
+.history__path-filter {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  color: var(--color-text-muted);
+}
+#history-path { flex: 1; }
+.history__scroll {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+#history-status:empty,
+.history__refs:empty,
+.history__path-filter[hidden],
+.history__more[hidden],
+#history-retry[hidden],
+.commit-view[hidden],
+.commit-view__diff[hidden] { display: none; }
+.history__row {
+  --history-row-h: 22px;
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  box-sizing: border-box;
+  height: var(--history-row-h);
+  width: 100%;
+  padding: 0 var(--space-2);
+  border: 0;
+  text-align: left;
+  background: transparent;
+  color: var(--color-text);
+  font: inherit;
+  font-size: var(--text-sm);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.history__row:hover,
+.commit-view__file-toggle:hover { background: var(--color-bg-hover); }
+.history__row:focus-visible,
+.commit-view__file-toggle:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -2px;
+}
+.history__graph {
+  flex: none;
+  height: var(--history-row-h);
+  overflow: hidden;
+}
+.history__graph[data-clipped="true"] { border-right: 1px dashed var(--color-text-muted); }
+.history__subject {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.history__refs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+.history__refs .work__tag { overflow-wrap: anywhere; white-space: normal; }
+.history__row > .history__refs {
+  display: inline-flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  flex: none;
+}
+.history__ref {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  box-sizing: border-box;
+  height: calc(var(--history-row-h) - var(--space-1));
+  padding: 0 var(--space-1);
+  border: 1px solid var(--ref-color);
+  border-radius: var(--space-1);
+  background: color-mix(in srgb, var(--ref-color) 14%, transparent);
+  color: var(--color-text);
+}
+.history__ref[data-current="true"] { font-weight: 700; }
+/* 札は縮めず、長い名前だけを末尾で切る。件名の方を先に縮める */
+.history__ref-name { max-width: 16em; overflow: hidden; text-overflow: ellipsis; }
+.history__ref .icon { width: var(--text-sm); height: var(--text-sm); flex: none; }
+.history__body-mark { flex: none; color: var(--color-text-muted); }
+.history__unpushed { flex: none; margin-left: auto; color: var(--color-busy); }
+.history__row[data-reachable="false"] { color: var(--color-text-muted); }
+/* 文字の色の差だけでは見分けにくいテーマがあるため、件名を薄くする */
+.history__row[data-reachable="false"] .history__subject,
+.history__row[data-reachable="false"] .history__body-mark { opacity: 0.6; }
+.history__row[data-reachable="false"] .history__unpushed { color: inherit; }
+.history__more,
+#history-retry { margin: var(--space-2); }
+.commit-view {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.commit-view__body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+.commit-view__head {
+  padding: var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+  overflow-wrap: anywhere;
+}
+.commit-view__title {
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-md);
+}
+.commit-view__meta,
+.commit-view__parents,
+.commit-view__copy-status {
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+.commit-view__parents { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-1); }
+.commit-view__message {
+  margin: 0;
+  padding: var(--space-3);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+  font-size: var(--text-md);
+}
+.commit-view__files-title {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border-block: 1px solid var(--color-border);
+  font-size: var(--text-sm);
+}
+.commit-view__file { border-bottom: 1px solid var(--color-border); }
+.commit-view__file-toggle {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  border: 0;
+  text-align: left;
+  background: transparent;
+  color: var(--color-text);
+  font: inherit;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+.commit-view__file-toggle[aria-expanded='true'] { background: var(--color-bg-active); }
+.commit-view__diff {
+  position: relative;
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: var(--diff-font-size);
+}
+
+/* エージェントのロゴは同じ寸法に揃え、単色のものだけ文字色で塗る */
+.agent-icon {
+  display: inline-block;
+  width: var(--icon-sm);
+  height: var(--icon-sm);
+  flex: none;
+  object-fit: contain;
+}
+
+.agent-icon--mask {
+  background-color: currentColor;
+  mask-size: contain;
+  mask-position: center;
+  mask-repeat: no-repeat;
+}
+
+.settings__field[data-key='agents'] {
+  align-items: stretch;
+  max-width: none;
+}
+
+.agent-registry__heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--space-2);
+  position: sticky;
+  top: 0;
+  background: var(--color-bg);
+  padding: var(--space-2) 0;
+}
+
+.agent-registry__summary {
+  padding: var(--space-2) 0;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  cursor: pointer;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.agent-registry__summary:hover {
+  background: var(--color-bg-hover);
+}
+
+.agent-registry__row {
+  border-bottom: 1px solid var(--color-border);
+}
+
+.agent-registry__head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) 0;
+}
+
+.agent-registry__open {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  min-width: 0;
+}
+
+.agent-registry__open:hover {
+  background: var(--color-bg-hover);
+}
+
+.agent-registry__identity,
+.agent-registry__state {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.agent-registry__main[hidden],
+.agent-registry__detail[hidden] {
+  display: none;
+}
+
+.agent-registry__show {
+  display: flex;
+  align-items: center;
+  white-space: nowrap;
+  font-size: var(--text-sm);
+}
+
+.agent-registry__detail,
+.agent-registry__add[open] {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-3);
+}
+
+.agent-registry__detail > .btn {
+  align-self: flex-start;
+  margin-top: var(--space-3);
+}
+
+.agent-registry__env-row {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+
+.agent-registry__env-row .field {
+  flex: 1;
+  min-width: 0;
+}
+
+.agent-registry .input {
+  box-sizing: border-box;
+  width: 100%;
+}
+
+.agent-registry__add {
+  padding-top: var(--space-3);
+}
+
+.agent-registry__add summary {
+  color: var(--color-accent);
+  cursor: pointer;
+}
+
+/* 既存の設定ナビの幅 220px と、行の操作に必要な幅を下回ると縦に並べる */
+@media (max-width: 760px) {
+  .agent-registry__head {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  .agent-registry__state {
+    grid-row: 2;
+  }
+  .settings:has(.agent-registry) .settings__nav {
+    width: auto;
+    max-width: 30%;
+    padding: var(--space-1);
+  }
+  .settings:has(.agent-registry) .settings__content {
+    padding: var(--space-3);
+  }
+}
+
+/* ワークスペースはスクロールする一覧の外に置く。 */
+.workspace-picker {
+  flex: none;
+  padding: var(--space-1) var(--space-2) var(--space-2);
+}
+
+.workspace-picker__button {
+  width: 100%;
+  height: var(--control-h-lg);
+  text-align: left;
+}
+
+.workspace-picker__button .menu__label {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* 一覧は文字で縮小画面を作り、裏の端末の WebGL には触れない。開閉には動きを付けない。 */
+.overview-open {
+  width: 100%;
+  margin-top: var(--space-1);
+}
+
+.overview {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font: inherit;
+}
+
+/* 左にターミナルのタイル、右にエージェントの履歴の列を並べる */
+.overview[open] {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--panel-width);
+  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+}
+
+.overview__head { grid-column: 1 / -1; }
+.overview__search,
+.overview__tabs,
+.overview__list,
+.overview__empty { grid-column: 1; }
+
+.overview__history {
+  display: flex;
+  flex-direction: column;
+  grid-column: 2;
+  grid-row: 2 / -1;
+  min-height: 0;
+  /* 履歴の列も角の丸いカードにする（2026-10-28 利用者の指示） */
+  margin: var(--space-3) var(--space-3) var(--space-3) 0;
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--color-bg-hover) 40%, transparent);
+}
+
+.overview__history > h2 {
+  padding: var(--space-3) var(--space-3) 0;
+}
+
+.overview__history-hint {
+  margin: var(--space-1) 0 var(--space-2);
+  padding: 0 var(--space-3);
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+.overview__history-list {
+  flex: 1;
+  min-height: 0;
+  margin: 0;
+  padding: 0 var(--space-2) var(--space-3);
+  overflow: auto;
+  list-style: none;
+}
+
+.overview__history-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  border-radius: var(--radius);
+}
+
+.overview__history-item:hover { background: var(--color-bg-hover); }
+
+.overview__history-open {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  padding: var(--space-2);
+  border: 0;
+  border-radius: var(--radius);
+  background: none;
+  color: var(--color-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.overview__history-open:focus-visible { outline: 2px solid var(--color-accent); }
+
+.overview__history-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.overview__history-name,
+.overview__history-meta {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.overview__history-name { flex: 1; min-width: 0; }
+
+.overview__history-live {
+  flex: none;
+  font-size: var(--text-sm);
+  color: var(--color-accent);
+}
+
+.overview__history-live[hidden] { display: none; }
+
+.overview__history-meta {
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+.overview__history-remove { flex: none; visibility: hidden; }
+.overview__history-item:hover .overview__history-remove,
+.overview__history-item:focus-within .overview__history-remove { visibility: visible; }
+
+.overview__history-empty {
+  margin: 0;
+  padding: var(--space-3);
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+.overview__history-empty[hidden] { display: none; }
+
+.overview::backdrop { background: var(--color-bg); }
+
+.overview__head {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  min-height: var(--titlebar-height);
+  padding: var(--space-1) var(--space-3) var(--space-1) calc(var(--titlebar-height) * 2 + var(--space-2));
+  border-bottom: 1px solid var(--color-border);
+}
+
+.overview h1,
+.overview h2,
+.overview h3 {
+  margin: 0;
+  font-size: var(--text-md);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.overview__search {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.overview__search .input {
+  flex: 1;
+  min-width: 0;
+}
+
+.overview__hint {
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+/* まとまりのタブ。多いときは横に送る */
+.overview__tabs {
+  display: flex;
+  flex: none;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-3) 0;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--color-border);
+  scrollbar-width: none;
+}
+
+.overview__tab {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-2);
+  height: var(--control-h);
+  padding: 0 var(--space-3);
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--color-text-muted);
+  font: inherit;
+  cursor: pointer;
+}
+
+.overview__tab:hover { color: var(--color-text); background: var(--color-bg-hover); }
+
+.overview__tab[aria-selected='true'] {
+  border-bottom-color: var(--color-accent);
+  color: var(--color-text);
+  font-weight: 600;
+}
+
+.overview__tab-count {
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+}
+
+.overview__list {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: var(--space-3) calc(var(--space-3) * 2);
+}
+
+.overview__workspace {
+  margin-bottom: calc(var(--space-3) * 2);
+}
+
+.overview__workspace > h2 {
+  padding-bottom: var(--space-2);
+  font-size: var(--text-lg);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.overview__repo { margin-top: calc(var(--space-3) * 2); }
+/* リポジトリ名は一目で見分けるため、補助の文字より大きく濃くする（2026-10-26 利用者の指示） */
+.overview__repo > h3 {
+  margin-bottom: var(--space-2);
+  font-size: var(--text-md);
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.overview__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, var(--panel-width)), 1fr));
+  gap: var(--space-3);
+}
+
+.overview__tile {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: 0;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-bg);
+  color: var(--color-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.overview__tile[data-agent-state='waiting'] { border-color: var(--history-yellow); }
+.overview__tile[data-agent-state='done'] { border-color: var(--history-green); }
+.overview__tile[aria-current='true'] {
+  outline: 1px solid var(--color-accent);
+  outline-offset: 2px;
+}
+.overview__tile[aria-selected='true'] {
+  box-shadow: 0 0 0 2px var(--color-accent);
+}
+.overview__tile:hover .overview__tile-head { background: var(--color-bg-hover); }
+.overview__tile[aria-selected='true'] .overview__tile-head { background: var(--color-bg-active); }
+.overview__tile:focus-visible { outline: 2px solid var(--color-accent); }
+
+.overview__tile-head {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--control-h-lg);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius) var(--radius) 0 0;
+}
+
+.overview__tile .session__dot { flex: none; }
+.overview__label {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+
+/* 要件は2行まで出し、超えたら末尾を省く。下の行はブランチなどの補助 */
+.overview__name {
+  display: -webkit-box;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.overview__meta {
+  overflow: hidden;
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.overview__meta[hidden] { display: none; }
+
+.overview__preview {
+  box-sizing: content-box;
+  height: calc(var(--text-sm) * 1.4 * 8);
+  flex: none;
+  margin: 0;
+  padding: var(--space-2);
+  border-radius: 0 0 var(--radius) var(--radius);
+  overflow: hidden;
+  white-space: pre;
+  background: var(--history-background);
+  color: var(--history-foreground);
+  font: var(--text-sm) / 1.4 var(--font-mono);
+}
+
+.overview__empty {
+  flex: none;
+  margin: 0;
+  padding: var(--space-3);
+  text-align: center;
+  color: var(--color-text-muted);
+}
+
+.workspace-picker__error {
+  margin: var(--space-2) 0 0;
+  white-space: pre-line;
+}
+
+.workspace-menu {
+  position: fixed;
+  inset: auto;
+  margin: 0;
+  width: var(--sidebar-width);
+  max-width: calc(100vw - var(--space-2) * 2);
+  max-height: calc(100vh - var(--space-2) * 2);
+  overflow: auto;
+  color: var(--color-text);
+}
+
+.workspace-menu .menu__item {
+  height: auto;
+  min-height: var(--control-h);
+  flex-wrap: wrap;
+  padding-block: var(--space-2);
+}
+
+.workspace-menu .menu__label {
+  overflow-wrap: anywhere;
+}
+
+.workspace-menu [aria-checked='true'] .menu__label {
+  font-weight: 700;
+}
+
+.workspace-menu__reason {
+  width: 100%;
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+.workspace-menu button:disabled {
+  color: var(--color-text-muted);
+  cursor: default;
+}
+
+/* リポジトリの見出しでは、隠れているボタンの場所も空けず、名前をなるべく長く出す。載せたときだけ並べる */
+.project__head .icon-btn--hover {
+  display: none;
+}
+
+.project__head:hover .icon-btn--hover,
+.project__head:focus-within .icon-btn--hover {
+  display: grid;
+}
+
+.draft-star[aria-pressed='true'] .icon {
+  fill: currentColor;
+}
+
+/* 「すべて」は名前を押してドラフトに出し入れする。ドラフト済みは強調色のぼかしの背景にする（以前のお気に入りと同じ）。
+   不透明度は一覧と同じ設定値 */
+#sidebar[data-view='all'] .project__head {
+  cursor: pointer;
+}
+
+#sidebar[data-view='all'] .project__head:hover {
+  background: var(--color-bg-hover);
+}
+
+#sidebar[data-view='all'] .project__head[data-draft='true'] {
+  background: var(--gradient-draft);
+  color: var(--draft-text);
+}
+
+#sidebar[data-view='all'] .project__head[data-draft='true'] .icon-btn {
+  color: var(--draft-text);
+}
+
+/* 「すべて」では、載せたときだけ出す × の場所を空けたままにし、星の位置が動かないようにする */
+#sidebar[data-view='all'] .project__head .icon-btn--hover {
+  display: grid;
+  visibility: hidden;
+}
+
+#sidebar[data-view='all'] .project__head:is(:hover, :focus-within) .icon-btn--hover {
+  visibility: visible;
+}
+
+#sidebar[data-view='all'] .project__head:not([data-draft='true']) .draft-star {
+  color: var(--color-text-muted);
+}
+
+/* 「すべて」ではターミナルを開かないため、新しい作業・エージェント・新しいターミナルのボタンを出さない */
+#sidebar[data-view='all'] :is(#new-work, #agents, #new-terminal) {
+  display: none;
+}
+
+/* 「ドラフト」「すべて」の切り替えと、リポジトリを追加するボタン。追加はリポジトリの一覧を扱う場所に置く（2026-10-29 利用者の指示） */
+.sidebar-views-row {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-1);
+  margin: 0 var(--space-2) var(--space-2);
+}
+
+.sidebar-views {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  gap: var(--space-1);
+  padding: 2px;
+  border-radius: var(--radius);
+  background: var(--color-bg-hover);
+}
+
+.sidebar-views__tab {
+  flex: 1;
+  min-width: 0;
+  padding: 2px var(--space-2);
+  border: 0;
+  border-radius: calc(var(--radius) - 2px);
+  background: none;
+  color: var(--color-text-muted);
+  font: inherit;
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+
+.sidebar-views__tab:hover { color: var(--color-text); }
+
+.sidebar-views__tab[aria-selected='true'] {
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-weight: 600;
+}
+
+.sidebar-views__tab:focus-visible { outline: 2px solid var(--color-accent); outline-offset: -2px; }
+
+/* 端末の中の検索（⌘F）。表示している枠の右上に重ねる */
+.term-search {
+  position: absolute;
+  top: var(--space-2);
+  right: calc(var(--space-2) + 14px);
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-bg);
+  box-shadow: 0 4px 12px rgb(0 0 0 / 0.3);
+}
+
+.term-search[hidden] { display: none; }
+
+.term-search__input {
+  width: 200px;
+  height: var(--control-h);
+}
+
+.term-search__count {
+  min-width: 4em;
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Finder のフォルダを左の一覧に落とす間は、受け取れることを強調色の枠と一言で示す。
+   一言は下端のボタンと重ねると字が入れ替わったように見えるため、真ん中に出す */
+#sidebar[data-drop-repo] {
+  position: relative;
+  outline: 2px solid var(--color-accent);
+  outline-offset: -2px;
+}
+
+#sidebar[data-drop-repo]::after {
+  content: 'フォルダを離すとリポジトリを追加';
+  position: absolute;
+  top: 50%;
+  left: var(--space-3);
+  right: var(--space-3);
+  transform: translateY(-50%);
+  padding: var(--space-3) var(--space-2);
+  box-shadow: 0 4px 12px rgb(0 0 0 / 0.3);
+  border-radius: var(--radius);
+  background: var(--gradient-accent);
+  color: var(--color-bg);
+  font-size: var(--text-sm);
+  text-align: center;
+  pointer-events: none;
+}
+
+/* 新しいリポジトリの案内。窓の右下に重ね、押すまで残す */
+.repo-toast {
+  position: fixed;
+  right: var(--space-3);
+  bottom: var(--space-3);
+  z-index: 20;
+  width: min(360px, calc(100vw - var(--space-3) * 2));
+  padding: var(--space-3);
+  border: 1px solid var(--color-accent);
+  border-radius: var(--radius);
+  background: var(--color-bg);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.4);
+}
+
+.repo-toast[hidden] { display: none; }
+
+/* 常駐のプロセスの入れ替えの確かめ。ほかの案内より手前に出し、端末が多くても窓に収める */
+.host-toast { z-index: 22; }
+.host-toast [hidden] { display: none; }
+.host-toast__body { max-height: 50vh; overflow-y: auto; margin-bottom: var(--space-2); }
+.host-toast__body p { margin: 0 0 var(--space-1); }
+.host-toast__body ul { margin: 0 0 var(--space-2); padding-left: var(--space-3); }
+
+/* AI の手伝いの失敗（上限・切ってある・claude が無い）を数秒だけ出す */
+.ai-toast { z-index: 21; border-color: var(--color-border); }
+
+/* 幅に入らないタブをまとめるボタン。隠れた中に許可待ちなどがあれば印を付ける */
+.tabs__more {
+  flex: none;
+  gap: var(--space-1);
+  font-size: var(--text-sm);
+}
+
+.tabs__more[hidden] { display: none; }
+.tabs__more:not([data-agent-state]) .session__dot { display: none; }
+.tabs__more-state { display: inline-flex; margin-left: auto; }
+
+/* 表示していないエージェントの許可待ち。右下に重ね、移らずに答えられる */
+.permission-cards {
+  position: fixed;
+  right: var(--space-3);
+  bottom: var(--space-3);
+  z-index: 19;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  width: min(380px, calc(100vw - var(--space-3) * 2));
+  max-height: calc(100vh - var(--titlebar-height) - var(--space-3) * 2);
+  overflow-y: auto;
+}
+
+.permission-cards[hidden] { display: none; }
+
+.permission-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--history-yellow);
+  border-radius: var(--radius);
+  background: var(--color-bg);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.4);
+}
+
+.permission-card__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.permission-card__name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-weight: 600;
+}
+
+.permission-card__question { margin: 0; }
+
+.permission-card__detail {
+  margin: 0;
+  padding: var(--space-2);
+  max-height: 8em;
+  overflow: auto;
+  border-radius: var(--radius);
+  background: var(--color-bg-active);
+  font-family: var(--font-mono, monospace);
+  font-size: var(--text-sm);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.permission-card__detail[hidden] { display: none; }
+
+.permission-card__options {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.permission-card__option {
+  justify-content: flex-start;
+  text-align: left;
+  white-space: normal;
+  height: auto;
+  min-height: var(--control-h);
+}
+
+.permission-card__go { align-self: flex-end; }
+.ai-toast p { margin: 0; font-size: var(--text-sm); color: var(--color-text-muted); overflow-wrap: anywhere; }
+
+.git__ai { align-self: flex-start; }
+
+.repo-toast p { margin: 0 0 var(--space-2); }
+
+.repo-toast__title { font-weight: 600; overflow-wrap: anywhere; }
+
+.repo-toast__body {
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+  overflow-wrap: anywhere;
+}
+
+.repo-toast__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+/* 設定の「コマンド」: 表示名・コマンド・並べ替え・削除を1行に並べる */
+.settings__field[data-key='commands'] {
+  align-items: stretch;
+  max-width: none;
+}
+
+.command-list {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr) auto auto auto;
+  gap: var(--space-2) 6px;
+}
+
+/* 登録済みの行と新しいコマンドの欄は親の列を共有し、入力欄の幅を揃える */
+.command-list > * {
+  grid-column: 1 / -1;
+}
+
+.command-list__rows,
+.command-list__row,
+.command-list__draft {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: subgrid;
+  align-items: center;
+}
+
+.command-list__rows {
+  row-gap: 6px;
+}
+
+.command-list__command {
+  font-family: var(--font-mono);
+}
+
+.command-list__add {
+  grid-column: 3 / -1;
+  justify-self: end;
+}
+
+/* アイコンだけのボタンの説明（tooltip.js）。1秒重ねると出し、押す・離す・スクロールで消す */
+.tooltip {
+  position: fixed;
+  z-index: 100;
+  max-width: 280px;
+  padding: 2px var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: var(--color-bg);
+  box-shadow: 0 4px 12px rgb(0 0 0 / 0.35);
+  color: var(--color-text);
+  font-size: var(--text-sm);
+  line-height: 1.6;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+
+.tooltip[hidden] { display: none; }

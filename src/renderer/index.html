@@ -4,28 +4,136 @@
     <meta charset="utf-8" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; worker-src 'self' blob: file:"
     />
+    <!--
+      img-src data: は、開いた画像のファイル（本体が data: の URL にして渡す）を出すため。
+      font-src data: は、Monaco のアイコンの文字（codicon）が data: で入っているため。
+      worker-src blob: file: は、Monaco が作業用の部品を blob で包んで動かすため。無いと画面の処理の中で動き、固まりやすい。
+    -->
     <title>terp</title>
     <link rel="stylesheet" href="../../node_modules/@xterm/xterm/css/xterm.css" />
     <link rel="stylesheet" href="style.css" />
   </head>
   <body>
-    <nav id="sidebar" aria-label="ターミナルの一覧">
+    <nav id="sidebar" data-view="draft" aria-label="作業とターミナルの一覧">
+      <div id="sidebar-resize" role="separator" aria-orientation="vertical" aria-label="左の一覧の幅" aria-valuemin="200" aria-valuemax="520" tabindex="0" title="ドラッグで幅を変える。ダブルクリックで元の幅"></div>
       <div class="sidebar__head">
-        <span class="sidebar__title">ターミナル</span>
+        <div class="sidebar__actions">
+          <button id="sidebar-hide" data-shortcut-title="toggle-sidebar" data-shortcut-label="左の一覧を隠す" class="icon-btn" type="button" aria-label="左の一覧を隠す" title="左の一覧を隠す">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2" /><path d="M9 5v14" /></svg>
+          </button>
+          <button id="settings-open" data-shortcut-title="settings" data-shortcut-label="設定" class="icon-btn" type="button" aria-label="設定" title="設定">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="m10 3-.6 2.2-2 .9-2.1-.6-2 3.5 1.6 1.6v2.8L3.3 15l2 3.5 2.1-.6 2 .9.6 2.2h4l.6-2.2 2-.9 2.1.6 2-3.5-1.6-1.6v-2.8L20.7 9l-2-3.5-2.1.6-2-.9L14 3z" />
+              <circle cx="12" cy="12" r="3" />
+            </svg>
+          </button>
+        </div>
       </div>
-      <ul id="session-list" class="session-list"></ul>
+      <div class="sidebar-views-row">
+        <div class="sidebar-views" role="tablist" aria-label="左の一覧の面" title="2本指で横に滑らせても切り替わる">
+          <button class="sidebar-views__tab" type="button" role="tab" data-view="all" aria-selected="false" tabindex="-1">すべて</button>
+          <button class="sidebar-views__tab" type="button" role="tab" data-view="draft" aria-selected="true">ドラフト</button>
+        </div>
+        <button id="add-project" class="icon-btn" type="button" aria-label="リポジトリを追加" title="リポジトリを追加">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+            <path d="M12 11v5M9.5 13.5h5" />
+          </svg>
+        </button>
+      </div>
+      <div id="tree" class="tree">
+        <div id="no-projects" class="tree__empty" hidden>
+          <p>リポジトリを追加すると、作業（worktree）ごとにターミナルをまとめられます。Finder のフォルダをここへ落としても追加できます</p>
+          <button id="empty-add-project" class="btn" type="button">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+              <path d="M12 11v5M9.5 13.5h5" />
+            </svg>
+            <span>リポジトリを追加</span>
+          </button>
+        </div>
+        <div id="projects"></div>
+        <div id="draft-empty" class="tree__empty" hidden>
+          <p>ドラフトに入れたリポジトリはありません。「すべて」でリポジトリを押すと、ここに出ます</p>
+          <button class="btn" type="button" data-show-view="all">「すべて」を開く</button>
+        </div>
+        <section id="loose" class="project" hidden>
+          <div class="project__head">
+            <span class="project__name">その他のターミナル</span>
+          </div>
+          <ul class="session-list"></ul>
+        </section>
+      </div>
       <p id="config-error" class="config-error" role="alert" hidden></p>
       <div class="sidebar__foot">
+        <button id="new-work" class="btn btn--block-sm" type="button">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="6" cy="6" r="2" /><circle cx="6" cy="18" r="2" /><circle cx="18" cy="8" r="2" />
+            <path d="M6 8v8M18 10c0 4-6 3-6 8" />
+          </svg>
+          <span>新しい作業</span>
+          <kbd class="btn__key" data-shortcut-key="new-work"></kbd>
+        </button>
+        <div id="agents" class="agents" role="group" aria-label="AI エージェントを起動" hidden></div>
         <button id="new-terminal" class="btn btn--primary btn--block" type="button">
           <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
           <span>新しいターミナル</span>
-          <kbd class="btn__key">⌘T</kbd>
+          <kbd class="btn__key" data-shortcut-key="new"></kbd>
         </button>
       </div>
     </nav>
     <main id="terminals">
+      <div class="topbar">
+        <button id="sidebar-show" data-shortcut-title="toggle-sidebar" data-shortcut-label="左の一覧を出す" class="icon-btn icon-btn--tab" type="button" aria-label="左の一覧を出す" title="左の一覧を出す" hidden>
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2" /><path d="M9 5v14" /></svg>
+        </button>
+        <div id="tabs" class="tabs" role="tablist" aria-label="開いているターミナルとファイル"></div>
+        <button id="tabs-more" class="btn tabs__more" type="button" aria-haspopup="menu" hidden><span class="session__dot" aria-hidden="true"></span><span class="tabs__more-count"></span></button>
+        <div class="tabs__actions">
+          <button id="tab-new" class="icon-btn icon-btn--tab" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="新しいタブ" title="新しいタブ">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+          </button>
+          <button id="tab-main-agent" class="icon-btn icon-btn--tab" type="button" hidden>
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="8" width="16" height="12" rx="2" /><path d="M12 4v4M9 13v2M15 13v2M2 14h2M20 14h2" /></svg>
+          </button>
+        </div>
+        <div class="topbar__spacer"></div>
+        <div id="tab-menu" class="menu" role="menu" aria-label="新しいタブ" hidden></div>
+        <div class="topbar__actions">
+          <button id="files-toggle" data-shortcut-title="toggle-files" data-shortcut-label="ファイル" class="btn topbar__btn" type="button" aria-pressed="false" title="ファイル">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+            </svg>
+            <span>ファイル</span>
+          </button>
+          <button id="git-toggle" data-shortcut-title="toggle-git" data-shortcut-label="変更の一覧" class="btn topbar__btn" type="button" aria-pressed="false" title="変更の一覧">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="6" cy="6" r="2" /><circle cx="6" cy="18" r="2" /><circle cx="18" cy="8" r="2" />
+              <path d="M6 8v8M18 10c0 4-6 3-6 8" />
+            </svg>
+            <span>変更</span>
+            <span id="git-toggle-count" class="badge" hidden></span>
+          </button>
+          <button id="history-toggle" data-shortcut-title="toggle-history" data-shortcut-label="履歴" class="btn topbar__btn" type="button" aria-pressed="false" title="履歴">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></svg>
+            <span>履歴</span>
+          </button>
+        </div>
+      </div>
+      <div id="panes" class="panes"></div>
+      <div id="view-store" hidden></div>
+      <section id="diff-view" class="diff" hidden aria-labelledby="diff-title">
+        <div class="diff__head">
+          <span id="diff-title" class="diff__title"></span>
+          <span id="diff-kind" class="work__tag"></span>
+          <button id="diff-close" class="icon-btn" type="button" aria-label="差分を閉じる" title="閉じる（Esc）">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
+          </button>
+        </div>
+        <div id="diff-body" class="diff__body"></div>
+      </section>
       <div id="empty" class="empty" hidden>
         <p>開いているターミナルはありません</p>
         <button id="empty-new" class="btn btn--primary" type="button">
@@ -34,6 +142,315 @@
         </button>
       </div>
     </main>
+
+    <aside id="right-panel" class="panel" aria-label="右の面" hidden>
+      <div class="panel__head">
+        <div class="segmented" role="tablist" aria-label="右の面の切り替え">
+          <button id="panel-tab-files" class="segmented__btn" type="button" role="tab" aria-selected="false">ファイル</button>
+          <button id="panel-tab-git" class="segmented__btn" type="button" role="tab" aria-selected="false">変更 <span id="panel-tab-git-count" class="badge" hidden></span></button>
+          <button id="panel-tab-history" class="segmented__btn" type="button" role="tab" aria-selected="false">履歴</button>
+        </div>
+        <button id="panel-close" class="icon-btn" type="button" aria-label="右の面を閉じる" title="閉じる">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
+        </button>
+      </div>
+      <section id="files-view" class="panel__section" aria-label="ファイル" hidden>
+        <div class="files__root" id="files-root"></div>
+        <p id="files-empty" class="panel__empty" hidden></p>
+        <ul id="files-tree" class="files__tree" role="tree"></ul>
+      </section>
+      <section id="history-view" class="panel__section" hidden aria-label="git の履歴">
+        <div class="history__head">
+          <div class="history__title">
+            <strong id="history-work" class="history__work"></strong>
+            <button id="history-refresh" class="icon-btn" type="button" aria-label="履歴を読み直す" title="履歴を読み直す"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.3-5.6M20 4v5h-5" /></svg></button>
+          </div>
+          <label for="history-scope">ブランチ</label>
+          <select id="history-scope" class="history__input">
+            <option value="current">いまのブランチ</option>
+            <option value="all">すべてのブランチ</option>
+          </select>
+          <label for="history-query">絞り込み</label>
+          <input id="history-query" class="history__input" type="search" placeholder="件名・作者・ハッシュ" />
+          <div id="history-path-filter" class="history__path-filter" hidden>
+            <span id="history-path"></span>
+            <button id="history-path-clear" class="icon-btn" type="button" aria-label="ファイルの絞り込みを解除" title="絞り込みを解除">×</button>
+          </div>
+        </div>
+        <div id="history-scroll" class="history__scroll" tabindex="0" aria-label="コミットの一覧">
+          <div id="history-status" class="panel__empty" role="status"></div>
+          <button id="history-retry" class="btn" type="button" hidden>読み直す</button>
+          <div id="history-list"></div>
+          <button id="history-more" class="btn history__more" type="button" hidden>さらに読み込む</button>
+        </div>
+      </section>
+      <section id="git-view" class="panel__section" aria-label="変更" hidden>
+      <p id="git-empty" class="panel__empty" hidden></p>
+      <div id="git-content" class="panel__content" hidden>
+        <div class="git__branch">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="6" cy="6" r="2" /><circle cx="6" cy="18" r="2" /><circle cx="18" cy="8" r="2" />
+            <path d="M6 8v8M18 10c0 4-6 3-6 8" />
+          </svg>
+          <span id="git-branch" class="git__branch-name"></span>
+          <span id="git-ab" class="git__ab"></span>
+        </div>
+        <div class="git__sync">
+          <button id="git-fetch" class="btn" type="button">Fetch</button>
+          <button id="git-pull" class="btn" type="button">Pull</button>
+          <button id="git-push" class="btn" type="button">Push</button>
+          <button id="git-refresh" class="icon-btn" type="button" aria-label="変更を読み直す" title="変更を読み直す"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.3-5.6M20 4v5h-5" /></svg></button>
+        </div>
+        <p id="git-upstream" class="git__note"></p>
+        <div class="git__lists">
+          <p id="git-clean" class="panel__empty" hidden>変更はありません</p>
+          <section class="git__group" data-group="conflicted" hidden>
+            <div class="git__group-head"><span>競合</span><span class="git__count"></span></div>
+            <ul class="git__files"></ul>
+          </section>
+          <section class="git__group" data-group="staged">
+            <div class="git__group-head">
+              <span>ステージ済み</span><span class="git__count"></span>
+              <button class="btn btn--xs" type="button" data-action="unstage-all">すべて外す</button>
+            </div>
+            <ul class="git__files"></ul>
+          </section>
+          <section class="git__group" data-group="unstaged">
+            <div class="git__group-head">
+              <span>未ステージ</span><span class="git__count"></span>
+              <button class="btn btn--xs" type="button" data-action="stage-all">すべてステージ</button>
+            </div>
+            <ul class="git__files"></ul>
+          </section>
+        </div>
+        <details id="git-log" class="git__log">
+          <summary class="git__log-head">
+            <svg class="icon git__log-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6" /></svg>
+            <span>履歴</span><span id="git-log-count" class="git__count"></span>
+          </summary>
+          <ol id="git-log-list" class="git__log-list"></ol>
+          <p id="git-log-note" class="git__note" hidden></p>
+        </details>
+        <form id="git-commit" class="git__commit">
+          <p id="git-identity" class="git__note"></p>
+          <textarea name="message" class="input git__message" rows="3" placeholder="コミットメッセージ" spellcheck="false"></textarea>
+          <button id="git-ai-message" type="button" class="btn btn--xs git__ai" hidden>AI で書く</button>
+          <p id="git-commit-reason" class="git__note" hidden></p>
+          <button type="submit" class="btn btn--primary btn--block-sm">コミット<kbd class="btn__key">⌘↩</kbd></button>
+        </form>
+        <p id="git-result" class="git__result" role="status" hidden></p>
+      </div>
+      </section>
+    </aside>
+
+    <dialog id="work-dialog" class="dialog" aria-labelledby="work-dialog-title">
+      <form method="dialog" class="dialog__body">
+        <h2 id="work-dialog-title" class="dialog__title">新しい作業</h2>
+        <label class="field">
+          <span class="field__label">リポジトリ</span>
+          <select name="repo" class="input" required></select>
+        </label>
+        <label class="field">
+          <span class="field__label">ブランチ名</span>
+          <input name="branch" class="input" required autocomplete="off" spellcheck="false" placeholder="feature/add-login" />
+        </label>
+        <label class="field">
+          <span class="field__label">元にするブランチ</span>
+          <input name="base" class="input" required autocomplete="off" spellcheck="false" />
+        </label>
+        <label class="field">
+          <span class="field__label">作ったら起動する</span>
+          <select name="command" class="input"></select>
+        </label>
+        <p class="dialog__error" role="alert" hidden></p>
+        <div class="dialog__actions">
+          <button type="button" class="btn" data-action="cancel">キャンセル</button>
+          <button type="submit" class="btn btn--primary" data-action="submit">作成</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="remove-dialog" class="dialog" aria-labelledby="remove-dialog-title">
+      <form method="dialog" class="dialog__body">
+        <h2 id="remove-dialog-title" class="dialog__title">作業を削除</h2>
+        <dl class="dialog__facts">
+          <dt>ブランチ</dt>
+          <dd data-field="branch"></dd>
+          <dt>場所</dt>
+          <dd data-field="path"></dd>
+        </dl>
+        <p class="dialog__note" data-field="note"></p>
+        <p class="dialog__error" role="alert" hidden></p>
+        <div class="dialog__actions">
+          <button type="button" class="btn" data-action="cancel">キャンセル</button>
+          <button type="submit" class="btn btn--danger" data-action="submit">削除</button>
+        </div>
+      </form>
+    </dialog>
+
+    <div id="settings" class="settings" role="dialog" aria-modal="true" aria-labelledby="settings-heading" hidden>
+      <div class="settings__titlebar">
+        <h1 id="settings-heading" class="settings__heading">設定</h1>
+        <span id="settings-status" class="settings__status" role="status"></span>
+        <button id="settings-close" class="icon-btn" type="button" aria-label="設定を閉じる" title="閉じる（Esc）">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
+        </button>
+      </div>
+      <div class="settings__body">
+        <nav id="settings-nav" class="settings__nav" aria-label="設定の項目"></nav>
+        <section id="settings-content" class="settings__content"></section>
+      </div>
+    </div>
+
+    <dialog id="theme-ai-dialog" class="dialog theme-ai" aria-labelledby="theme-ai-title">
+      <form method="dialog" class="dialog__body">
+        <h2 id="theme-ai-title" class="dialog__title">AI で好みを作成</h2>
+        <fieldset id="theme-ai-questions" class="theme-ai__questions">
+          <legend class="theme-ai__legend">好みの質問</legend>
+          <fieldset class="theme-ai__question">
+            <legend>1. 明るさ</legend>
+            <div class="theme-ai__options">
+              <label><input type="radio" name="brightness" value="暗い" checked>暗い</label>
+              <label><input type="radio" name="brightness" value="明るい">明るい</label>
+            </div>
+          </fieldset>
+          <fieldset class="theme-ai__question">
+            <legend>2. 好きな色や雰囲気</legend>
+            <div class="theme-ai__options">
+              <label><input type="checkbox" name="mood" value="桜">桜</label>
+              <label><input type="checkbox" name="mood" value="海">海</label>
+              <label><input type="checkbox" name="mood" value="森">森</label>
+              <label><input type="checkbox" name="mood" value="夕焼け">夕焼け</label>
+              <label><input type="checkbox" name="mood" value="モノクロ">モノクロ</label>
+              <label><input type="checkbox" name="mood" value="ネオン">ネオン</label>
+            </div>
+            <label class="field">
+              <span class="field__label">自由に書く・書き足す</span>
+              <input class="input" name="moodText" maxlength="400" placeholder="例: 深い青に、少しだけ金色">
+            </label>
+          </fieldset>
+          <fieldset class="theme-ai__question">
+            <legend>3. くっきり具合</legend>
+            <div class="theme-ai__options">
+              <label><input type="radio" name="contrast" value="やわらかい">やわらかい</label>
+              <label><input type="radio" name="contrast" value="ふつう" checked>ふつう</label>
+              <label><input type="radio" name="contrast" value="くっきり">くっきり</label>
+            </div>
+          </fieldset>
+          <fieldset class="theme-ai__question">
+            <legend>4. 色の温度</legend>
+            <div class="theme-ai__options">
+              <label><input type="radio" name="temperature" value="暖かい">暖かい</label>
+              <label><input type="radio" name="temperature" value="ふつう" checked>ふつう</label>
+              <label><input type="radio" name="temperature" value="冷たい">冷たい</label>
+            </div>
+          </fieldset>
+          <fieldset class="theme-ai__question">
+            <legend>5. 鮮やかさ</legend>
+            <div class="theme-ai__options">
+              <label><input type="radio" name="saturation" value="落ち着いた">落ち着いた</label>
+              <label><input type="radio" name="saturation" value="ふつう" checked>ふつう</label>
+              <label><input type="radio" name="saturation" value="鮮やか">鮮やか</label>
+            </div>
+          </fieldset>
+          <fieldset class="theme-ai__question">
+            <legend>6. 強調色</legend>
+            <div class="theme-ai__options">
+              <label><input type="checkbox" name="useAccent">強調色を指定する</label>
+              <input type="color" name="accent" value="#58c4ff" aria-label="強調色" disabled>
+            </div>
+          </fieldset>
+          <fieldset class="theme-ai__question">
+            <legend>7. 見やすさ</legend>
+            <div class="theme-ai__options">
+              <label><input type="checkbox" name="colorblind">赤と緑を見分けやすくする</label>
+              <label><input type="checkbox" name="appBackground">アプリの背景色（左の一覧など）も作る</label>
+            </div>
+          </fieldset>
+          <fieldset class="theme-ai__question">
+            <legend>8. 土台</legend>
+            <div class="theme-ai__options">
+              <label><input type="radio" name="base" value="new" checked>新しく作る</label>
+              <label><input type="radio" name="base" value="current">今のテーマを土台にする</label>
+            </div>
+          </fieldset>
+        </fieldset>
+        <p id="theme-ai-status" class="dialog__note" role="status"></p>
+        <p id="theme-ai-error" class="dialog__error" role="alert" hidden></p>
+        <p id="theme-ai-concept" class="dialog__note" hidden></p>
+        <div id="theme-ai-preview" hidden></div>
+        <fieldset id="theme-ai-revision" class="theme-ai__question" hidden>
+          <label class="field" for="theme-ai-instruction">
+            <span class="field__label">直したいこと（200字以内）</span>
+            <input id="theme-ai-instruction" class="input" name="instruction" maxlength="200" placeholder="例: もう少し青く">
+          </label>
+          <button id="theme-ai-refine" class="btn" type="button" disabled>この案を直す</button>
+        </fieldset>
+        <div class="dialog__actions">
+          <button id="theme-ai-cancel" class="btn" type="button">やめる</button>
+          <button id="theme-ai-retry" class="btn" type="button" hidden>作り直す</button>
+          <button id="theme-ai-create" class="btn btn--primary" type="submit">作成</button>
+          <button id="theme-ai-apply" class="btn btn--primary" type="button" hidden>適用</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="draft-dialog" class="dialog" aria-labelledby="draft-dialog-title">
+      <form method="dialog" class="dialog__body">
+        <h2 id="draft-dialog-title" class="dialog__title"></h2>
+        <p class="dialog__note" data-field="message"></p>
+        <label class="dialog__check"><input type="checkbox" name="skip" /> 今後は確認しない</label>
+        <p class="dialog__note">確認は、設定の「通知」でいつでも戻せます。</p>
+        <div class="dialog__actions">
+          <button class="btn" value="cancel">キャンセル</button>
+          <button class="btn btn--primary" value="accept" autofocus>外す</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="file-dialog" class="dialog" aria-labelledby="file-dialog-title">
+      <form method="dialog" class="dialog__body">
+        <h2 id="file-dialog-title" class="dialog__title"></h2>
+        <p class="dialog__note" data-field="message"></p>
+        <div class="dialog__actions">
+          <button class="btn" value="cancel" autofocus>キャンセル</button>
+          <button class="btn btn--danger" value="discard" hidden></button>
+          <button class="btn btn--primary" value="accept"></button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="git-discard-dialog" class="dialog" aria-labelledby="git-discard-title">
+      <form method="dialog" class="dialog__body">
+        <h2 id="git-discard-title" class="dialog__title"></h2>
+        <p class="dialog__note" data-field="message"></p>
+        <div class="dialog__actions">
+          <button class="btn" value="cancel" autofocus>キャンセル</button>
+          <button class="btn btn--danger" value="accept">取り消す</button>
+        </div>
+      </form>
+    </dialog>
+    <script src="../shortcuts.js"></script>
+    <script src="../inputbox.js"></script>
+    <script src="../../node_modules/monaco-editor/min/vs/loader.js"></script>
+    <div id="permission-cards" class="permission-cards" role="region" aria-label="許可待ち" hidden></div>
+    <div id="ai-toast" class="repo-toast ai-toast" role="status" hidden><p class="ai-toast__body"></p></div>
+    <div id="host-toast" class="repo-toast host-toast" role="alertdialog" aria-labelledby="host-toast-title" aria-describedby="host-toast-body" hidden>
+      <p id="host-toast-title" class="repo-toast__title"></p>
+      <div id="host-toast-body" class="repo-toast__body host-toast__body"></div>
+      <p class="repo-toast__error config-error" role="alert" hidden></p>
+      <div class="repo-toast__actions">
+        <button class="btn" type="button" data-action="cancel">やめる</button>
+        <button class="btn btn--primary" type="button" data-action="accept"></button>
+      </div>
+    </div>
+    <div id="repo-toast" class="repo-toast" role="alertdialog" aria-labelledby="repo-toast-title" aria-describedby="repo-toast-body" hidden>
+      <p id="repo-toast-title" class="repo-toast__title"></p>
+      <p id="repo-toast-body" class="repo-toast__body"></p>
+      <p class="repo-toast__error config-error" role="alert" hidden></p>
+      <div class="repo-toast__actions">
+        <button class="btn" type="button" data-action="dismiss">今はしない</button>
+        <button class="btn btn--primary" type="button" data-action="accept"></button>
+      </div>
+    </div>
     <script type="module" src="app.js"></script>
   </body>
 </html>

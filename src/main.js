@@ -1,19 +1,79 @@
-const { app, BrowserWindow, Menu, ipcMain, shell } = require('electron');
+const { app, BrowserWindow, Menu, dialog, ipcMain, shell } = require('electron');
 const { execFile } = require('child_process');
 const path = require('path');
+const { pathToFileURL } = require('url');
 const fs = require('fs');
 const os = require('os');
-const pty = require('node-pty');
 const config = require('./config');
+const shortcuts = require('./shortcuts');
+const ghostty = require('./ghostty');
 const { setBlur } = require('./blur');
+const projects = require('./projects');
+const { sessionWorkspace } = require('./workspaces');
+const gitops = require('./git');
+const gitpanel = require('./gitpanel');
+const history = require('./history');
+const agents = require('./agents');
+const agentstatus = require('./agentstatus');
+const themegen = require('./themegen');
+const aiassist = require('./aiassist');
+const subagents = require('./subagents');
+const files = require('./files');
+const snapshot = require('./snapshot');
+const newrepos = require('./newrepos');
+const tabs = require('./tabs');
+const notify = require('./notify');
+const wallpaper = require('./wallpaper');
+const agentreply = require('./agentreply');
+const agenthistory = require('./agenthistory');
+const { PtyClient, SOCKET } = require('./ptyclient');
+const { createDockIcon } = require('./dockicon');
+const { createAppliedStore, refreshDockAfterExit } = require('./bundleicon');
+// 起動時の貼り付けより先に、自己診断専用の空のアプリを用意する
+if (process.env.TERP_SELFTEST && process.env.TERP_SELFTEST_THEMEICON === '1') require('./selftest').prepareThemeIconTarget();
+const dockIcon = createDockIcon({ app, BrowserWindow, appliedStore: createAppliedStore(path.join(config.CONFIG_DIR, 'bundle-icon.json')) });
 
-const ptys = new Map();
-let nextId = 1;
+// シェルは常駐のプロセス（ptyhost.js）が持つ。terp を閉じてもシェルは残り、開き直したらつなぎ直す
+const client = new PtyClient();
+let connecting = null;
+// 作業場所と前面のプログラム名の最新の値。控え（snapshot）にも使う
+const known = new Map();
+// 控えを書き直さない間。常駐のプロセスを入れ替えている間と、控えから開き直している間は、途中の一覧で控えを上書きしない
+let snapshotHold = false;
+// 常駐のプロセスを入れ替えている間。止めたシェルの終わりを画面へ伝えない
+let replacingHost = false;
 let win = null;
+let dockAttentionCount = 0;
+let lastDockBadge = '';
+function updateDockBadge() {
+  lastDockBadge = config.loadConfig().dockBadge && dockAttentionCount > 0 ? String(dockAttentionCount) : '';
+  app.dock?.setBadge(lastDockBadge);
+}
+
+ipcMain.on('dock:badge', (event, count) => {
+  if (event.sender !== win?.webContents || !Number.isSafeInteger(count) || count < 0) return;
+  dockAttentionCount = count;
+  updateDockBadge();
+});
+
+exports.__test = {
+  get dockBadge() { return lastDockBadge; },
+  get dockIconColors() { return dockIcon.colors; },
+  get dockIconRenderCount() { return dockIcon.renderCount; },
+  get dockIconBusy() { return dockIcon.busy; },
+  get dockIconPng() { return dockIcon.png; },
+  get bundleIconTarget() { return dockIcon.bundleTarget; },
+  get bundleIconApplyCount() { return dockIcon.bundleApplyCount; },
+  get bundleIconRemoved() { return dockIcon.bundleRemoved; },
+};
+notify.init({ getWindow: () => win, toWindow });
 
 // 起動元（npm・Electron・Claude Code）の環境変数をシェルへ持ち込まない
 function shellEnv() {
   const env = { ...process.env };
+  // npm・npx は EDITOR が無いと EDITOR=vi を足す（npm の設定 editor の既定）。シェルに渡すと zsh が vi の打ち方で始まり、
+  // ⌥← などの行の編集が効かなくなる（2026-10-24 観測）。npm から起動したときの vi だけを外し、他の値は残す
+  if (env.npm_execpath && env.EDITOR === 'vi') delete env.EDITOR;
   for (const key of Object.keys(env)) {
     if (/^(ELECTRON_|npm_|CLAUDECODE$|CLAUDE_CODE_|NODE_OPTIONS$)/.test(key)) delete env[key];
   }
@@ -27,26 +87,172 @@ function shellEnv() {
   };
 }
 
-function createPty(sender, { cols, rows, cwd }) {
-  const id = nextId++;
-  const shellPath = process.env.SHELL || '/bin/zsh';
+// 窓を閉じた後も、常駐のプロセスからは出力が届き続ける。閉じた窓へ送ると本体でエラーになり、
+// その知らせの画面で終了が止まって terp が居残った（2026-10-23 観測）。送る前に必ず窓の有無を確かめる
+function toWindow(channel, ...args) {
+  if (win && !win.isDestroyed() && !win.webContents.isDestroyed()) win.webContents.send(channel, ...args);
+}
+
+function ensureClient() {
+  if (client.socket && !client.socket.destroyed) return Promise.resolve();
+  if (!connecting) {
+    connecting = client
+      .connect()
+      .then(({ fresh }) => {
+        // 常駐のプロセスが古い版でも、シェルを守るためそのまま使う。画面で知らせる
+        if (!fresh) toWindow('host-stale');
+      })
+      .finally(() => (connecting = null));
+  }
+  return connecting;
+}
+
+client.on('data', (id, data) => toWindow('pty:data', id, data));
+// 終わったシェルを控えから消すのは、閉じる操作（pty:kill）と定期の保存に任せる。
+// 常駐のプロセスごと止まるとき（Mac の終了など）はシェルが1つずつ終わるため、ここで書くと控えが空になる
+client.on('exit', (id, code) => {
+  if (replacingHost) return;
+  notify.close(id);
+  agentreply.forget(id);
+  known.delete(id);
+  toWindow('pty:exit', id, code);
+});
+// 常駐のプロセスが落ちたら、そのシェルはすべて終わったものとして扱う
+client.on('disconnect', () => {
+  if (replacingHost) return;
+  for (const id of known.keys()) {
+    notify.close(id);
+    agentreply.forget(id);
+    toWindow('pty:exit', id, null);
+  }
+  known.clear();
+});
+
+async function createPty({ cols, rows, cwd, workspace }) {
+  await ensureClient();
   const startCwd = cwd && fs.existsSync(cwd) ? cwd : os.homedir();
-  const proc = pty.spawn(shellPath, ['-l'], {
-    name: 'xterm-256color',
+  const created = await client.request({
+    t: 'create',
     cols,
     rows,
     cwd: startCwd,
     env: shellEnv(),
+    shell: process.env.SHELL || '/bin/zsh',
   });
-  ptys.set(id, { proc, cwd: startCwd });
-  proc.onData((data) => {
-    if (!sender.isDestroyed()) sender.send('pty:data', id, data);
-  });
-  proc.onExit(({ exitCode }) => {
-    ptys.delete(id);
-    if (!sender.isDestroyed()) sender.send('pty:exit', id, exitCode);
-  });
-  return { id, cwd: startCwd };
+  const state = projects.load();
+  workspace = state.workspaces.some((w) => w.id === workspace) ? workspace : state.activeWorkspace;
+  client.send({ t: 'meta', id: created.id, meta: { workspace } });
+  known.set(created.id, { cwd: startCwd, pid: created.pid, program: '' });
+  return { id: created.id, cwd: startCwd };
+}
+
+// 起動したときに、生きているシェルの一覧と、無ければ前回の控えを返す
+async function restoreInfo() {
+  await ensureClient();
+  const existing = await client.request({ t: 'list' });
+  const cwds = await readCwds(existing.map((e) => e.pid));
+  for (const e of existing) {
+    e.cwd = cwds.get(e.pid) || e.cwd;
+    known.set(e.id, { cwd: e.cwd, pid: e.pid, program: '' });
+  }
+  const state = { ...projects.load(), projects: await projects.list() };
+  for (const e of existing) {
+    const workspace = sessionWorkspace({ cwd: e.cwd, workspace: e.meta?.workspace }, state);
+    e.meta = { ...e.meta, workspace };
+    client.send({ t: 'meta', id: e.id, meta: { workspace } });
+  }
+  const saved = existing.length === 0 ? snapshot.load().map((s) => ({ ...s, workspace: sessionWorkspace(s, state) })) : [];
+  // 開き直し終わる（pty:restored）まで、途中の一覧で控えを上書きしない
+  snapshotHold = saved.length > 0;
+  return { existing, snapshot: saved };
+}
+
+// 書いている最中に呼ばれたら、その書き込みの終わりを待つ
+let saving = null;
+let saveAgain = false;
+function saveSnapshot() {
+  if (snapshotHold) return Promise.resolve();
+  if (saving) { saveAgain = true; return saving; }
+  saving = (async () => {
+    do {
+      saveAgain = false;
+      await writeSnapshot();
+    } while (saveAgain);
+  })().finally(() => (saving = null));
+  return saving;
+}
+
+async function writeSnapshot() {
+  if (!client.socket || client.socket.destroyed) return;
+  try {
+    const { list, entries, found } = await snapshotEntries();
+    if (snapshotHold) return;
+    snapshot.save(entries);
+    recordAgentHistory(list, found);
+  } catch {
+    // 控えが書けなくても、動いているシェルには影響しない
+  }
+}
+
+// 控えに書く各ターミナルの中身と、動いている会話。fresh なら作業場所と前面のプログラムを今の値で拾い直す。
+// claude は会話の ID を claude agents から、codex は開いている記録のファイル名から拾う
+async function snapshotEntries({ fresh = false } = {}) {
+  const list = await client.request({ t: 'list' });
+  if (fresh) {
+    const procs = await client.request({ t: 'info' });
+    const cwds = await readCwds(list.map((e) => e.pid));
+    for (const e of list) {
+      const entry = known.get(e.id);
+      if (!entry) continue;
+      entry.cwd = cwds.get(e.pid) || entry.cwd;
+      const proc = procs.find((p) => p.id === e.id);
+      if (proc) entry.program = programName(proc.program);
+    }
+  }
+  const claudeSessions = await snapshot.claudeSessionDetails(
+    list.filter((e) => known.get(e.id)?.program === 'claude').map((e) => e.pid),
+  );
+  agentreply.rememberSessions(new Map([...claudeSessions].map(([pid, found]) => [pid, found.sessionId])));
+  const found = new Map();
+  for (const e of list) {
+    const program = known.get(e.id)?.program;
+    let agent = null;
+    if (historyTestLookup) agent = historyTestLookup(e);
+    else if (program === 'claude' && claudeSessions.get(e.pid)) agent = { agent: 'claude', ...claudeSessions.get(e.pid) };
+    else if (program === 'codex') {
+      const sessionId = agenthistory.codexSessionId(await agentreply.codexFile(e.pid, new AbortController().signal, { thorough: fresh }).catch(() => null));
+      if (sessionId) agent = { agent: 'codex', sessionId };
+    }
+    if (agent) found.set(e.id, agent);
+  }
+  const entries = list.map((e) => ({
+    id: e.id,
+    cwd: known.get(e.id)?.cwd || e.cwd,
+    workspace: e.meta.workspace || null,
+    customName: e.meta.customName || null,
+    agentTitle: e.meta.agentTitle || null,
+    workPath: e.meta.workPath || null,
+    agent: found.get(e.id)?.agent || null,
+    agentSession: found.get(e.id)?.sessionId || null,
+    configDir: found.get(e.id)?.configDir || null,
+    bypass: Boolean(e.meta.bypass),
+  }));
+  return { list, entries, found };
+}
+
+// 動いている会話を履歴に書き足す。
+// 会話の ID ごとに、今それを動かしているターミナルを覚え、履歴から選んだときはそのターミナルへ移る
+let liveAgentSessions = new Map();
+let historyTestLookup = null;
+function recordAgentHistory(list, found) {
+  const seen = [];
+  for (const e of list) {
+    if (!found.has(e.id)) continue;
+    seen.push({ ...found.get(e.id), terminalId: e.id, cwd: known.get(e.id)?.cwd || e.cwd, workspace: e.meta.workspace,
+      title: e.meta.agentTitle, name: e.meta.customName });
+  }
+  liveAgentSessions = new Map(seen.map((item) => [`${item.agent}:${item.sessionId}`, item.terminalId]));
+  if (agenthistory.record(seen)) toWindow('agent-history:changed');
 }
 
 // claude の実行ファイルは版番号（例 2.1.309）の名前で動いている
@@ -56,109 +262,403 @@ function programName(name) {
   return /^\d+\.\d+\.\d+$/.test(base) ? 'claude' : base;
 }
 
-// 各シェルの作業場所と、前面で動いているプログラム名を一度の lsof でまとめて拾う
-function pollInfo() {
-  if (!win || win.isDestroyed() || ptys.size === 0) return;
-  const pids = [...ptys.values()].map(({ proc }) => proc.pid).join(',');
-  // Finder から起動すると PATH が細いため、絶対パスで呼ぶ
-  execFile('/usr/sbin/lsof', ['-a', '-d', 'cwd', '-Fn', '-p', pids], (_err, stdout = '') => {
-    const cwdByPid = new Map();
-    let pid = null;
-    for (const line of stdout.split('\n')) {
-      if (line[0] === 'p') pid = Number(line.slice(1));
-      else if (line[0] === 'n' && pid) cwdByPid.set(pid, line.slice(1));
-    }
-    const info = [];
-    for (const [id, entry] of ptys) {
-      entry.cwd = cwdByPid.get(entry.proc.pid) || entry.cwd;
-      let program = '';
-      try {
-        program = programName(entry.proc.process);
-      } catch {
-        // 終了直後は名前が取れない
+function readCwds(pids) {
+  if (!pids.length) return Promise.resolve(new Map());
+  return new Promise((resolve) => {
+    // Finder から起動すると PATH が細いため、絶対パスで呼ぶ。
+    execFile('/usr/sbin/lsof', ['-a', '-d', 'cwd', '-Fn', '-p', pids.join(',')], { timeout: 5000 }, (_err, stdout = '') => {
+      const result = new Map();
+      let pid = null;
+      for (const line of stdout.split('\n')) {
+        if (line[0] === 'p') pid = Number(line.slice(1));
+        else if (line[0] === 'n' && pid) result.set(pid, line.slice(1));
       }
-      info.push({ id, cwd: entry.cwd, program });
-    }
-    if (!win.isDestroyed()) win.webContents.send('pty:info', info);
+      resolve(result);
+    });
   });
+}
+
+// 各シェルの作業場所と前面のプログラム名をまとめて拾う。
+async function pollInfo() {
+  if (replacingHost || !win || win.isDestroyed() || known.size === 0 || !client.socket || client.socket.destroyed) return;
+  const procs = await client.request({ t: 'info' }).catch(() => []);
+  if (procs.length === 0) return;
+  const cwdByPid = await readCwds(procs.map((p) => p.pid));
+  const info = procs.filter((p) => known.has(p.id)).map((p) => {
+    const entry = known.get(p.id);
+    entry.cwd = cwdByPid.get(p.pid) || entry.cwd;
+    entry.program = programName(p.program);
+    return { id: p.id, cwd: entry.cwd, program: entry.program };
+  });
+  toWindow('pty:info', info);
 }
 
 ipcMain.on('home', (event) => {
   event.returnValue = os.homedir();
 });
-ipcMain.handle('config:get', () => config.loadConfig());
-ipcMain.handle('pty:create', (event, opts) => createPty(event.sender, opts));
-ipcMain.on('pty:write', (_e, id, data) => ptys.get(id)?.proc.write(data));
-ipcMain.on('pty:resize', (_e, id, cols, rows) => {
+ipcMain.on('editor:worker', (event) => {
   try {
-    ptys.get(id)?.proc.resize(cols, rows);
-  } catch {
-    // 終了直後の resize は無視する
+    const dir = path.join(__dirname, '..', 'node_modules', 'monaco-editor', 'min', 'vs', 'assets');
+    const worker = fs.readdirSync(dir).find((name) => name.startsWith('editor.worker-') && name.endsWith('.js'));
+    if (!worker) throw new Error('エディタの作業用ファイルが見つかりません');
+    event.returnValue = { ok: true, value: pathToFileURL(path.join(dir, worker)).href };
+  } catch (err) {
+    event.returnValue = { ok: false, error: err.message };
   }
 });
-ipcMain.on('pty:kill', (_e, id) => ptys.get(id)?.proc.kill());
+ipcMain.handle('config:get', () => config.loadConfig());
+
+// 失敗は例外のまま画面へ渡すと文言が崩れるため、{ error } の形で返す
+const safe = (fn) => async (...args) => {
+  try {
+    return { ok: true, value: await fn(...args) };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+};
+
+ipcMain.handle('config:raw', safe(() => config.rawConfig()));
+ipcMain.handle('config:update', safe((_e, patch) => config.updateConfig(patch)));
+ipcMain.handle('config:themes', safe(() => config.listThemes()));
+ipcMain.handle('config:ghostty', safe(() => {
+  const home = os.homedir();
+  const paths = ghostty.ghosttyConfigPaths({ env: process.env, home });
+  const result = ghostty.readGhosttyConfig({ paths, home,
+    readFile: (file) => fs.readFileSync(file, 'utf8'), realpath: (file) => fs.realpathSync(file) });
+  const themes = new Set(config.listThemes());
+  return { files: result.files, ...ghostty.mapGhosttyConfig(result.entries, { themeExists: (name) => themes.has(name) }), current: config.rawConfig() };
+}));
+ipcMain.handle('config:theme-colors', safe((_e, name) => config.getThemeColors(name)));
+ipcMain.handle('theme:generate', safe((_e, answers, revision = {}) => themegen.generate(answers, {
+  currentTheme: revision?.currentTheme ?? null,
+  instruction: revision?.instruction ?? null,
+  // 画面から渡された色を土台にせず、上書きも含めた現在の設定を本体で読む
+  baseColors: answers?.base === 'current' && !revision?.currentTheme ? config.getThemeColors(config.rawConfig().theme) : null,
+})));
+ipcMain.handle('theme:save', safe((_e, theme) => themegen.saveTheme(theme)));
+// AI の手伝い。切ってあるか上限に達していれば、理由を失敗として返す
+ipcMain.handle('ai:commit-message', safe(async (_e, top) => aiassist.commitMessage(await gitpanel.stagedSummary(top))));
+ipcMain.handle('ai:terminal-name', safe((_e, { screen, cwd, program, auto }) => aiassist.terminalName({
+  screen: String(screen || '').slice(-2000), cwd: String(cwd || ''), program: String(program || ''),
+}, auto ? 'autoTitle' : 'terminalName')));
+ipcMain.handle('ai:usage', safe(() => aiassist.loadUsage()));
+ipcMain.handle('config:open-file', safe(() => shell.openPath(config.CONFIG_PATH)));
+ipcMain.handle('notify:show', safe(async (_e, message) => {
+  const entry = known.get(message?.id);
+  if (!entry) return false;
+  const settings = config.loadConfig();
+  if (!settings.notifications || !(message.kind === 'done' ? settings.notifyAgentDone : message.kind === 'bell' && settings.notifyBell)) return false;
+  const request = Symbol();
+  entry.notificationRequest = request;
+  const reply = message.kind === 'done' && settings.notifyMessage ? await agentreply.find(entry, message.id) : null;
+  if (known.get(message.id) !== entry || entry.notificationRequest !== request) return false;
+  const current = config.loadConfig();
+  if (!current.notifications || !(message.kind === 'done' ? current.notifyAgentDone : current.notifyBell)) return false;
+  const useReply = reply && current.notifyMessage;
+  const shown = notify.show({ ...message, body: useReply ? reply.body : message.body });
+  if (shown && useReply) agentreply.remember(message.id, reply);
+  return shown;
+}));
+ipcMain.handle('notify:test', safe(() => notify.show({ title: 'terp', body: '通知の試し' })));
+ipcMain.handle('agent-history:list', safe(() => agenthistory.load().map((e) => ({ ...e, terminalId: liveAgentSessions.get(`${e.agent}:${e.sessionId}`) ?? null }))));
+ipcMain.handle('agent-history:remove', safe((_e, agent, sessionId) => agenthistory.remove(agent, sessionId)));
+// 自己診断で、本物の claude・codex を動かさずに会話を見つけたことにする。terminals は { 端末の ID: { agent, sessionId } }
+ipcMain.handle('agent-history:test-sessions', async (_e, terminals) => {
+  if (!process.env.TERP_SELFTEST) return;
+  historyTestLookup = terminals ? (e) => terminals[e.id] || null : null;
+  await saveSnapshot();
+});
+// 表示の検査の結果を見せる。「作り直す」を選んだら true を返す
+ipcMain.handle('screen:report', async (_e, { title, detail, broken }) => {
+  if (!win || win.isDestroyed()) return false;
+  if (process.env.TERP_SELFTEST) return false;
+  const { response } = await dialog.showMessageBox(win, {
+    type: broken ? 'warning' : 'info', message: title, detail,
+    buttons: broken ? ['表示を作り直す', '閉じる'] : ['閉じる'], defaultId: 0, cancelId: broken ? 1 : 0,
+  });
+  return broken && response === 0;
+});
+ipcMain.handle('tabs:load', safe(() => tabs.load()));
+ipcMain.handle('tabs:save', safe((_e, state) => tabs.save(state)));
+ipcMain.handle('projects:list', safe(() => projects.list()));
+ipcMain.handle('projects:update', safe((_e, repo, patch) => projects.update(repo, patch)));
+ipcMain.handle('workspaces:list', safe(() => {
+  const { workspaces, activeWorkspace } = projects.load();
+  return { workspaces, activeWorkspace };
+}));
+ipcMain.handle('workspaces:create', safe((_e, name) => projects.createWorkspace(name)));
+ipcMain.handle('workspaces:rename', safe((_e, id, name) => projects.renameWorkspace(id, name)));
+ipcMain.handle('workspaces:activate', safe((_e, id) => projects.activateWorkspace(id)));
+ipcMain.handle('workspaces:remove', safe(async (_e, id) => {
+  await ensureClient();
+  const list = await client.request({ t: 'list' });
+  const state = { ...projects.load(), projects: await projects.list() };
+  const occupied = list.some((e) => sessionWorkspace({ cwd: e.cwd, workspace: e.meta?.workspace }, state) === id);
+  projects.removeWorkspace(id, occupied);
+}));
+// dir を渡さないときはフォルダを選ぶ画面を出す
+ipcMain.handle(
+  'projects:add',
+  safe(async (event, dir, workspace) => {
+    if (!dir) {
+      const result = await dialog.showOpenDialog(BrowserWindow.fromWebContents(event.sender), {
+        title: 'リポジトリを追加',
+        buttonLabel: '追加',
+        properties: ['openDirectory'],
+      });
+      if (result.canceled || !result.filePaths[0]) return null;
+      dir = result.filePaths[0];
+    }
+    return projects.add(dir, workspace);
+  }),
+);
+ipcMain.handle('projects:remove', safe((_e, repo) => projects.remove(repo)));
+ipcMain.handle('projects:reorder', safe((_e, order) => projects.reorder(order)));
+ipcMain.handle('work:create', safe((_e, { repo, branch, base }) => gitops.addWorktree(repo, branch, base)));
+ipcMain.handle('work:remove', safe((_e, { repo, dir }) => gitops.removeWorktree(repo, dir)));
+ipcMain.handle('work:changes', safe((_e, dir) => gitops.changeCount(dir)));
+ipcMain.handle('files:root', safe((_e, dir) => files.root(dir)));
+ipcMain.handle('files:list', safe((_e, dir) => files.list(dir)));
+ipcMain.handle('files:read', safe((_e, file) => files.read(file)));
+ipcMain.handle('files:stat', safe((_e, file) => files.stat(file)));
+// エージェントが編集したファイルを含む git のリポジトリ（元のリポジトリの場所）を、新しく編集した順に返す
+ipcMain.handle('agent:edited-repos', safe(async (_e, id) => {
+  const entry = known.get(id);
+  if (!entry || (!process.env.TERP_SELFTEST && !['claude', 'codex'].includes(entry.program))) return [];
+  const roots = [];
+  for (const file of await agentreply.editedFiles({ pid: entry.pid, program: entry.program })) {
+    const dir = path.dirname(file);
+    // 同じフォルダを何度も git に聞かない
+    if (!editedRepoRoots.has(dir)) editedRepoRoots.set(dir, await gitops.repoRoot(dir).catch(() => null));
+    const root = editedRepoRoots.get(dir);
+    if (root && !roots.includes(root)) roots.push(root);
+  }
+  return roots;
+}));
+const editedRepoRoots = new Map();
+// エージェントの「今なにしてる」（最後の道具の呼び出し）と、編集したファイル・時刻。一覧の行と、同じファイルの重なりの印に使う
+ipcMain.handle('agent:activity', safe(async (_e, id) => {
+  const entry = known.get(id);
+  if (!entry || (!process.env.TERP_SELFTEST && !['claude', 'codex'].includes(entry.program))) return null;
+  return agentreply.activity({ id, pid: entry.pid, program: entry.program });
+}));
+// 場所を含む git のリポジトリの一番上（worktree なら元のリポジトリ）。git でなければ null
+ipcMain.handle('repos:root', safe((_e, dir) => gitops.repoRoot(dir).catch(() => null)));
+ipcMain.handle('repos:find-new', safe((_e, dir, since) => newrepos.findNewRepos(dir, since)));
+ipcMain.handle('files:write', safe((_e, { file, text, mtime, force }) => files.write(file, text, mtime, force)));
+// 既定のアプリで開く・Finder で見せる
+ipcMain.handle('files:open-external', safe((_e, file) => shell.openPath(file)));
+ipcMain.handle('files:reveal', safe((_e, file) => shell.showItemInFolder(file)));
+ipcMain.handle('agents:list', safe(() => agents.detect(config.loadConfig().agents)));
+ipcMain.handle('agents:status', safe(() => agentstatus.check(config.loadConfig().agents)));
+ipcMain.handle('subagents:list', safe(async () => {
+  const entries = [...known.values()];
+  const byPid = await subagents.list(
+    entries.map((entry) => entry.pid),
+    entries.filter((entry) => entry.program === 'claude').map((entry) => entry.pid),
+  );
+  return Object.fromEntries([...known].map(([id, entry]) => [id, byPid.get(entry.pid) || []]));
+}));
+ipcMain.handle('subagents:read', safe((_e, file, offset) => subagents.read(file, offset)));
+ipcMain.handle('history:log', safe((_e, { dir, ...options }) => history.log(dir, options)));
+ipcMain.handle('history:commit', safe((_e, { dir, hash }) => history.commit(dir, hash)));
+ipcMain.handle('history:diff', safe((_e, { dir, hash, file }) => history.commitDiff(dir, hash, file)));
+ipcMain.handle('git:status', safe((_e, dir) => gitpanel.status(dir)));
+ipcMain.handle('git:diff', safe((_e, { top, file, kind }) => gitpanel.diff(top, file, kind)));
+ipcMain.handle('git:stage', safe((_e, { top, files }) => gitpanel.stage(top, files)));
+ipcMain.handle('git:unstage', safe((_e, { top, files }) => gitpanel.unstage(top, files)));
+// 自己診断は利用者のゴミ箱を汚さないよう、TERP_SELFTEST_TRASH のフォルダへ移す
+function trashItem(file) {
+  const dir = process.env.TERP_SELFTEST_TRASH;
+  if (!dir) return shell.trashItem(file);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.renameSync(file, path.join(dir, `${Date.now()}-${path.basename(file)}`));
+  return Promise.resolve();
+}
+ipcMain.handle('git:discard', safe((_e, { top, files }) => gitpanel.discard(top, files, { trash: trashItem })));
+ipcMain.handle('git:commit', safe((_e, { top, message }) => gitpanel.commit(top, message)));
+ipcMain.handle('git:push', safe((_e, top) => gitpanel.push(top)));
+ipcMain.handle('git:pull', safe((_e, top) => gitpanel.pull(top)));
+ipcMain.handle('git:fetch', safe((_e, top) => gitpanel.fetch(top)));
+ipcMain.handle('pty:create', (_e, opts) => createPty(opts));
+ipcMain.handle('pty:restore-info', () => restoreInfo());
+ipcMain.handle('pty:attach', async (_e, id) => {
+  await ensureClient();
+  return client.request({ t: 'attach', id });
+});
+ipcMain.on('pty:write', (_e, id, data) => client.send({ t: 'write', id, data }));
+ipcMain.on('pty:resize', (_e, id, cols, rows) => client.send({ t: 'resize', id, cols, rows }));
+ipcMain.on('pty:kill', (_e, id) => {
+  notify.close(id);
+  agentreply.forget(id);
+  const entry = known.get(id);
+  if (entry) entry.notificationRequest = null;
+  client.send({ t: 'kill', id });
+  // 閉じたターミナルを控えから消す。シェルが終わるのを少し待つ
+  setTimeout(saveSnapshot, 500);
+});
+// 名前などは常駐のプロセスに預け、開き直したときに戻す
+ipcMain.on('pty:meta', (_e, id, meta) => {
+  client.send({ t: 'meta', id, meta });
+  if (['customName', 'workspace', 'workPath'].some((key) => key in meta)) saveSnapshot();
+});
+// 自己診断で、Mac の再起動に当たる状態（常駐のプロセスごと消える）を作る
+ipcMain.handle('pty:shutdown-host', async () => {
+  await saveSnapshot();
+  return client.request({ t: 'shutdown' });
+});
+// 控えから開き直し終わったら、控えの書き直しを戻して今の一覧で書く
+ipcMain.on('pty:restored', () => {
+  snapshotHold = false;
+  saveSnapshot();
+});
+
+// 常駐のプロセスを新しい版に入れ替える。控えを書いてからシェルごと止め、窓を読み直して控えから開き直す。
+// claude・codex は同じ会話を同じ起動の仕方で再開する。画面の中身と、ほかに動いていたプログラムは戻らない。
+// 確かめは画面の右下のトーストで行う（pty:replace-plan で中身を見せ、pty:replace-host で入れ替える）
+const SHELL_PROGRAMS = new Set(['', 'zsh', '-zsh', 'bash', '-bash', 'fish', 'sh', 'login']);
+const AGENT_PROGRAMS = new Set(['claude', 'codex']);
+
+async function replacePlan() {
+  const { entries } = await snapshotEntries({ fresh: true });
+  const program = (e) => known.get(e.id)?.program || '';
+  const item = (e) => ({ id: e.id, name: e.customName || e.agentTitle || e.cwd.replace(os.homedir(), '~'), program: program(e), agent: e.agent });
+  return {
+    entries,
+    count: entries.length,
+    resumed: entries.filter((e) => e.agentSession).map(item),
+    // 会話の ID が見つからない claude・codex。入れ替えると会話を再開できない
+    missing: entries.filter((e) => AGENT_PROGRAMS.has(program(e)) && !e.agentSession).map(item),
+    stopped: entries.filter((e) => !e.agentSession && !AGENT_PROGRAMS.has(program(e)) && !SHELL_PROGRAMS.has(program(e))).map(item),
+  };
+}
+
+const publicPlan = ({ entries, ...plan }) => plan;
+
+ipcMain.handle('pty:replace-plan', safe(async () => {
+  if (replacingHost || snapshotHold) throw new Error('入れ替えか開き直しの最中です');
+  await ensureClient();
+  return publicPlan(await replacePlan());
+}));
+
+// ドラフトから外すリポジトリのターミナルの控え。外すと閉じ、ドラフトに戻すとこの控えから開き直す（2026-11-09 利用者の指示）。
+// 再開できない会話（missing）と、止まって戻らないプログラム（stopped）も返し、外す前の確認に出す
+ipcMain.handle('pty:park-plan', safe(async (_e, ids) => {
+  if (replacingHost || snapshotHold) throw new Error('入れ替えか開き直しの最中です');
+  await ensureClient();
+  const wanted = new Set(Array.isArray(ids) ? ids : []);
+  const plan = await replacePlan();
+  const pick = (list) => list.filter((e) => wanted.has(e.id));
+  return { entries: pick(plan.entries), missing: pick(plan.missing), stopped: pick(plan.stopped) };
+}));
+
+// acceptMissing は、会話を再開せずに開き直すと利用者が選んだターミナルの ID。
+// 確かめた後に、会話の ID が見つからないターミナルが増えていたら入れ替えず、新しい中身を返す
+ipcMain.handle('pty:replace-host', safe(async (_e, { acceptMissing = [] } = {}) => {
+  if (replacingHost || snapshotHold) throw new Error('入れ替えか開き直しの最中です');
+  await ensureClient();
+  await saving;
+  snapshotHold = true;
+  let plan;
+  try {
+    plan = await replacePlan();
+  } catch (err) {
+    snapshotHold = false;
+    throw err;
+  }
+  if (plan.missing.some((m) => !acceptMissing.includes(m.id))) {
+    snapshotHold = false;
+    return { replaced: false, plan: publicPlan(plan) };
+  }
+  snapshot.save(plan.entries);
+  replacingHost = true;
+  try {
+    await client.request({ t: 'shutdown' });
+    // 常駐のプロセスは終わるときにソケットのファイルを消す
+    for (let t = 0; t < 100 && fs.existsSync(SOCKET); t++) await new Promise((r) => setTimeout(r, 100));
+    if (fs.existsSync(SOCKET)) throw new Error('古い常駐のプロセスが終わりませんでした');
+  } catch (err) {
+    replacingHost = false;
+    snapshotHold = false;
+    throw err;
+  }
+  for (const id of known.keys()) {
+    notify.close(id);
+    agentreply.forget(id);
+  }
+  known.clear();
+  client.socket?.destroy();
+  replacingHost = false;
+  // 控えから開き直し終わるまで snapshotHold を保つ（pty:restored で戻す）
+  if (win && !win.isDestroyed()) win.webContents.reload();
+  return { replaced: true, count: plan.count };
+}));
+
 ipcMain.on('open-external', (_e, url) => {
   if (/^https?:\/\//.test(url)) shell.openExternal(url);
 });
 
-// ⌘ の付くキーはメニューで受け、画面へ操作として送る
-function buildMenu() {
-  const send = (action, arg) => () => win?.webContents.send('menu', action, arg);
-  const selectItems = Array.from({ length: 9 }, (_, i) => ({
-    label: `ターミナル ${i + 1}`,
-    accelerator: `CmdOrCtrl+${i + 1}`,
-    click: send('select-index', i),
+// キーの定義を設定画面と共有し、ラベルの変更で設定の ID が変わらないようにする。
+let menuItems = [];
+let capturingShortcut = false;
+function runMenuItem(item) {
+  if (item.id === 'open-config') shell.openPath(config.CONFIG_PATH);
+  else toWindow('menu', item.action, item.arg);
+}
+function buildMenu(loaded = config.loadConfig()) {
+  menuItems = shortcuts.applyKeybindings(loaded.keybindings);
+  const effective = new Map(menuItems.map((item) => [item.id, item]));
+  const template = shortcuts.MENU_GROUPS.map((group) => ({
+    label: group.label,
+    ...(group.role ? { role: group.role } : {}),
+    submenu: group.items.map((entry) => {
+      if (!entry.id) return { ...entry };
+      const item = effective.get(entry.id);
+      // role の既定キーは macOS に任せる。null で上書きして標準操作を消さない。
+      if (item.role) return { id: item.id, role: item.role, label: item.label };
+      return {
+        id: item.id, label: item.label, accelerator: item.accelerator,
+        ...(item.visible === false ? { visible: false } : {}),
+        ...(item.registerAccelerator === false ? { registerAccelerator: false } : {}),
+        click: () => runMenuItem(item),
+      };
+    }),
   }));
-  const template = [
-    {
-      role: 'appMenu',
-      submenu: [
-        { role: 'about' },
-        { type: 'separator' },
-        { label: '設定ファイルを開く', accelerator: 'CmdOrCtrl+,', click: () => shell.openPath(config.CONFIG_PATH) },
-        { type: 'separator' },
-        { role: 'hide' },
-        { role: 'hideOthers' },
-        { role: 'unhide' },
-        { type: 'separator' },
-        { role: 'quit' },
-      ],
-    },
-    {
-      label: 'ターミナル',
-      submenu: [
-        { label: '新しいターミナル', accelerator: 'CmdOrCtrl+T', click: send('new') },
-        { label: 'ターミナルを閉じる', accelerator: 'CmdOrCtrl+W', click: send('close') },
-        { type: 'separator' },
-        { label: '画面を消去', accelerator: 'CmdOrCtrl+K', click: send('clear') },
-      ],
-    },
-    {
-      label: '編集',
-      submenu: [
-        { role: 'copy', label: 'コピー' },
-        { role: 'paste', label: '貼り付け' },
-        { label: 'すべて選択', accelerator: 'CmdOrCtrl+A', click: send('select-all') },
-      ],
-    },
-    {
-      label: '移動',
-      submenu: [
-        // ⌃Tab は端末が先に受け取るため、画面側で処理し、メニューには表示だけする
-        { label: '直前のターミナル', accelerator: 'Ctrl+Tab', registerAccelerator: false, click: send('recent') },
-        { label: '前のターミナル', accelerator: 'CmdOrCtrl+Shift+[', click: send('prev') },
-        { label: '次のターミナル', accelerator: 'CmdOrCtrl+Shift+]', click: send('next') },
-        { type: 'separator' },
-        ...selectItems,
-      ],
-    },
-    {
-      label: '表示',
-      submenu: [{ role: 'toggleDevTools', label: '開発者ツール' }, { role: 'togglefullscreen', label: 'フルスクリーン' }],
-    },
-  ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
+
+// 入力欄へ届く前にメニューが ⌘W などを実行するため、待ち受けの開始を本体と同期する。
+ipcMain.handle('shortcuts:capture', (event, active) => {
+  if (event.sender !== win?.webContents || typeof active !== 'boolean') return false;
+  capturingShortcut = active;
+  event.sender.setIgnoreMenuShortcuts(active);
+  return true;
+});
+
+let quitRequested = false;
+let allowClose = false;
+let closeRequest = null;
+let closeSerial = 0;
+
+function finishClose(allow) {
+  if (!closeRequest) return;
+  clearTimeout(closeRequest.timer);
+  closeRequest = null;
+  if (!allow) {
+    quitRequested = false;
+    return;
+  }
+  allowClose = true;
+  if (quitRequested) app.quit();
+  else win?.close();
+}
+
+ipcMain.on('window:close-reply', (event, id, answer) => {
+  if (!closeRequest || closeRequest.id !== id || event.sender !== win?.webContents) return;
+  // 画面が応答した後は、利用者が確認画面で選ぶまで待つ
+  if (answer === 'pending') clearTimeout(closeRequest.timer);
+  else if (typeof answer === 'boolean') finishClose(answer);
+});
 
 function createWindow() {
   const initial = config.loadConfig();
@@ -169,6 +669,8 @@ function createWindow() {
     transparent: true,
     backgroundColor: '#00000000',
     titleBarStyle: 'hiddenInset',
+    // 自己診断の窓は手前に出さない。利用者が別の窓で打っている文字を奪わないため
+    show: !process.env.TERP_SELFTEST,
     trafficLightPosition: { x: 14, y: 14 },
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -176,9 +678,53 @@ function createWindow() {
       nodeIntegration: false,
     },
   });
+  const resetShortcutCapture = () => {
+    capturingShortcut = false;
+    if (!win.webContents.isDestroyed()) win.webContents.setIgnoreMenuShortcuts(false);
+  };
+  win.on('blur', resetShortcutCapture);
+  win.webContents.on('did-start-loading', resetShortcutCapture);
+  win.webContents.on('render-process-gone', resetShortcutCapture);
+  win.webContents.on('before-input-event', (event, input) => {
+    if (capturingShortcut || input.type !== 'keyDown' || input.isComposing) return;
+    // Control・Option の割り当てを端末へ流さない。recent は一覧内の ⌃Tab と区別するため画面で受ける。
+    const accelerator = shortcuts.acceleratorFromEvent(input);
+    if (!accelerator) return;
+    const item = menuItems.find((entry) => !entry.role && entry.id !== 'recent' && entry.accelerator === accelerator);
+    if (!item) return;
+    event.preventDefault();
+    runMenuItem(item);
+  });
+  win.on('close', (event) => {
+    if (allowClose) return;
+    event.preventDefault();
+    if (closeRequest) return;
+    const id = ++closeSerial;
+    closeRequest = { id, timer: setTimeout(() => finishClose(true), 2000) };
+    toWindow('window:close-request', id);
+  });
+  win.once('closed', () => dockIcon.stop());
+  // 全画面の Space には壁紙も他の窓も無いため、透過していても灰色の板になる。壁紙を画面に敷いて透けて見せる
+  win.on('enter-full-screen', () => {
+    wallpaper.wallpaperDataUrl(win.getBounds())
+      .then((url) => toWindow('fullscreen:wallpaper', url))
+      .catch(() => {});
+  });
+  win.on('leave-full-screen', () => toWindow('fullscreen:wallpaper', null));
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
-  win.once('ready-to-show', () => setBlur(win, initial.window.blur));
+  dockIcon.update(initial);
+  win.once('ready-to-show', () => {
+    applyWindowLook(win, initial.window);
+    if (process.env.TERP_SELFTEST) win.showInactive();
+  });
   if (process.env.TERP_SELFTEST) require('./selftest').run(win);
+}
+
+// 透かす・ぼかす窓では影を切る（Ghostty と同じ）。透明な窓の影は四角い窓の形のまま描かれ、
+// 丸い角の外に四角い線と隅の影が残る（2026-10-27 利用者の指摘）。不透明なら影を戻し、ほかの窓との境目を保つ
+function applyWindowLook(target, look) {
+  setBlur(target, look.blur);
+  target.setHasShadow(!(look.opacity < 1 || look.blur > 0));
 }
 
 app.whenReady().then(() => {
@@ -187,14 +733,28 @@ app.whenReady().then(() => {
   createWindow();
   // 設定ファイルを保存したら、開いている端末にすぐ反映する
   config.watchConfig((loaded) => {
+    buildMenu(loaded);
+    updateDockBadge();
+    dockIcon.update(loaded);
     if (!win || win.isDestroyed()) return;
-    setBlur(win, loaded.window.blur);
-    win.webContents.send('config', loaded);
+    applyWindowLook(win, loaded.window);
+    toWindow('config', loaded);
   });
   setInterval(pollInfo, 1500);
+  setInterval(saveSnapshot, 10000);
 });
 
-app.on('window-all-closed', () => {
-  for (const { proc } of ptys.values()) proc.kill();
-  app.quit();
+// シェルは常駐のプロセスに残すため、ここでは止めない
+app.on('window-all-closed', () => app.quit());
+app.on('before-quit', () => {
+  quitRequested = true;
+  saveSnapshot();
+});
+// 終わるときは常駐のプロセスとの接続を切り、出力が届かないようにする。シェルは常駐のプロセスに残る
+app.on('will-quit', () => {
+  dockIcon.stop();
+  // この起動でアプリのフォルダの絵を変えたら、終わった後に Dock を作り直し、閉じている間も新しい絵を出させる。
+  // 自己診断は空のアプリに貼るため、利用者の Dock は作り直さない
+  if (dockIcon.bundleChanged && app.isPackaged && !process.env.TERP_SELFTEST) refreshDockAfterExit();
+  client.socket?.destroy();
 });
