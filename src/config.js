@@ -239,15 +239,62 @@ function chromeColors(t, accent) {
   };
 }
 
+function fromOklab([L, a, b]) {
+  const l = (L + 0.3963377774 * a + 0.2158037573 * b) ** 3;
+  const m = (L - 0.1055613458 * a - 0.0638541728 * b) ** 3;
+  const s = (L - 0.0894841775 * a - 1.2914855480 * b) ** 3;
+  const gamma = (v) => Math.round(255 * Math.min(1, Math.max(0, v <= 0.0031308 ? 12.92 * v : 1.055 * v ** (1 / 2.4) - 0.055)));
+  return '#' + [
+    4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s,
+    -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s,
+    -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s,
+  ].map((v) => gamma(v).toString(16).padStart(2, '0')).join('');
+}
+
+// ターミナルで選んだ範囲の色。テーマの選択色は地に溶けるものがあるため使わず、地の色から作る（2026-11-12 利用者の指示）。
+// 色合いは地の補色、明るさは地から SELECTION_SHIFT だけずらす（暗い地なら明るく、明るい地なら暗く）。
+// 文字の色とのコントラスト比が 4.5 に届かなければ、ずらす量を SELECTION_MIN_SHIFT まで減らして文字を読めるようにする。
+// 地に色味が無ければ補色が決まらないため、claude の選択と同じ青の色合いにする
+const SELECTION_SHIFT = 0.25;
+const SELECTION_MIN_SHIFT = 0.12;
+const SELECTION_CHROMA = 0.08;
+const SELECTION_REVERSE_LIMIT = 0.15;
+const SELECTION_GRAY_HUE = '#264f78';
+
+function selectionColor(background, foreground) {
+  if (![background, foreground].every((c) => /^#[0-9a-f]{6}$/i.test(c || ''))) return SELECTION_GRAY_HUE;
+  const [L, a, b] = oklab(background);
+  const [, ga, gb] = oklab(SELECTION_GRAY_HUE);
+  const hue = Math.hypot(a, b) < 0.02 ? Math.atan2(gb, ga) : Math.atan2(b, a) + Math.PI;
+  const direction = L < 0.6 ? 1 : -1;
+  let best = null;
+  // 決めた向きで届かなければ、逆の向きも試す（暗い地に中くらいの明るさの文字を載せるテーマでは、地より暗くするほうが読める）
+  for (const sign of [direction, -direction]) {
+    for (let shift = SELECTION_SHIFT; shift >= SELECTION_MIN_SHIFT - 1e-9; shift -= 0.01) {
+      const lightness = L + sign * shift;
+      // 逆の向きは、真っ黒・真っ白に張り付いて地と見分けにくくならないよう、明るさの幅を狭める
+      const [low, high] = sign === direction ? [0, 1] : [SELECTION_REVERSE_LIMIT, 1 - SELECTION_REVERSE_LIMIT];
+      if (lightness < low || lightness > high) continue;
+      const color = fromOklab([lightness, SELECTION_CHROMA * Math.cos(hue), SELECTION_CHROMA * Math.sin(hue)]);
+      if (contrastRatio(color, foreground) >= 4.5) return color;
+      if (!best || contrastRatio(color, foreground) > contrastRatio(best, foreground)) best = color;
+    }
+  }
+  return best;
+}
+
 function xtermTheme(t) {
   const names = ['black', 'red', 'green', 'yellow', 'blue', 'magenta', 'cyan', 'white'];
+  const selection = selectionColor(t.background, t.foreground);
   const theme = {
     background: t.background,
     foreground: t.foreground,
     cursor: t.cursor,
     cursorAccent: t.cursorText,
-    selectionBackground: t.selectionBackground,
-    selectionForeground: t.selectionForeground,
+    // xterm.js は不透明な選択色を 30% の濃さに薄めるため、わずかに透かして渡す。
+    // 選んだ文字の色はテーマの色のままにする（claude の選択と同じく、色分けを残す）
+    selectionBackground: `${selection}fa`,
+    selectionInactiveBackground: `${selection}fa`,
   };
   names.forEach((name, i) => {
     theme[name] = t.palette[i];
@@ -515,4 +562,4 @@ function listThemes() {
   return [...names];
 }
 
-module.exports = { CONFIG_DIR, CONFIG_PATH, ensureConfigFile, loadConfig, watchConfig, parseGhosttyTheme, updateConfig, rawConfig, listThemes, getThemeColors, themeColors, applyColorOverrides, chromeColors, contrastRatio, accentFill };
+module.exports = { CONFIG_DIR, CONFIG_PATH, ensureConfigFile, loadConfig, watchConfig, parseGhosttyTheme, updateConfig, rawConfig, listThemes, getThemeColors, themeColors, applyColorOverrides, chromeColors, contrastRatio, accentFill, selectionColor };

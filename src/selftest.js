@@ -1088,6 +1088,23 @@ async function runFilesTest({ win, js, check, outDir }) {
   check('設定で切ると印が消える', JSON.stringify(off) === JSON.stringify({ stayed: ['', ''], passed: ['', ''] }), JSON.stringify(off));
   await js(`window.terp.updateConfig({ frequentTabs: true })`);
 
+  // ターミナルで選んだ範囲は、地の色から作った選択色で塗る（xterm.js に 30% へ薄められていない）
+  await js(`window.__terp.activateKey('t:${termId}')`);
+  await sleep(800);
+  await js(`window.__terp.sessions.get(${termId}).term.selectAll()`);
+  await sleep(500);
+  const selectionRect = await js(`(() => { const r = window.__terp.sessions.get(${termId}).term.element.querySelector('.xterm-screen').getBoundingClientRect(); return { x: r.left, y: r.top, width: r.width, height: r.height }; })()`);
+  const selectionShot = await win.webContents.capturePage();
+  fs.writeFileSync(path.join(outDir, '4-selection.png'), selectionShot.toPNG());
+  const scale = selectionShot.getSize().width / (await js('innerWidth'));
+  const bitmap = selectionShot.toBitmap();
+  const pixel = (x, y) => { const i = (Math.round(y * scale) * selectionShot.getSize().width + Math.round(x * scale)) * 4; return [bitmap[i + 2], bitmap[i + 1], bitmap[i]]; };
+  const sampled = pixel(selectionRect.x + selectionRect.width * 0.7, selectionRect.y + selectionRect.height * 0.5);
+  const expected = await js(`window.__terp.sessions.get(${termId}).term.options.theme.selectionBackground`);
+  const want = [1, 3, 5].map((i) => parseInt(expected.slice(i, i + 2), 16));
+  check('ターミナルで選んだ範囲を、地の色から作った選択色で塗る', sampled.every((v, i) => Math.abs(v - want[i]) <= 16), JSON.stringify({ sampled, expected }));
+  await js(`window.__terp.sessions.get(${termId}).term.clearSelection()`);
+
   // 上のタブを右の端まで送ったら、描き直しで表示中のタブへ引き戻さない
   await js(`window.__terp.activateKey(window.__terp.visibleKeys()[0])`);
   await sleep(600);
