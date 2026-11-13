@@ -2456,6 +2456,27 @@ async function runDraftTest({ win, js, check, outDir }) {
     await sleep(200);
     await js(`[...document.querySelectorAll('.menu:popover-open .menu__item')].find((el) => el.textContent.startsWith('まとめを外す')).click()`);
     check('「まとめを外す」で作業場所の置き場所に戻る', await wait(`document.getElementById('loose').contains(window.__terp.sessions.get(${tp}).li) && !window.__terp.sessions.get(${tp}).workPath`));
+
+    // その他のターミナルの見出し: リポジトリのタブを見ていても、押すとその他のターミナルの最後のタブへ移る
+    await js(`window.__terp.activate(${tc})`);
+    await wait(`window.__terp.activeKey === 't:${tc}'`);
+    await js(`document.querySelector('#loose .project__head').click()`);
+    check('その他のターミナルの見出しを押すと、その他のターミナルの最後のタブへ移る', await wait(`window.__terp.activeKey === 't:${tp}'`));
+    // 0件になっても見出しを残し、押すとホームで新しいターミナルを開く
+    const looseIds = await js(`[...window.__terp.sessions.values()].filter((s) => document.getElementById('loose').contains(s.li)).map((s) => s.id)`);
+    await js(`Promise.all(${JSON.stringify(looseIds)}.map((id) => window.terp.kill(id)))`);
+    await js(`window.__terp.activate(${tc})`);
+    await wait(`document.querySelectorAll('#loose .session').length === 0`);
+    check('その他のターミナルが0件でも見出しを出す', await js(`(() => {
+      const el = document.getElementById('loose');
+      return !el.hidden && el.getBoundingClientRect().height > 0;
+    })()`));
+    const before = await js(`[...window.__terp.sessions.keys()]`);
+    await js(`document.querySelector('#loose .project__head').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))`);
+    check('0件のとき見出しで Enter を押すと、ホームで新しいターミナルを開く', await wait(`(() => {
+      const added = [...window.__terp.sessions.values()].find((s) => !${JSON.stringify(before)}.includes(s.id));
+      return Boolean(added) && added.cwd === ${JSON.stringify(os.homedir())} && document.getElementById('loose').contains(added.li) && 't:' + added.id === window.__terp.activeKey;
+    })()`));
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

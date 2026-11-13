@@ -1186,7 +1186,6 @@ function placeSessions() {
     const children = subagentLists.get(s.id)?.el;
     if (children && s.li.nextElementSibling !== children) s.li.after(children);
   }
-  looseSection.hidden = looseList.children.length === 0;
 }
 
 function terminalVisible(s) {
@@ -1533,6 +1532,21 @@ async function openSubagent(sessionId, agent, show = true) {
 }
 
 // 作業を開く: その作業のタブのうち最近見たものへ移る。無ければ新しくターミナルを開く
+// その他のターミナルの見出し。最後のタブへ移り、無ければホームで開く。
+// 端末が0件でも見出しを出し続け、作業のタブを表示しているときもホームで開けるようにする（2026-11-12 利用者の指示）
+function openLoose() {
+  const inLoose = recent.find((key) => workspaceOfKey(key) === activeWorkspace && groupOf(key) === LOOSE);
+  if (inLoose !== undefined) activateKey(inLoose);
+  else openTerminal();
+}
+const looseHead = looseSection.querySelector('.project__head');
+looseHead.addEventListener('click', () => openLoose());
+looseHead.addEventListener('keydown', (e) => {
+  if (e.target !== looseHead || e.altKey || (e.key !== 'Enter' && e.key !== ' ')) return;
+  e.preventDefault();
+  openLoose();
+});
+
 function openWork(w) {
   const inWork = recent.find((key) => workspaceOfKey(key) === activeWorkspace && groupOf(key) === w.path);
   if (inWork !== undefined) activateKey(inWork);
