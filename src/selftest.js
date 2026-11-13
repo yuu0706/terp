@@ -4018,7 +4018,8 @@ async function runOverviewTest({ win, js, check, outDir }) {
     })()`));
     const tabLabels = await js(`[...document.querySelectorAll('.overview__tab')].map((el) => el.querySelector('.overview__tab-label').textContent + ':' + el.querySelector('.overview__tab-count').textContent)`);
     check('上端にすべて・開いているタブ・リポジトリ・その他のタブが並ぶ',
-      JSON.stringify(tabLabels) === JSON.stringify(['すべて:4', '開いているタブ:1', 'overview-repo:1', 'その他のターミナル:3']), JSON.stringify(tabLabels));
+      // 上のタブにはドラフトのリポジトリとその他のタブを全部出すため、表示中の所属の3つ（a・b・最初の端末）が開いているタブになる
+      JSON.stringify(tabLabels) === JSON.stringify(['すべて:4', '開いているタブ:3', 'overview-repo:1', 'その他のターミナル:3']), JSON.stringify(tabLabels));
     await js(`document.querySelector('.overview__tab[data-tab="repo:' + ${JSON.stringify(repo)} + '"]').click()`);
     await sleep(200);
     check('リポジトリのタブを押すと、そのリポジトリの端末だけを出す', JSON.stringify(await tileIds()) === JSON.stringify([a]));
@@ -4027,7 +4028,8 @@ async function runOverviewTest({ win, js, check, outDir }) {
     check('⌃Tab で次のタブへ移る', (await js(`document.querySelector('.overview__tab[aria-selected="true"]').dataset.tab`)) === 'loose' && !(await tileIds()).includes(a));
     await js(`document.querySelector('.overview__tab[data-tab="all"]').click()`);
     await sleep(200);
-    check('表示していない端末はその他のターミナルに出す', await js(`document.querySelector('.overview__tile[data-id="${b}"]').closest('.overview__repo').dataset.group === 'loose'`));
+    check('上のタブに出ている端末は開いているタブに、出ていない別の所属の端末はその他のターミナルに出す', await js(`document.querySelector('.overview__tile[data-id="${b}"]').closest('.overview__repo').dataset.group === 'open'
+      && document.querySelector('.overview__tile[data-id="${c}"]').closest('.overview__repo').dataset.group === 'loose'`));
     const labelsC = await js(`({ main: document.querySelector('.overview__tile[data-id="${c}"] .overview__name').textContent,
       meta: document.querySelector('.overview__tile[data-id="${c}"] .overview__meta').textContent })`);
     check('エージェントの端末は、端末の題名（要件）を見出しにし、名前とプログラムを下に出す',
