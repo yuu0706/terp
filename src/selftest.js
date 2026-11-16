@@ -1177,11 +1177,12 @@ async function runSplitTest({ win, js, check, outDir }) {
     const r = el.getBoundingClientRect();
     return !el.hidden && r.width > 0 && r.height > 0;
   })`));
-  // WebGL の字の置き場は同じ設定の端末で共有される。1枚で置き場を消すと、描き直していない別の枠が
-  // 消えた場所を引いて字が化けたため（2026-11-06 利用者の指摘）、WebGL は操作中の枠の端末にだけ付ける
+  // 表示中の枠の端末にはすべて WebGL を付ける。DOM の描き方では全角の字の幅が升目に合わなかった（2026-11-13 利用者の指摘）。
+  // 字の置き場は同じ設定の端末で共有され、1枚で置き場を消すと別の枠の字が化けた（2026-11-06 利用者の指摘）ため、
+  // 置き場が変わったら全部を描き直す。化けないことは下の画素の比較で確かめる
   const webglOwners = () => js(`[${first}, ${second}].filter((id) => Boolean(window.__terp.sessions.get(id).webgl))`);
   const activeTerm = await js('window.__terp.activeId');
-  check('WebGL は操作中の枠の端末にだけ付く', JSON.stringify(await webglOwners()) === JSON.stringify([activeTerm]), JSON.stringify({ owners: await webglOwners(), activeTerm }));
+  check('WebGL は表示中の枠の端末すべてに付く', JSON.stringify(await webglOwners()) === JSON.stringify([first, second]), JSON.stringify({ owners: await webglOwners(), activeTerm }));
   {
     const idle = activeTerm === first ? second : first;
     const idleRect = await js(`(() => { const r = window.__terp.sessions.get(${idle}).el.getBoundingClientRect(); return { x: Math.round(r.x), y: Math.round(r.y), width: Math.round(r.width), height: Math.round(r.height) }; })()`);
@@ -1216,6 +1217,31 @@ async function runSplitTest({ win, js, check, outDir }) {
     const afterFlood = await idleShot();
     if (outDir) fs.writeFileSync(path.join(outDir, 'split-atlas.png'), (await win.webContents.capturePage()).toPNG());
     check('操作中の枠に多くの字を流しても、ほかの枠の表示は変わらない', before.equals(afterFlood), JSON.stringify(await atlas()));
+
+    // 操作していない枠でも、操作中と同じ見た目で描く。句読点の後に隙間が空かず、表の罫線がずれない
+    await js(`window.__terp.sessions.get(${idle}).term.write('\x1b[2J\x1b[H' + [
+      '要件定義書は、こちらで（ほぼ）作ってあります。',
+      '┌──────┬──────────────────┐',
+      '│ 状態 │ 前回の、コミット │',
+      '├──────┼──────────────────┤',
+      '│ 済み │ 上のとおり、済み │',
+      '└──────┴──────────────────┘',
+    ].join('\\r\\n'))`);
+    await sleep(800);
+    // 操作中の枠に付く強調色の枠線が端末の端にかかるため、字を書いた上の部分だけを比べる
+    const textRect = { x: idleRect.x + 4, y: idleRect.y + 4, width: idleRect.width - 8, height: 240 };
+    const textShot = async () => {
+      await js(`window.__terp.sessions.get(${idle}).term.refresh(0, window.__terp.sessions.get(${idle}).term.rows - 1)`);
+      await sleep(800);
+      return (await win.webContents.capturePage(textRect)).toBitmap();
+    };
+    const unfocused = await textShot();
+    await js(`window.__terp.activateKey('t:${idle}')`);
+    await waitFor(() => js(`window.__terp.activeId === ${idle}`));
+    const focused = await textShot();
+    if (outDir) fs.writeFileSync(path.join(outDir, 'split-unfocused.png'), (await win.webContents.capturePage()).toPNG());
+    check('操作していない枠の端末も、操作中にしたときと同じ見た目で描く', unfocused.equals(focused));
+    await js(`window.__terp.activateKey('t:${activeTerm}')`);
   }
 
   const third = await js('window.__terp.open(window.terp.home)');
