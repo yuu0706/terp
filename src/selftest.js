@@ -1558,7 +1558,20 @@ async function runPathLinksTest({ js, check, outDir }) {
   fs.writeFileSync(homeFile, '# home\n');
   const homeText = '~/' + path.relative(os.homedir(), homeFile);
   try {
-    const outputs = ['src/a.js:3:2', notes, '(src/a.js)', 'missing/nothing.js:1', longPath, `${homeText}の書式の誤り`, 'notes.mdを直した'];
+    // claude は枠の幅で自分で改行し、続きの行を字下げする。表はセルの中で改行する。その形をまねて出す
+    const split = path.join(dir, 'src', 'split-name-file.ts');
+    fs.writeFileSync(split, 'one\ntwo\n');
+    fs.writeFileSync(path.join(dir, 'apply_staff.md'), 'one\n');
+    const width = (text) => [...text].reduce((sum, ch) => sum + (ch.charCodeAt(0) > 0x7f ? 2 : 1), 0);
+    const cell = (text, size) => ' ' + text + ' '.repeat(size - width(text)) + ' ';
+    const tableRow = (a, b) => '│' + cell(a, 8) + '│' + cell(b, 14) + '│';
+    const plainSplit = ['● 直したのは src/split-', '  name-file.ts:2 の行です'];
+    const tableSplit = [tableRow('直した所', '確認 apply_sta'), tableRow('', 'ff.md:1 の行')];
+    // 出した後で枠を狭め、端末が折り返し直したパス
+    const reflow = 'r'.repeat(cols - 8) + '.md';
+    fs.writeFileSync(path.join(dir, reflow), 'one\n');
+    const outputs = ['src/a.js:3:2', notes, '(src/a.js)', 'missing/nothing.js:1', longPath, `${homeText}の書式の誤り`, 'notes.mdを直した',
+      ...plainSplit, ...tableSplit, reflow];
     const quote = (value) => "'" + value.replace(/'/g, "'\\''") + "'";
     const command = "printf '\\033[2J\\033[H" + '%s\\n'.repeat(outputs.length) + "' " + outputs.map(quote).join(' ') + '\r';
     await js(`window.terp.write(${id}, ${JSON.stringify(command)})`);
@@ -1580,6 +1593,32 @@ async function runPathLinksTest({ js, check, outDir }) {
     await sleep(300);
     check('~/ のリンクを⌘クリックで開く', (await js('window.__terp.activeKey')) === `f:${homeFile}`);
     await js(`window.__terp.activate(${id})`);
+    const splitLinks = links.filter((link) => link.text === 'src/split-name-file.ts:2');
+    check('claude が改行した文のパスが、行ごとの切れ端のリンクになる', splitLinks.length === 2 && splitLinks.every((link) => link.path === split && link.line === 2) &&
+      splitLinks[1].range.start.y === splitLinks[0].range.start.y + 1 && splitLinks[1].range.start.x === 3, JSON.stringify(splitLinks.map((link) => link.range)));
+    const tableLinks = links.filter((link) => link.text === 'apply_staff.md:1');
+    check('表のセルの中で改行したパスが、行ごとの切れ端のリンクになる', tableLinks.length === 2 && tableLinks.every((link) => link.path === path.join(dir, 'apply_staff.md')) &&
+      !links.some((link) => link.text === '確認'), JSON.stringify(tableLinks.map((link) => link.range)));
+    const clickPart = (text, index) => js(`(async () => {
+      const parts = (await window.__terp.sessions.get(${id}).pathLinks.visibleLinks()).filter((link) => link.text === ${JSON.stringify(text)});
+      parts[${index}]?.activate(new MouseEvent('mouseup', { metaKey: true }));
+      return parts.length;
+    })()`);
+    await clickPart('src/split-name-file.ts:2', 1);
+    await sleep(300);
+    check('改行した後ろの切れ端を⌘クリックしても開く', (await js('window.__terp.activeKey')) === `f:${split}`);
+    await js(`window.__terp.activate(${id})`);
+    await clickPart('apply_staff.md:1', 0);
+    await sleep(300);
+    check('表の前の切れ端を⌘クリックしても開く', (await js('window.__terp.activeKey')) === `f:${path.join(dir, 'apply_staff.md')}`);
+    await js(`window.__terp.activate(${id})`);
+    const rows = await js(`window.__terp.sessions.get(${id}).term.rows`);
+    await js(`window.__terp.sessions.get(${id}).term.resize(${Math.floor(cols / 2)}, ${rows})`);
+    await sleep(300);
+    const reflowed = (await js(`window.__terp.terminalLinks(${id})`)).filter((link) => link.text === reflow);
+    check('出した後で枠を狭めて折り返したパスが、1つのリンクになる', reflowed.length === 1 && reflowed[0].path === path.join(dir, reflow) && reflowed[0].range.end.y > reflowed[0].range.start.y, `cols=${cols} length=${reflow.length}`);
+    await js(`window.__terp.sessions.get(${id}).term.resize(${cols}, ${rows})`);
+    await sleep(300);
     check('相対パスのリンクを押せる', await js(`window.__terp.activateTerminalLink(${id}, 'src/a.js:3:2')`));
     check('リンクのファイルがタブで開く', (await js('window.__terp.activeKey')) === `f:${source}`);
     const position = await js(`window.__terp.editorOf(${JSON.stringify(source)})?.getPosition()`);
