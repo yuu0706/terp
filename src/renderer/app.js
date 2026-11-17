@@ -2225,12 +2225,27 @@ function startRename(s, name = s.li.querySelector('.session__name')) {
   input.addEventListener('blur', () => finish(true));
 }
 
+// WebGL の字の置き場（テクスチャアトラス）は同じ設定の端末で共有される。1枚が置き場を消したり、ページをまとめたりすると、
+// 描き直していない別の端末が消えた場所を引いて、字が別の字の欠片に化ける（2026-11-06 利用者の指摘）。
+// 置き場が変わったら、WebGL の付いた表示中の端末を全部描き直す。同じ描画の間に何度変わっても1回にまとめる
+let webglRedrawQueued = false;
+function redrawWebglTerminals() {
+  if (webglRedrawQueued) return;
+  webglRedrawQueued = true;
+  requestAnimationFrame(() => {
+    webglRedrawQueued = false;
+    for (const x of sessions.values()) if (x.webgl && !x.el.hidden) x.term.refresh(0, x.term.rows - 1);
+  });
+}
+
 // WebGL の描画は同時に持てる数に上限があるため、表示中の端末にだけ付ける
 function attachWebgl(s) {
   if (s.webgl) return;
   try {
     s.webgl = new WebglAddon();
     s.webgl.onContextLoss(() => detachWebgl(s));
+    s.webgl.onChangeTextureAtlas(() => redrawWebglTerminals());
+    s.webgl.onRemoveTextureAtlasCanvas(() => redrawWebglTerminals());
     s.term.loadAddon(s.webgl);
     // 裏にある間の出力は描いていないため、付けた直後に全体を描き直す（文字の一部だけが残って見えるのを防ぐ）
     s.term.refresh(0, s.term.rows - 1);
@@ -2287,10 +2302,10 @@ function syncPanes() {
     if (view.el.parentElement !== el) el.appendChild(view.el);
     view.el.hidden = false;
     if (pane.key.startsWith('t:')) {
-      // WebGL は操作中の枠の端末にだけ付け、ほかの枠は DOM で描く。WebGL の字の置き場は同じ設定の端末で共有され、
-      // 1枚で置き場を消す（表示を作り直す・つなぎ直し）と、描き直していない別の枠が消えた場所を引いて字が化けた（2026-11-06 利用者の指摘）
-      if (pane.id === activePaneId) attachWebgl(view);
-      else detachWebgl(view);
+      // 表示中の枠の端末にはすべて WebGL を付ける。DOM の描き方では全角の字の幅が升目に合わず、
+      // 操作していない枠だけ「、」の後に隙間が空き、表の罫線がずれた（2026-11-13 利用者の指摘）。
+      // 字の置き場を共有することによる化けは、置き場が変わったときに全部を描き直して防ぐ（redrawWebglTerminals）
+      attachWebgl(view);
       view.fit.fit();
     } else view.view?.editor?.layout();
   }
@@ -3138,8 +3153,14 @@ async function redrawTerminal(id = activeId) {
   await new Promise((resolve) => setTimeout(resolve, 120));
   if (!sessions.has(id)) return;
   resizePty(s, s.term.cols, s.term.rows);
-  s.webgl?.clearTextureAtlas();
-  s.term.refresh(0, s.term.rows - 1);
+  // 字の置き場は共有のため、表示中の WebGL の端末すべてで消す。WebGL は前に描いた升目と中身が同じなら描き直さず、
+  // 全体を描き直させるだけでは、ほかの枠が消えた置き場の位置を引いたままになる。消すと各端末が升目の控えも捨てて描き直す
+  const targets = [...sessions.values()].filter((x) => x.webgl && !x.el.hidden);
+  if (!targets.includes(s)) targets.push(s);
+  for (const x of targets) {
+    x.webgl?.clearTextureAtlas();
+    x.term.refresh(0, x.term.rows - 1);
+  }
 }
 
 // 控えの1件から、同じ作業場所でターミナルを開き直す。名前・置き場所・題名を戻し、claude・codex の会話を再開する。
