@@ -10,7 +10,7 @@ import { initFilesPanel, refreshFiles, setFilesVisible, markActiveFile } from '.
 import { renderFileView, applyEditorConfig } from './fileview.js';
 import { createPathLinkProvider } from './pathlinks.js';
 import { initSettings, openSettings, applySettingsConfig, agentIcon } from './settings.js';
-import { createPane, paneList, splitPane, closePane, replacePane, setPaneLocked, openPaneFor, restoreLayout, createPaneView, makeTabDraggable, paneTitle, MAX_PANES, TAB_DRAG_TYPE } from './panes.js';
+import { createPane, paneList, splitPane, closePane, replacePane, forgetPaneKey, setPaneLocked, openPaneFor, restoreLayout, createPaneView, makeTabDraggable, paneTitle, MAX_PANES, TAB_DRAG_TYPE } from './panes.js';
 import { terminalPaths, pathDropTarget, pathsFromTransfer } from './droppaths.js';
 import { withAlpha, favoriteText } from './favcolor.js';
 import { STAR_ICON, draftLabel, createMenu, createWorkspaceUI } from './workspaceui.js';
@@ -2720,7 +2720,9 @@ function dropTab(key, group = groupOf(key)) {
   const pane = paneList(layout).find((p) => p.key === key);
   if (pane) {
     const displayed = new Set(paneList(layout).map((p) => p.key));
-    let next = recent.find((k) => workspaceOfKey(k) === activeWorkspace && tabOrder.includes(k) && groupOf(k) === group && !displayed.has(k));
+    // まずその枠で前に出していたタブへ戻す。作業が違っても戻す（ファイルを開いて閉じたら、元のターミナルに戻るように）
+    let next = (pane.history || []).find((k) => workspaceOfKey(k) === activeWorkspace && tabOrder.includes(k) && !displayed.has(k) && viewOf(k));
+    if (!next) next = recent.find((k) => workspaceOfKey(k) === activeWorkspace && tabOrder.includes(k) && groupOf(k) === group && !displayed.has(k));
     // 最後の枠が空になるなら、上に並ぶほかのタブを出す。空にすると表示中のタブが無くなり、上のタブも消えるため
     if (!next && paneList(layout).length === 1) {
       next = recent.find((k) => tabOrder.includes(k) && draftTab(k)) || tabOrder.find(draftTab);
@@ -2728,6 +2730,8 @@ function dropTab(key, group = groupOf(key)) {
     if (next) layout = replacePane(layout, pane.id, next);
     else layout = closePane(layout, pane.id);
   }
+  // 閉じたタブは、どの枠の履歴からも外す。差し替えで積まれた分も外れるよう、差し替えの後に行う
+  layout = forgetPaneKey(layout, key);
   if (!paneList(layout).some((p) => p.id === activePaneId)) activePaneId = paneList(layout)[0].id;
   activeKey = paneList(layout).find((p) => p.id === activePaneId).key;
   syncPanes();

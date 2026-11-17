@@ -66,11 +66,24 @@ export function openPaneFor(tree, activeId) {
   return list.find((p) => !p.locked)?.id ?? null;
 }
 
+// 枠ごとに、前に出していたタブを新しい順に覚える。閉じたときに、その枠へ戻す先にする
+export const PANE_HISTORY = 20;
+
 export function replacePane(tree, id, key) {
   if (!paneList(tree).some((p) => p.id === id)) return tree;
   const source = paneList(tree).find((p) => p.key === key && p.id !== id);
-  const next = mapPane(tree, id, (pane) => ({ ...pane, key }));
+  const next = mapPane(tree, id, (pane) => {
+    if (pane.key === key) return pane;
+    const history = [pane.key, ...(pane.history || [])].filter((k, i, all) => k && k !== key && all.indexOf(k) === i).slice(0, PANE_HISTORY);
+    return { ...pane, key, history };
+  });
   return source ? closePane(next, source.id) : next;
+}
+
+// 閉じたタブは、どの枠の履歴からも外す
+export function forgetPaneKey(tree, key) {
+  if (tree.type === 'pane') return tree.history?.includes(key) ? { ...tree, history: tree.history.filter((k) => k !== key) } : tree;
+  return { ...tree, children: tree.children.map((child) => forgetPaneKey(child, key)) };
 }
 
 export function splitPane(tree, id, key, side = 'right') {

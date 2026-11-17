@@ -1292,6 +1292,36 @@ async function runSplitTest({ win, js, check, outDir }) {
   win.webContents.send('menu', 'pane-right');
   await sleep(100);
   check('右の枠のメニューで隣へ移る', (await js('window.__terp.activePaneId')) === right.id);
+
+  // タブを閉じたら、その枠で前に出していたタブへ戻す。以前は同じ作業で最近使ったタブを出し、無ければ枠ごと閉じていた（2026-11-17 利用者の指示）
+  const historyDir = fs.mkdtempSync(path.join(path.resolve(outDir), 'pane-history-'));
+  const [fileA, fileB] = ['a.md', 'b.md'].map((name) => path.join(historyDir, name));
+  fs.writeFileSync(fileA, '# a\n');
+  fs.writeFileSync(fileB, '# b\n');
+  await js(`window.__terp.openFile(${JSON.stringify(fileA)})`);
+  const historyPane = (await leaves()).find((p) => p.key === `f:${fileA}`);
+  const leftPane = (await leaves()).find((p) => p.id !== historyPane?.id);
+  check('開いたファイルは操作中の枠に出る', historyPane?.id === right.id && historyPane.history?.[0] === right.key, JSON.stringify(await leaves()));
+  // 左の枠で別のファイルを開いて戻し、最近使った順では b.md が先に来るようにする
+  win.webContents.send('menu', 'pane-left');
+  await sleep(100);
+  await js(`window.__terp.openFile(${JSON.stringify(fileB)})`);
+  await js(`window.__terp.activateKey(${JSON.stringify(leftPane.key)})`);
+  await js(`window.__terp.activateKey(${JSON.stringify(`f:${fileA}`)})`);
+  await js(`window.__terp.closeKey(${JSON.stringify(`f:${fileA}`)})`);
+  await sleep(300);
+  const afterClose = await leaves();
+  check('タブを閉じると、最近使った別のタブではなく、その枠で前に出していたタブに戻る',
+    afterClose.length === 2 && afterClose.find((p) => p.id === right.id)?.key === right.key, afterClose.map((p) => p.key).join(','));
+  check('閉じたタブは枠の履歴から外れる', afterClose.every((p) => !(p.history || []).includes(`f:${fileA}`)));
+  // 前のタブが閉じていたら、今までどおり同じ作業で最近使ったタブを出す
+  await js(`window.__terp.openFile(${JSON.stringify(fileA)})`);
+  await js(`window.__terp.closeKey(${JSON.stringify(right.key)})`);
+  await waitFor(async () => !(await leaves()).some((p) => p.key === right.key));
+  await js(`window.__terp.closeKey(${JSON.stringify(`f:${fileA}`)})`);
+  await sleep(300);
+  const fallback = await leaves();
+  check('前のタブが閉じていれば、最近使った同じ作業のタブを出す', fallback.length === 2 && fallback.find((p) => p.id === right.id)?.key === `f:${fileB}`, fallback.map((p) => p.key).join(','));
 }
 
 // TERP_SELFTEST_PANETITLE は、帯の更新・改名・分割・ファイル・端末の収まりを確かめる。
