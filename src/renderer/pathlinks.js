@@ -17,9 +17,26 @@ export function findPaths(text) {
     const column = m[3] || m[5];
     const end = m.index + (line ? m[0].length : path.length);
     found.push({ text: text.slice(m.index, end), start: m.index, end, path,
-      line: line ? Number(line) : undefined, column: column ? Number(column) : undefined });
+      line: line ? Number(line) : undefined, column: column ? Number(column) : undefined,
+      shorter: shorterPaths(m.index, path) });
   }
   return found;
+}
+
+// 「app.jsを直した」のように、パスの直後に日本語が続くと区切れない。
+// 日本語の名前のファイルもあるため日本語は外さずに読み、そのパスが無いときに試す短い候補（英数字から日本語へ変わる手前まで）を長い順に返す。
+function shorterPaths(start, path) {
+  const result = [];
+  for (let i = path.length - 1; i > 0; i--) {
+    if (path.charCodeAt(i - 1) > 0x7f || path.charCodeAt(i) <= 0x7f) continue;
+    let cut = path.slice(0, i);
+    while (cut.endsWith('.')) cut = cut.slice(0, -1);
+    const dot = cut.lastIndexOf('.');
+    // 「/tmp/日本語」の「/tmp/」のように、日本語の名前の手前のフォルダーまでで切ったものは、別の場所を指すため試さない
+    if (cut.endsWith('/') || (!cut.includes('/') && !(dot > 0 && dot < cut.length - 1))) continue;
+    result.push({ text: cut, start, end: start + cut.length, path: cut, line: undefined, column: undefined });
+  }
+  return result;
 }
 
 function absolutePath(path, base) {
@@ -81,13 +98,15 @@ function logicalLine(term, row) {
 export function createPathLinkProvider(term, { context, statFile, openFile, revealFile, onHover }) {
   const parsed = new Map();
 
-  async function resolve(candidate, { cwd, root, home }) {
-    const path = candidate.path.startsWith('~/') ? home + candidate.path.slice(1) : candidate.path;
-    const bases = path.startsWith('/') ? [''] : [...new Set([cwd, root].filter(Boolean))];
-    for (const base of bases) {
-      const full = absolutePath(path, base);
-      const stat = await cachedStat(full, statFile);
-      if (stat) return { ...candidate, path: full, directory: !stat.file };
+  async function resolve({ shorter = [], ...candidate }, { cwd, root, home }) {
+    for (const option of [candidate, ...shorter]) {
+      const path = option.path.startsWith('~/') ? home + option.path.slice(1) : option.path;
+      const bases = path.startsWith('/') ? [''] : [...new Set([cwd, root].filter(Boolean))];
+      for (const base of bases) {
+        const full = absolutePath(path, base);
+        const stat = await cachedStat(full, statFile);
+        if (stat) return { ...option, path: full, directory: !stat.file };
+      }
     }
     return null;
   }
