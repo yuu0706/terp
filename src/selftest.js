@@ -1552,51 +1552,105 @@ async function runPathLinksTest({ js, check, outDir }) {
   fs.writeFileSync(longPath, 'const wrapped = true;\n');
   await js(`window.terp.write(${id}, 'stty -echo\\r')`);
   await sleep(300);
-  const outputs = ['src/a.js:3:2', notes, '(src/a.js)', 'missing/nothing.js:1', longPath];
-  const quote = (value) => "'" + value.replace(/'/g, "'\\''") + "'";
-  const command = "printf '\\033[2J\\033[H" + '%s\\n'.repeat(outputs.length) + "' " + outputs.map(quote).join(' ') + '\r';
-  await js(`window.terp.write(${id}, ${JSON.stringify(command)})`);
-  let links = [];
-  for (let i = 0; i < 40; i++) {
-    links = await js(`window.__terp.terminalLinks(${id})`);
-    if (links.some((link) => link.text === longPath)) break;
-    await sleep(100);
+  // ~/ のパスは、ホームの下に一時のフォルダーを作って確かめる（終わったら消す）
+  const homeDir = fs.mkdtempSync(path.join(os.homedir(), '.terp-selftest-'));
+  const homeFile = path.join(homeDir, 'home.md');
+  fs.writeFileSync(homeFile, '# home\n');
+  const homeText = '~/' + path.relative(os.homedir(), homeFile);
+  try {
+    // claude は枠の幅で自分で改行し、続きの行を字下げする。表はセルの中で改行する。その形をまねて出す
+    const split = path.join(dir, 'src', 'split-name-file.ts');
+    fs.writeFileSync(split, 'one\ntwo\n');
+    fs.writeFileSync(path.join(dir, 'apply_staff.md'), 'one\n');
+    const width = (text) => [...text].reduce((sum, ch) => sum + (ch.charCodeAt(0) > 0x7f ? 2 : 1), 0);
+    const cell = (text, size) => ' ' + text + ' '.repeat(size - width(text)) + ' ';
+    const tableRow = (a, b) => '│' + cell(a, 8) + '│' + cell(b, 14) + '│';
+    const plainSplit = ['● 直したのは src/split-', '  name-file.ts:2 の行です'];
+    const tableSplit = [tableRow('直した所', '確認 apply_sta'), tableRow('', 'ff.md:1 の行')];
+    // 出した後で枠を狭め、端末が折り返し直したパス
+    const reflow = 'r'.repeat(cols - 8) + '.md';
+    fs.writeFileSync(path.join(dir, reflow), 'one\n');
+    const outputs = ['src/a.js:3:2', notes, '(src/a.js)', 'missing/nothing.js:1', longPath, `${homeText}の書式の誤り`, 'notes.mdを直した',
+      ...plainSplit, ...tableSplit, reflow];
+    const quote = (value) => "'" + value.replace(/'/g, "'\\''") + "'";
+    const command = "printf '\\033[2J\\033[H" + '%s\\n'.repeat(outputs.length) + "' " + outputs.map(quote).join(' ') + '\r';
+    await js(`window.terp.write(${id}, ${JSON.stringify(command)})`);
+    let links = [];
+    for (let i = 0; i < 40; i++) {
+      links = await js(`window.__terp.terminalLinks(${id})`);
+      if (links.some((link) => link.text === longPath)) break;
+      await sleep(100);
+    }
+    check('相対パスと行・桁がリンクになる', links.some((link) => link.text === 'src/a.js:3:2' && link.path === source && link.line === 3 && link.column === 2));
+    check('絶対パスがリンクになる', links.some((link) => link.text === notes && link.path === notes));
+    check('括弧を除いたパスがリンクになる', links.some((link) => link.text === 'src/a.js' && link.path === source));
+    check('存在しないパスはリンクにならない', !links.some((link) => link.text === 'missing/nothing.js:1'));
+    const wrapped = links.filter((link) => link.text === longPath);
+    check('折り返された長いパスが1つのリンクになる', wrapped.length === 1 && wrapped[0].range.end.y > wrapped[0].range.start.y);
+    check('~/ で始まるパスが、直後の日本語を除いてリンクになる', links.some((link) => link.text === homeText && link.path === homeFile));
+    check('直後に日本語が続く相対パスが、日本語を除いてリンクになる', links.some((link) => link.text === 'notes.md' && link.path === notes));
+    await js(`window.__terp.clickTerminalLink(${id}, ${JSON.stringify(homeText)}, { metaKey: true })`);
+    await sleep(300);
+    check('~/ のリンクを⌘クリックで開く', (await js('window.__terp.activeKey')) === `f:${homeFile}`);
+    await js(`window.__terp.activate(${id})`);
+    const splitLinks = links.filter((link) => link.text === 'src/split-name-file.ts:2');
+    check('claude が改行した文のパスが、行ごとの切れ端のリンクになる', splitLinks.length === 2 && splitLinks.every((link) => link.path === split && link.line === 2) &&
+      splitLinks[1].range.start.y === splitLinks[0].range.start.y + 1 && splitLinks[1].range.start.x === 3, JSON.stringify(splitLinks.map((link) => link.range)));
+    const tableLinks = links.filter((link) => link.text === 'apply_staff.md:1');
+    check('表のセルの中で改行したパスが、行ごとの切れ端のリンクになる', tableLinks.length === 2 && tableLinks.every((link) => link.path === path.join(dir, 'apply_staff.md')) &&
+      !links.some((link) => link.text === '確認'), JSON.stringify(tableLinks.map((link) => link.range)));
+    const clickPart = (text, index) => js(`(async () => {
+      const parts = (await window.__terp.sessions.get(${id}).pathLinks.visibleLinks()).filter((link) => link.text === ${JSON.stringify(text)});
+      parts[${index}]?.activate(new MouseEvent('mouseup', { metaKey: true }));
+      return parts.length;
+    })()`);
+    await clickPart('src/split-name-file.ts:2', 1);
+    await sleep(300);
+    check('改行した後ろの切れ端を⌘クリックしても開く', (await js('window.__terp.activeKey')) === `f:${split}`);
+    await js(`window.__terp.activate(${id})`);
+    await clickPart('apply_staff.md:1', 0);
+    await sleep(300);
+    check('表の前の切れ端を⌘クリックしても開く', (await js('window.__terp.activeKey')) === `f:${path.join(dir, 'apply_staff.md')}`);
+    await js(`window.__terp.activate(${id})`);
+    const rows = await js(`window.__terp.sessions.get(${id}).term.rows`);
+    await js(`window.__terp.sessions.get(${id}).term.resize(${Math.floor(cols / 2)}, ${rows})`);
+    await sleep(300);
+    const reflowed = (await js(`window.__terp.terminalLinks(${id})`)).filter((link) => link.text === reflow);
+    check('出した後で枠を狭めて折り返したパスが、1つのリンクになる', reflowed.length === 1 && reflowed[0].path === path.join(dir, reflow) && reflowed[0].range.end.y > reflowed[0].range.start.y, `cols=${cols} length=${reflow.length}`);
+    await js(`window.__terp.sessions.get(${id}).term.resize(${cols}, ${rows})`);
+    await sleep(300);
+    check('相対パスのリンクを押せる', await js(`window.__terp.activateTerminalLink(${id}, 'src/a.js:3:2')`));
+    check('リンクのファイルがタブで開く', (await js('window.__terp.activeKey')) === `f:${source}`);
+    const position = await js(`window.__terp.editorOf(${JSON.stringify(source)})?.getPosition()`);
+    check('カーソルが3行目2桁目に移る', position?.lineNumber === 3 && position?.column === 2, JSON.stringify(position));
+    await js(`window.__terp.activate(${id})`);
+    await js(`window.__terp.clickTerminalLink(${id}, ${JSON.stringify(notes)})`);
+    await sleep(300);
+    check('普通のクリックではリンクを開かない', (await js('window.__terp.activeKey')) === `t:${id}`);
+    await js(`window.__terp.clickTerminalLink(${id}, ${JSON.stringify(notes)}, { metaKey: true })`);
+    await sleep(300);
+    check('⌘クリックでリンクを開く', (await js('window.__terp.activeKey')) === `f:${notes}`);
+    await js(`window.__terp.activate(${id})`);
+    check('右クリックでリンクを開き、右クリックの既定の動きは止める', await js(`window.__terp.rightClickTerminalLink(${id}, 'src/a.js:3:2')`));
+    await sleep(300);
+    check('右クリックで開いたファイルがタブで出る', (await js('window.__terp.activeKey')) === `f:${source}`);
+    await js(`window.__terp.activate(${id})`);
+    check('リンクの外の右クリックは止めない', !(await js(`(() => {
+      const event = new MouseEvent('contextmenu', { bubbles: true, cancelable: true });
+      window.__terp.sessions.get(${id}).el.querySelector('.xterm-screen').dispatchEvent(event);
+      return event.defaultPrevented;
+    })()`)));
+    check('絶対パスのリンクを押せる', await js(`window.__terp.activateTerminalLink(${id}, ${JSON.stringify(notes)})`));
+    check('notes.md がタブで開く', (await js('window.__terp.activeKey')) === `f:${notes}`);
+    await js(`window.__terp.activate(${id})`);
+    await js(`window.__terp.editorOf(${JSON.stringify(source)}).setPosition({ lineNumber: 1, column: 1 })`);
+    await js(`window.__terp.activateTerminalLink(${id}, 'src/a.js:3:2')`);
+    const reopened = await js(`window.__terp.editorOf(${JSON.stringify(source)}).getPosition()`);
+    check('開いているタブでも指定の行・桁に移る', (await js('window.__terp.activeKey')) === `f:${source}` && reopened.lineNumber === 3 && reopened.column === 2);
+    await js(`window.terp.write(${id}, 'stty echo\\r')`);
+  } finally {
+    fs.rmSync(homeDir, { recursive: true, force: true });
   }
-  check('相対パスと行・桁がリンクになる', links.some((link) => link.text === 'src/a.js:3:2' && link.path === source && link.line === 3 && link.column === 2));
-  check('絶対パスがリンクになる', links.some((link) => link.text === notes && link.path === notes));
-  check('括弧を除いたパスがリンクになる', links.some((link) => link.text === 'src/a.js' && link.path === source));
-  check('存在しないパスはリンクにならない', !links.some((link) => link.text === 'missing/nothing.js:1'));
-  const wrapped = links.filter((link) => link.text === longPath);
-  check('折り返された長いパスが1つのリンクになる', wrapped.length === 1 && wrapped[0].range.end.y > wrapped[0].range.start.y);
-  check('相対パスのリンクを押せる', await js(`window.__terp.activateTerminalLink(${id}, 'src/a.js:3:2')`));
-  check('リンクのファイルがタブで開く', (await js('window.__terp.activeKey')) === `f:${source}`);
-  const position = await js(`window.__terp.editorOf(${JSON.stringify(source)})?.getPosition()`);
-  check('カーソルが3行目2桁目に移る', position?.lineNumber === 3 && position?.column === 2, JSON.stringify(position));
-  await js(`window.__terp.activate(${id})`);
-  await js(`window.__terp.clickTerminalLink(${id}, ${JSON.stringify(notes)})`);
-  await sleep(300);
-  check('普通のクリックではリンクを開かない', (await js('window.__terp.activeKey')) === `t:${id}`);
-  await js(`window.__terp.clickTerminalLink(${id}, ${JSON.stringify(notes)}, { metaKey: true })`);
-  await sleep(300);
-  check('⌘クリックでリンクを開く', (await js('window.__terp.activeKey')) === `f:${notes}`);
-  await js(`window.__terp.activate(${id})`);
-  check('右クリックでリンクを開き、右クリックの既定の動きは止める', await js(`window.__terp.rightClickTerminalLink(${id}, 'src/a.js:3:2')`));
-  await sleep(300);
-  check('右クリックで開いたファイルがタブで出る', (await js('window.__terp.activeKey')) === `f:${source}`);
-  await js(`window.__terp.activate(${id})`);
-  check('リンクの外の右クリックは止めない', !(await js(`(() => {
-    const event = new MouseEvent('contextmenu', { bubbles: true, cancelable: true });
-    window.__terp.sessions.get(${id}).el.querySelector('.xterm-screen').dispatchEvent(event);
-    return event.defaultPrevented;
-  })()`)));
-  check('絶対パスのリンクを押せる', await js(`window.__terp.activateTerminalLink(${id}, ${JSON.stringify(notes)})`));
-  check('notes.md がタブで開く', (await js('window.__terp.activeKey')) === `f:${notes}`);
-  await js(`window.__terp.activate(${id})`);
-  await js(`window.__terp.editorOf(${JSON.stringify(source)}).setPosition({ lineNumber: 1, column: 1 })`);
-  await js(`window.__terp.activateTerminalLink(${id}, 'src/a.js:3:2')`);
-  const reopened = await js(`window.__terp.editorOf(${JSON.stringify(source)}).getPosition()`);
-  check('開いているタブでも指定の行・桁に移る', (await js('window.__terp.activeKey')) === `f:${source}` && reopened.lineNumber === 3 && reopened.column === 2);
-  await js(`window.terp.write(${id}, 'stty echo\\r')`);
 }
 
 // TERP_SELFTEST_SUBAGENTS を付けると、偽の会話で一覧・記録の追記・設定の入口を確かめる
