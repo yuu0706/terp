@@ -2536,6 +2536,27 @@ async function runDraftTest({ win, js, check, outDir }) {
     await sleep(200);
     await js(`[...document.querySelectorAll('.menu:popover-open .menu__item')].find((el) => el.textContent.startsWith('まとめを外す')).click()`);
     check('「まとめを外す」で作業場所の置き場所に戻る', await wait(`document.getElementById('loose').contains(window.__terp.sessions.get(${tp}).li) && !window.__terp.sessions.get(${tp}).workPath`));
+
+    // その他のターミナルの見出し: リポジトリのタブを見ていても、押すとその他のターミナルの最後のタブへ移る
+    await js(`window.__terp.activate(${tc})`);
+    await wait(`window.__terp.activeKey === 't:${tc}'`);
+    await js(`document.querySelector('#loose .project__head').click()`);
+    check('その他のターミナルの見出しを押すと、その他のターミナルの最後のタブへ移る', await wait(`window.__terp.activeKey === 't:${tp}'`));
+    // 0件になっても見出しを残し、押すとホームで新しいターミナルを開く
+    const looseIds = await js(`[...window.__terp.sessions.values()].filter((s) => document.getElementById('loose').contains(s.li)).map((s) => s.id)`);
+    await js(`Promise.all(${JSON.stringify(looseIds)}.map((id) => window.terp.kill(id)))`);
+    await js(`window.__terp.activate(${tc})`);
+    await wait(`document.querySelectorAll('#loose .session').length === 0`);
+    check('その他のターミナルが0件でも見出しを出す', await js(`(() => {
+      const el = document.getElementById('loose');
+      return !el.hidden && el.getBoundingClientRect().height > 0;
+    })()`));
+    const before = await js(`[...window.__terp.sessions.keys()]`);
+    await js(`document.querySelector('#loose .project__head').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))`);
+    check('0件のとき見出しで Enter を押すと、ホームで新しいターミナルを開く', await wait(`(() => {
+      const added = [...window.__terp.sessions.values()].find((s) => !${JSON.stringify(before)}.includes(s.id));
+      return Boolean(added) && added.cwd === ${JSON.stringify(os.homedir())} && document.getElementById('loose').contains(added.li) && 't:' + added.id === window.__terp.activeKey;
+    })()`));
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -4077,7 +4098,8 @@ async function runOverviewTest({ win, js, check, outDir }) {
     })()`));
     const tabLabels = await js(`[...document.querySelectorAll('.overview__tab')].map((el) => el.querySelector('.overview__tab-label').textContent + ':' + el.querySelector('.overview__tab-count').textContent)`);
     check('上端にすべて・開いているタブ・リポジトリ・その他のタブが並ぶ',
-      JSON.stringify(tabLabels) === JSON.stringify(['すべて:4', '開いているタブ:1', 'overview-repo:1', 'その他のターミナル:3']), JSON.stringify(tabLabels));
+      // 上のタブにはドラフトのリポジトリとその他のタブを全部出すため、表示中の所属の3つ（a・b・最初の端末）が開いているタブになる
+      JSON.stringify(tabLabels) === JSON.stringify(['すべて:4', '開いているタブ:3', 'overview-repo:1', 'その他のターミナル:3']), JSON.stringify(tabLabels));
     await js(`document.querySelector('.overview__tab[data-tab="repo:' + ${JSON.stringify(repo)} + '"]').click()`);
     await sleep(200);
     check('リポジトリのタブを押すと、そのリポジトリの端末だけを出す', JSON.stringify(await tileIds()) === JSON.stringify([a]));
@@ -4086,7 +4108,8 @@ async function runOverviewTest({ win, js, check, outDir }) {
     check('⌃Tab で次のタブへ移る', (await js(`document.querySelector('.overview__tab[aria-selected="true"]').dataset.tab`)) === 'loose' && !(await tileIds()).includes(a));
     await js(`document.querySelector('.overview__tab[data-tab="all"]').click()`);
     await sleep(200);
-    check('表示していない端末はその他のターミナルに出す', await js(`document.querySelector('.overview__tile[data-id="${b}"]').closest('.overview__repo').dataset.group === 'loose'`));
+    check('上のタブに出ている端末は開いているタブに、出ていない別の所属の端末はその他のターミナルに出す', await js(`document.querySelector('.overview__tile[data-id="${b}"]').closest('.overview__repo').dataset.group === 'open'
+      && document.querySelector('.overview__tile[data-id="${c}"]').closest('.overview__repo').dataset.group === 'loose'`));
     const labelsC = await js(`({ main: document.querySelector('.overview__tile[data-id="${c}"] .overview__name').textContent,
       meta: document.querySelector('.overview__tile[data-id="${c}"] .overview__meta').textContent })`);
     check('エージェントの端末は、端末の題名（要件）を見出しにし、名前とプログラムを下に出す',

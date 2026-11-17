@@ -281,6 +281,17 @@ body[data-sidebar='hidden'] .topbar {
   color: var(--color-text);
 }
 
+/* その他のターミナルの見出しは押すと最後のタブへ移るか、ホームで開く */
+#loose .project__head {
+  border-radius: calc(var(--radius) - 2px);
+  cursor: pointer;
+}
+
+#loose .project__head:hover {
+  background: color-mix(in srgb, var(--color-text) 10%, transparent);
+  color: var(--color-text);
+}
+
 /* ターミナルの行を作業やカードの見出しに載せている間、落とす先を強調色の枠で示す */
 :is(.work, .project__head)[data-drop-terminal] {
   border-radius: calc(var(--radius) - 2px);
