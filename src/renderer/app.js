@@ -10,7 +10,7 @@ import { initFilesPanel, refreshFiles, setFilesVisible, markActiveFile } from '.
 import { renderFileView, applyEditorConfig } from './fileview.js';
 import { createPathLinkProvider } from './pathlinks.js';
 import { initSettings, openSettings, applySettingsConfig, agentIcon } from './settings.js';
-import { createPane, paneList, splitPane, closePane, replacePane, forgetPaneKey, setPaneLocked, openPaneFor, restoreLayout, createPaneView, makeTabDraggable, paneTitle, MAX_PANES, TAB_DRAG_TYPE } from './panes.js';
+import { createPane, paneList, splitPane, closePane, replacePane, forgetPaneKey, nextPaneKey, closePaneMoving, adoptKeys, setPaneLocked, openPaneFor, restoreLayout, createPaneView, makeTabDraggable, paneTitle, MAX_PANES, TAB_DRAG_TYPE } from './panes.js';
 import { terminalPaths, pathDropTarget, pathsFromTransfer } from './droppaths.js';
 import { withAlpha, favoriteText } from './favcolor.js';
 import { STAR_ICON, draftLabel, createMenu, createWorkspaceUI } from './workspaceui.js';
@@ -46,7 +46,6 @@ const looseList = looseSection.querySelector('.session-list');
 const noProjects = document.getElementById('no-projects');
 const empty = document.getElementById('empty');
 const configError = document.getElementById('config-error');
-const tabsEl = document.getElementById('tabs');
 const rightPanel = document.getElementById('right-panel');
 
 const SHELLS = new Set(['zsh', '-zsh', 'bash', '-bash', 'fish', 'sh', 'login']);
@@ -90,13 +89,16 @@ let activeKey = null;
 let layout = createPane();
 let activePaneId = layout.id;
 const paneHost = document.getElementById('panes');
+// 新しいタブと、メインのエージェントのボタン。操作中の枠の見出しへ移して使う
+const tabActions = document.querySelector('.tabs__actions');
 const viewStore = document.getElementById('view-store');
 const termSearch = createTermSearch();
 const panes = createPaneView(paneHost, {
   onActivate: activatePane,
   onClose: closeWorkspacePane,
-  onRename: (id, name) => {
+  onRename: (id) => {
     const key = paneList(layout).find((p) => p.id === id)?.key;
+    const name = panes.element(id)?.querySelector('.pane__tabs .tab[aria-selected="true"] .tab__name');
     if (key?.startsWith('t:') && name) startRename(sessions.get(Number(key.slice(2))), name);
   },
   onDrop: dropTabInPane,
@@ -396,24 +398,17 @@ function repoOfKey(key) {
   return group === LOOSE ? LOOSE : allWorks().find((w) => w.path === group)?.repo || LOOSE;
 }
 
-// 上のタブには、表示中のワークスペースのうちドラフトのリポジトリとその他のタブを、左の一覧のカードの順に並べる
-// （2026-11-11 利用者の指示。以前は表示中のタブと同じ作業のものだけを出していた）。同じリポジトリの中は開いた順にする。
-// 表示中のタブは、ドラフトに無いリポジトリのものでも出す。⌘1〜⌘9 と前後の移動は、この順に従う
+// ⌘1〜⌘9 と前後の移動は、操作中の枠のタブの並びに従う（2026-11-17 利用者の指示で上の全体のタブをやめ、枠ごとのタブにした）
 function visibleKeys() {
-  if (!activeKey) return [];
-  const activeRepo = repoOfKey(activeKey);
-  const order = [...currentProjects().filter((p) => p.draft || p.path === activeRepo).map((p) => p.path), LOOSE];
-  const keys = tabOrder.filter((k) => workspaceOfKey(k) === activeWorkspace).map((k) => [k, repoOfKey(k)])
-    .filter(([k, repo]) => repo === LOOSE || repoDrafted(repo) || k === activeKey);
-  return order.flatMap((repo) => keys.filter(([, r]) => r === repo).map(([k]) => k));
+  const pane = paneList(layout).find((p) => p.id === activePaneId);
+  return (pane?.tabs || []).filter((k) => viewOf(k));
 }
 
-// 表示中のタブでなくても上に並ぶタブ（表示中のワークスペースの、ドラフトのリポジトリかその他のもの）
-function draftTab(key) {
-  if (workspaceOfKey(key) !== activeWorkspace) return false;
-  const repo = repoOfKey(key);
-  return repo === LOOSE || repoDrafted(repo);
+// どこかの枠のタブに入っているタブ
+function paneTabKeys() {
+  return paneList(layout).flatMap((p) => (p.tabs || []).filter((k) => viewOf(k)));
 }
+
 
 // 新しいターミナルやエージェントを開く場所: ファイルのタブならそのフォルダ、ターミナルならその作業場所
 function activeCwd() {
@@ -435,7 +430,7 @@ function runningAgent(s) {
   return agentRegistry.find((a) => a.command === s.program) || null;
 }
 
-function renderItem(s, index = visibleKeys().indexOf(termKey(s.id))) {
+function renderItem(s) {
   const li = s.li;
   const state = stateOf(s);
   renderStatus(li, s, state);
@@ -463,8 +458,8 @@ function renderItem(s, index = visibleKeys().indexOf(termKey(s.id))) {
   const clash = li.querySelector('.session__clash');
   clash.hidden = !s.clashes?.length;
   if (s.clashes?.length) clash.title = clashText(s);
-  // 番号は上のタブに出ているものだけに付ける（⌘1〜⌘9 はタブの順）
-  li.querySelector('.session__key').textContent = index >= 0 && index < 9 ? shortcutText(`tab-${index + 1}`) : '';
+  // ⌘1〜⌘9 は枠のタブの順になったため、左の一覧には番号を出さない
+  li.querySelector('.session__key').textContent = '';
 }
 
 function renderAll() {
@@ -479,8 +474,7 @@ function renderAll() {
     updateAgentStatus(s, { type: 'tick' }, now);
     if (focused && terminalVisible(s)) updateAgentStatus(s, { type: 'seen' }, now);
   }
-  const visible = visibleKeys();
-  for (const s of sessions.values()) renderItem(s, visible.indexOf(termKey(s.id)));
+  for (const s of sessions.values()) renderItem(s);
   for (const list of subagentLists.values()) {
     for (const row of list.el.querySelectorAll('.subagent')) {
       row.setAttribute('aria-current', String(Boolean(row.dataset.file) && activeKey === subagentKey(row.dataset.file)));
@@ -494,8 +488,7 @@ function renderAll() {
   renderWorkStatuses();
   renderWorkspaceStatuses();
   updateDockBadge();
-  renderTabs(visible);
-  renderTabsMore();
+  renderTabs();
   renderPaneTitles();
   renderPermissionCards();
   empty.hidden = Boolean(activeKey);
@@ -515,54 +508,70 @@ function tabLabel(key) {
   return key.split('/').pop();
 }
 
-let scrolledTabKey = null;
-function renderTabs(visible) {
-  // 状態の印は 0.5 秒ごとに変わるため、タブの並びが同じなら中身だけ書き換える
-  const same = tabsEl.children.length === visible.length && [...tabsEl.children].every((t, i) => t.dataset.key === visible[i]);
-  if (!same) {
-    tabsEl.textContent = '';
-    for (const key of visible) {
-      const tab = document.createElement('div');
-      tab.className = 'tab';
-      tab.dataset.key = key;
-      makeTabDraggable(tab, key);
-      tab.setAttribute('role', 'tab');
-      tab.innerHTML = `${key.startsWith('t:') ? '<span class="session__dot tab__dot"></span>' : key.startsWith('s:') ? AGENT_ICON : TAB_FILE_ICON}<span class="tab__name"></span>
-        <button class="tab__close" type="button" aria-label="閉じる" data-shortcut-title="close" data-shortcut-label="閉じる" title="${escapeHtml(shortcutLabel('閉じる', 'close'))}">${CLOSE_ICON}</button>`;
-      tab.addEventListener('click', (e) => {
-        if (e.target.closest('.tab__close')) closeKey(key);
-        else activateKey(key);
-      });
-      // 中ボタンで閉じる（ブラウザと同じ）
-      tab.addEventListener('auxclick', (e) => e.button === 1 && closeKey(key));
-      tabsEl.append(tab);
+function createTab(key) {
+  const tab = document.createElement('div');
+  tab.className = 'tab';
+  tab.dataset.key = key;
+  makeTabDraggable(tab, key);
+  tab.setAttribute('role', 'tab');
+  tab.innerHTML = `${key.startsWith('t:') ? '<span class="session__dot tab__dot"></span>' : key.startsWith('s:') ? AGENT_ICON : TAB_FILE_ICON}<span class="tab__name"></span>
+    <button class="tab__close" type="button" aria-label="閉じる" data-shortcut-title="close" data-shortcut-label="閉じる" title="${escapeHtml(shortcutLabel('閉じる', 'close'))}">${CLOSE_ICON}</button>`;
+  tab.addEventListener('click', (e) => {
+    if (e.target.closest('.tab__close')) closeKey(key);
+    else if (!e.target.closest('input')) activateKey(key, true, { pane: tab.closest('.pane')?.dataset.paneId });
+  });
+  // 中ボタンで閉じる（ブラウザと同じ）
+  tab.addEventListener('auxclick', (e) => e.button === 1 && closeKey(key));
+  // ターミナルのタブのダブルクリックは、一覧と共通の名前入力を開く
+  tab.addEventListener('dblclick', (e) => {
+    const name = tab.querySelector('.tab__name');
+    if (key.startsWith('t:') && name && !e.target.closest('button')) startRename(sessions.get(Number(key.slice(2))), name);
+  });
+  return tab;
+}
+
+// 枠ごとに、その枠のタブを見出しに並べる
+const scrolledPaneTabs = new Map();
+function renderTabs() {
+  const order = visibleKeys();
+  for (const pane of paneList(layout)) {
+    const strip = panes.element(pane.id)?.querySelector('.pane__tabs');
+    if (!strip) continue;
+    const keys = (pane.tabs || []).filter((k) => viewOf(k));
+    // 状態の印は 0.5 秒ごとに変わるため、タブの並びが同じなら中身だけ書き換える
+    const same = strip.children.length === keys.length && [...strip.children].every((t, i) => t.dataset.key === keys[i]);
+    if (!same && !strip.querySelector('input')) strip.replaceChildren(...keys.map(createTab));
+    // リポジトリの境目は、次のリポジトリの最初のタブの前を少し空けて示す
+    let previousRepo = null;
+    for (const tab of strip.children) {
+      const key = tab.dataset.key;
+      const repo = repoOfKey(key);
+      tab.toggleAttribute('data-group-start', previousRepo !== null && repo !== previousRepo);
+      previousRepo = repo;
+      tab.setAttribute('aria-selected', String(key === pane.key));
+      markFrequent(tab, key);
+      const dirty = key.startsWith('f:') && fileViews.get(key.slice(2))?.view?.dirty;
+      const name = tab.querySelector('.tab__name');
+      if (name) name.textContent = tabLabel(key) + (dirty ? ' ●' : '');
+      tab.dataset.dirty = String(Boolean(dirty));
+      const index = pane.id === activePaneId ? order.indexOf(key) : -1;
+      const place = key.startsWith('t:') ? sessions.get(Number(key.slice(2)))?.cwd || '' : key.startsWith('s:') ? `サブエージェント: ${tabLabel(key)}` : key.slice(2);
+      tab.title = [place, index >= 0 && index < 9 ? shortcutText(`tab-${index + 1}`) : ''].filter(Boolean).join('\n');
+      if (key.startsWith('t:')) {
+        const s = sessions.get(Number(key.slice(2)));
+        renderStatus(tab, s, stateOf(s));
+      }
     }
-  }
-  // リポジトリの境目は、次のリポジトリの最初のタブの前を少し空けて示す
-  let previousRepo = null;
-  for (const tab of tabsEl.children) {
-    const key = tab.dataset.key;
-    const repo = repoOfKey(key);
-    tab.toggleAttribute('data-group-start', previousRepo !== null && repo !== previousRepo);
-    previousRepo = repo;
-    tab.setAttribute('aria-selected', String(key === activeKey));
-    markFrequent(tab, key);
-    const dirty = key.startsWith('f:') && fileViews.get(key.slice(2))?.view?.dirty;
-    tab.querySelector('.tab__name').textContent = tabLabel(key) + (dirty ? ' ●' : '');
-    tab.dataset.dirty = String(Boolean(dirty));
-    tab.title = key.startsWith('t:') ? sessions.get(Number(key.slice(2)))?.cwd || '' : key.startsWith('s:') ? `サブエージェント: ${tabLabel(key)}` : key.slice(2);
-    if (key.startsWith('t:')) {
-      const s = sessions.get(Number(key.slice(2)));
-      renderStatus(tab, s, stateOf(s));
+    // 出しているタブが替わったときだけ見える所へ送る。0.5 秒ごとの描き直しで送ると、横に送って見ている途中で引き戻されるため
+    if (scrolledPaneTabs.get(pane.id) !== pane.key) {
+      scrolledPaneTabs.set(pane.id, pane.key);
+      strip.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
     }
-  }
-  // 表示中のタブが替わったときだけ見える所へ送る。0.5 秒ごとの描き直しで送ると、横に送って見ている途中で引き戻されるため
-  if (activeKey !== scrolledTabKey) {
-    scrolledTabKey = activeKey;
-    tabsEl.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   }
 }
 
+// 見出しの補助の文字（プログラム名 · リポジトリ / ブランチ、ファイルなら相対パス）と説明を、出しているタブに合わせる。
+// 新しいタブのボタンは、操作中の枠の見出しに置く
 function renderPaneTitles() {
   for (const pane of paneList(layout)) {
     const header = panes.element(pane.id)?.querySelector('.pane__title');
@@ -580,14 +589,10 @@ function renderPaneTitles() {
       path: file ? key.slice(2) : '', dirty: file && view.view?.dirty,
     });
     header.title = text.title;
-    const name = header.querySelector('.pane__name');
-    if (name) name.textContent = text.name;
     header.querySelector('.pane__detail').textContent = text.detail;
-    header.querySelector('.session__dot').hidden = !terminal;
-    if (terminal) renderStatus(header, view, stateOf(view));
-    else {
-      delete header.dataset.state;
-      delete header.dataset.agentState;
+    if (pane.id === activePaneId || !tabActions.parentElement?.closest('.pane')) {
+      const slot = header.querySelector('.pane__actions');
+      if (tabActions.parentElement !== slot) slot.append(tabActions);
     }
   }
 }
@@ -781,7 +786,7 @@ const overview = createOverview({
   snapshot: () => {
     const ordered = [...workspaces.filter((w) => w.id === activeWorkspace), ...workspaces.filter((w) => w.id !== activeWorkspace)];
     const list = allSessionsInListOrder();
-    const openKeys = new Set(visibleKeys());
+    const openKeys = new Set(paneTabKeys());
     return {
       workspaces: ordered,
       activeId,
@@ -1751,7 +1756,8 @@ function openTabMenu() {
   // ＋ のボタンの真下に出す
   const r = tabNewBtn.getBoundingClientRect();
   const host = container.getBoundingClientRect();
-  tabMenu.style.left = `${Math.max(8, r.left - host.left)}px`;
+  tabMenu.style.left = `${Math.max(8, Math.min(r.left - host.left, host.width - 220))}px`;
+  tabMenu.style.top = `${r.bottom - host.top + 2}px`;
   tabMenu.hidden = false;
   tabNewBtn.setAttribute('aria-expanded', 'true');
   tabMenu.querySelector('.menu__item')?.focus();
@@ -2119,40 +2125,6 @@ function answerPermission(id, index, sig) {
 
 // ---- 上のタブのはみ出し ----
 // 幅に入らないタブを「他 N」にまとめ、押すと一覧から選べる。隠れた中でいちばん急ぐ状態の印を付ける
-const tabsMore = document.getElementById('tabs-more');
-const tabsMoreMenu = createMenu();
-
-function hiddenTabs() {
-  const box = tabsEl.getBoundingClientRect();
-  return [...tabsEl.children].filter((tab) => {
-    const r = tab.getBoundingClientRect();
-    return r.width > 0 && Math.min(r.right, box.right) - Math.max(r.left, box.left) < r.width * 0.6;
-  });
-}
-
-function renderTabsMore() {
-  const hidden = hiddenTabs();
-  tabsMore.hidden = !hidden.length;
-  if (!hidden.length) return;
-  tabsMore.querySelector('.tabs__more-count').textContent = `他 ${hidden.length}`;
-  const states = hidden.map((tab) => tab.dataset.agentState);
-  const top = ['waiting', 'done', 'working'].find((state) => states.includes(state));
-  if (top) tabsMore.dataset.agentState = top;
-  else delete tabsMore.dataset.agentState;
-  tabsMore.title = `幅に入らないタブ ${hidden.length} 個` + (top ? `（${STATE_LABELS[top]}を含む）` : '');
-}
-
-tabsMore.addEventListener('click', () => {
-  tabsMoreMenu.open(hiddenTabs().map((tab) => {
-    const status = document.createElement('span');
-    status.className = 'tabs__more-state';
-    if (tab.dataset.agentState) status.dataset.agentState = tab.dataset.agentState;
-    if (tab.dataset.state) status.dataset.state = tab.dataset.state;
-    status.innerHTML = '<span class="session__dot"></span>';
-    return { label: tab.querySelector('.tab__name').textContent, status, run: () => activateKey(tab.dataset.key) };
-  }), { target: tabsMore });
-});
-
 // ---- AI の手伝い（ターミナルの名前） ----
 // 画面の末尾（最大40行・2000字）と場所だけを渡す。失敗（切ってある・上限・claude が無い）は右下に数秒出す
 const aiToast = document.getElementById('ai-toast');
@@ -2209,7 +2181,7 @@ setInterval(autoTitleScan, 60 * 1000);
 function startRename(s, name = s.li.querySelector('.session__name')) {
   if (!name) return;
   const input = document.createElement('input');
-  input.className = name.classList.contains('pane__name') ? 'session__rename pane__rename' : 'session__rename';
+  input.className = name.classList.contains('tab__name') ? 'session__rename tab__rename' : 'session__rename';
   const nameClass = name.className;
   input.value = displayName(s);
   input.setAttribute('aria-label', '名前');
@@ -2300,6 +2272,9 @@ function viewOf(key) {
 }
 
 function syncPanes() {
+  // 開いているファイルなどは、上の全体のタブが無いため、どこかの枠のタブに入れる。ターミナルは左の一覧から選べるため入れない
+  const orphans = tabOrder.filter((k) => !k.startsWith('t:') && workspaceOfKey(k) === activeWorkspace && viewOf(k));
+  if (paneList(layout).some((p) => p.id === activePaneId)) layout = adoptKeys(layout, activePaneId, orphans);
   const displayed = new Set(paneList(layout).map((p) => p.key));
   for (const key of tabOrder) {
     const view = viewOf(key);
@@ -2347,14 +2322,18 @@ function activatePane(id, focus = true) {
   }
 }
 
-function activateKey(key, focus = true) {
+// pane を渡すと、その枠に出す（枠の見出しのタブを押したとき。固定した枠でも、利用者がその枠を指しているため差し替える）
+function activateKey(key, focus = true, { pane } = {}) {
   const target = viewOf(key);
   if (!target) return;
   const workspace = workspaceOfKey(key);
   if (workspace && workspace !== activeWorkspace) switchWorkspace(workspace);
   const existing = paneList(layout).find((p) => p.key === key);
   if (existing) activePaneId = existing.id;
-  else {
+  else if (pane && paneList(layout).some((p) => p.id === pane)) {
+    activePaneId = pane;
+    layout = replacePane(layout, pane, key);
+  } else {
     // 今の枠が固定なら、固定していない枠に出す。全部固定なら右に枠を足す（枠が上限なら今の枠に出す）
     const target = openPaneFor(layout, activePaneId);
     if (target) {
@@ -2403,8 +2382,10 @@ function closeWorkspacePane(id) {
   if (paneList(layout).length === 1) return;
   const before = paneList(layout);
   const index = before.findIndex((p) => p.id === id);
-  layout = closePane(layout, id);
-  if (activePaneId === id) activePaneId = paneList(layout)[Math.max(0, index - 1)].id;
+  // 閉じる枠のタブのうち、ターミナルは左の一覧に残るため外し、ファイルなどは未保存の変更を失わないよう隣の枠へ移す
+  const into = before.filter((p) => p.id !== id)[Math.max(0, index - 1)].id;
+  layout = closePaneMoving(layout, id, into, (k) => !k.startsWith('t:'));
+  if (activePaneId === id) activePaneId = into;
   syncPanes();
   activatePane(activePaneId);
 }
@@ -2459,7 +2440,7 @@ async function dropTabInPane(key, paneId, side = 'center') {
   const target = paneList(layout).find((p) => p.id === paneId);
   if (side !== 'center' && target.key === key && paneList(layout).length < MAX_PANES) {
     const displayed = new Set(paneList(layout).map((p) => p.key));
-    let previous = recent.find((k) => k !== key && workspaceOfKey(k) === activeWorkspace && tabOrder.includes(k) && groupOf(k) === groupOf(key) && !displayed.has(k));
+    let previous = nextPaneKey({ ...target, tabs: (target.tabs || []).filter((k) => k === key || (viewOf(k) && !displayed.has(k))) }, key);
     if (!previous) previous = termKey((await openTerminal({ cwd: key.startsWith('t:') ? sessions.get(Number(key.slice(2)))?.cwd : activeCwd(), show: false })).id);
     if (!paneList(layout).some((p) => p.id === paneId && p.key === key)) return;
     layout = replacePane(layout, paneId, previous);
@@ -2600,7 +2581,7 @@ async function openFile(path, { line, column, show = true, workspace = activeWor
   if (show) activateKey(key);
   f.view = renderFileView(el, path, workOfPath(path, workspace)?.path || null, {
     confirm: confirmFile,
-    onChange: () => renderTabs(visibleKeys()),
+    onChange: () => renderTabs(),
     isActive: () => activeKey === key,
     onHistory: (file) => { filterFileHistory(file); setPanel('history'); },
     openFile: (file) => openFile(file),
@@ -2720,12 +2701,12 @@ function dropTab(key, group = groupOf(key)) {
   const pane = paneList(layout).find((p) => p.key === key);
   if (pane) {
     const displayed = new Set(paneList(layout).map((p) => p.key));
-    // まずその枠で前に出していたタブへ戻す。作業が違っても戻す（ファイルを開いて閉じたら、元のターミナルに戻るように）
-    let next = (pane.history || []).find((k) => workspaceOfKey(k) === activeWorkspace && tabOrder.includes(k) && !displayed.has(k) && viewOf(k));
-    if (!next) next = recent.find((k) => workspaceOfKey(k) === activeWorkspace && tabOrder.includes(k) && groupOf(k) === group && !displayed.has(k));
-    // 最後の枠が空になるなら、上に並ぶほかのタブを出す。空にすると表示中のタブが無くなり、上のタブも消えるため
+    // その枠のタブのうち、前に出していたものへ戻す。作業が違っても戻す（ファイルを開いて閉じたら、元のターミナルに戻るように）。
+    // 枠のタブが無くなったら枠を畳む
+    let next = nextPaneKey({ ...pane, tabs: (pane.tabs || []).filter((k) => k === key || (tabOrder.includes(k) && viewOf(k) && !displayed.has(k))) }, key);
+    // 最後の枠が空になるなら、最近見たターミナルなどを出す。空にすると、タブに戻る道が左の一覧だけになるため
     if (!next && paneList(layout).length === 1) {
-      next = recent.find((k) => tabOrder.includes(k) && draftTab(k)) || tabOrder.find(draftTab);
+      next = recent.find((k) => tabOrder.includes(k) && workspaceOfKey(k) === activeWorkspace) || tabOrder.find((k) => workspaceOfKey(k) === activeWorkspace);
     }
     if (next) layout = replacePane(layout, pane.id, next);
     else layout = closePane(layout, pane.id);
@@ -2754,7 +2735,7 @@ function openCommit(top, hash, subject = '') {
   tabOrder.splice(at < 0 ? tabOrder.length : at + 1, 0, key);
   view.view = renderCommitView(el, top, hash, {
     openCommit,
-    onLoad: (info) => { view.subject = info.subject; renderTabs(visibleKeys()); },
+    onLoad: (info) => { view.subject = info.subject; renderTabs(); },
   });
   activateKey(key);
 }
