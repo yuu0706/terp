@@ -1551,7 +1551,56 @@ require('readline').createInterface({ input: process.stdin }).on('line', (comman
   check('設定で家の中の背景に替えられる', await wait(async () => (await scene()).image.includes('room.webp')) && await loads('room'), JSON.stringify(await scene()));
   await js(`window.terp.updateConfig({ petScene: 'none' })`);
   check('設定で背景を無くせる', await wait(async () => (await scene()).image === 'none'), JSON.stringify(await scene()));
+  await js(`window.terp.updateConfig({ petScene: 'city' })`);
+  check('設定でネオン街の背景に替えられる', await wait(async () => (await scene()).image.includes('city.webp')) && await loads('city'), JSON.stringify(await scene()));
   await js(`window.terp.updateConfig({ petScene: 'grass' })`);
+  // 明るいテーマでは、暗い背景の絵にテーマの地の色を重ねてなじませる。暗いテーマでは重ねない
+  const veil = () => js(`(() => { const m = getComputedStyle(document.getElementById('pets'), '::before').backgroundColor.match(/[\\d.]+/g).map(Number); return m.length > 3 ? m[3] : 1; })()`);
+  check('暗いテーマでは背景の絵に何も重ねない', await veil() === 0, String(await veil()));
+  // アプリの背景色は、決めたときのテーマのときだけ効く。試験は既定のテーマ（名前は空の文字）で動かす
+  await js(`window.terp.updateConfig({ appBackground: '#f4f4f0', appBackgroundTheme: '' })`);
+  check('明るいテーマでは背景の絵にテーマの地の色を重ねる', await wait(async () => await veil() > 0.4), String(await veil()));
+  await win.webContents.capturePage().then((img) => fs.writeFileSync(path.join(outDir, 'pet-light.png'), img.toPNG()));
+  await js(`window.terp.updateConfig({ appBackground: null, appBackgroundTheme: null })`);
+  // ペットの種類は設定で猫・犬・車から選ぶ
+  const sheetSize = (file) => js(`new Promise((resolve) => { const img = new Image(); img.onload = () => resolve([img.naturalWidth, img.naturalHeight]); img.onerror = () => resolve(null); img.src = 'pets/${file}/spritesheet.webp'; })`);
+  await js(`window.terp.updateConfig({ petKind: 'dog' })`);
+  check('設定で犬に替えられる', await wait(async () => (await pets())[0]?.kind === 'dog') && await js(`getComputedStyle(document.querySelector('#pets .pet')).backgroundImage.includes('dog/spritesheet.webp')`), JSON.stringify(await pets()));
+  check('犬の絵を読み込める', JSON.stringify(await sheetSize('dog')) === '[768,520]', JSON.stringify(await sheetSize('dog')));
+  await js(`window.terp.updateConfig({ petKind: 'car' })`);
+  check('設定で車に替えられる', await wait(async () => (await pets())[0]?.kind === 'car'), JSON.stringify(await pets()));
+  check('車の絵を読み込める', JSON.stringify(await sheetSize('car')) === '[512,128]', JSON.stringify(await sheetSize('car')));
+  let carMoves = 0;
+  let carBack = 0;
+  let carLast = (await pets())[0].x;
+  for (let t = 0; t < 3000; t += 200) {
+    await sleep(200);
+    const x = (await pets())[0].x;
+    if (x > carLast) carMoves++;
+    // 右の端から左の外へ入り直すときだけ大きく戻る
+    if (x < carLast && carLast - x < 200) carBack++;
+    carLast = x;
+  }
+  check('車は左から右へだけ走る', carMoves > 5 && carBack === 0, JSON.stringify({ carMoves, carBack }));
+  await input(agent, 'work');
+  await wait(async () => (await pets())[0]?.action === 'dash');
+  await input(agent, 'permission');
+  // 帯の外にいる間は入りきるまで走るため、止まるのを待ってから位置を見る
+  const barWidth = await js(`document.getElementById('pets').clientWidth`);
+  let parked = false;
+  for (let t = 0; t < 15000 && !parked; t += 300) {
+    const a = (await pets())[0];
+    await sleep(300);
+    const b = (await pets())[0];
+    parked = a.animation === 'hazard' && b.animation === 'hazard' && a.x === b.x;
+  }
+  const parkedCar = (await pets())[0];
+  check('車は許可待ちで、帯の中に止まってハザードを点ける', parked && parkedCar.x >= 0 && parkedCar.x < barWidth, JSON.stringify({ parkedCar, barWidth }));
+  await sleep(500);
+  check('ハザードの間は車が止まっている', (await pets())[0].x === parkedCar.x, JSON.stringify(await pets()));
+  await win.webContents.capturePage().then((img) => fs.writeFileSync(path.join(outDir, 'pet-car.png'), img.toPNG()));
+  await js(`window.terp.updateConfig({ petKind: 'cat' })`);
+  check('猫に戻せる', await wait(async () => (await pets())[0]?.kind === 'cat'), JSON.stringify(await pets()));
   await js('window.terp.updateConfig({ pets: false })');
   check('設定で切るとペットを出さない', await wait(async () => (await pets()).length === 0 && await js(`document.getElementById('pets').hidden`)));
   await js('window.terp.updateConfig({ pets: true })');

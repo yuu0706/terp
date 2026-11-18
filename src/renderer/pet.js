@@ -1,6 +1,7 @@
 // 上の帯を歩くペット（2026-11-18 利用者の指示）。エージェントを動かしているターミナル1つにつき1匹出し、状態で動きを変える。
-// 絵は Codex のペットと同じ並び（8列、行ごとに動き）のスプライトシートを使う。使う 0〜4 行だけを、1コマ 192x208 から半分の
+// 猫と犬の絵は Codex のペットと同じ並び（8列、行ごとに動き）のスプライトシートを使う。使う 0〜4 行だけを、1コマ 192x208 から半分の
 // 96x104 に縮めて持つ（帯では高さ 32px で出すため、Retina の2倍でも足りる）。DOM と時刻の進め方は呼び出し側から渡せるようにする。
+// 車は左から右へ走り抜けるだけにする（利用者の指示）。右向きの走る行と、止まってハザードを点ける行だけを持つ。
 
 export const PET_CELL = { width: 96, height: 104 };
 export const PET_COLUMNS = 8;
@@ -17,6 +18,19 @@ export const PET_ANIMATIONS = {
   jumping: { row: 4, durations: repeat(140, 5, 280) },
 };
 
+// 車の絵。1コマ 128x64、4列 x 2行。走る行はタイヤを回し、ハザードの行は点いた絵と消えた絵の2コマ
+export const CAR_ANIMATIONS = {
+  drive: { row: 0, durations: [70, 70, 70, 70] },
+  hazard: { row: 1, durations: [450, 450] },
+};
+
+// ペットの種類。motion は動かし方（wander: 左右に気ままに動く、drive: 左から右へ走り抜ける）
+export const PET_KINDS = {
+  cat: { sheet: 'pets/cat/spritesheet.webp', cell: PET_CELL, columns: PET_COLUMNS, rows: PET_ROWS, animations: PET_ANIMATIONS, motion: 'wander', height: 32 },
+  dog: { sheet: 'pets/dog/spritesheet.webp', cell: PET_CELL, columns: PET_COLUMNS, rows: PET_ROWS, animations: PET_ANIMATIONS, motion: 'wander', height: 32 },
+  car: { sheet: 'pets/car/spritesheet.webp', cell: { width: 128, height: 64 }, columns: 4, rows: 2, animations: CAR_ANIMATIONS, motion: 'drive', height: 36 },
+};
+
 // 終わった直後はその場で跳ねる時間
 export const DONE_JUMP_MS = 3000;
 // 1回跳ねる時間（跳ねる行のコマの合計）
@@ -24,6 +38,8 @@ export const HOP_MS = PET_ANIMATIONS.jumping.durations.reduce((a, b) => a + b, 0
 // 速さ（表示の px / ms）と、走る行のコマ送りの速さの倍率。普段は歩く・走るを気ままに繰り返し、考え中は全力で走る
 export const PET_SPEEDS = { walk: 0.035, run: 0.09, dash: 0.13 };
 const FRAME_RATE = { walk: 0.6, run: 1, dash: 1.3 };
+// 車の速さ（表示の px / ms）。猫・犬より速く走り抜け、考え中はさらに速くする
+export const CAR_SPEEDS = { cruise: 0.15, fast: 0.4 };
 // 何もしていないときの気ままな動き。重みと続く時間（ms）
 export const WANDER_MOODS = [
   { mood: 'walk', weight: 4, min: 2000, max: 5000 },
@@ -90,19 +106,38 @@ export function stepPet(pet, { action, width, dt, reduceMotion = false, random =
     : action === 'jumping' ? 'jumping'
     : gait ? (next.dir > 0 ? 'running-right' : 'running-left')
     : 'idle';
+  return advanceFrame(next, PET_ANIMATIONS, animation, dt * (gait ? FRAME_RATE[gait] : 1), reduceMotion);
+}
+
+function advanceFrame(next, animations, animation, dt, reduceMotion) {
   if (animation !== next.animation) {
     next.animation = animation;
     next.frame = 0;
     next.elapsed = 0;
   } else if (!reduceMotion) {
-    const { durations } = PET_ANIMATIONS[animation];
-    next.elapsed += dt * (gait ? FRAME_RATE[gait] : 1);
+    const { durations } = animations[animation];
+    next.elapsed += dt;
     while (next.elapsed >= durations[next.frame]) {
       next.elapsed -= durations[next.frame];
       next.frame = (next.frame + 1) % durations.length;
     }
   }
   return next;
+}
+
+// 車を1台ぶん進める。左から右へ走り、右の端から出きったら左の外から入り直す。size は車の表示の幅（px）。
+// 許可待ちは帯の中に入りきったところで止まり、ハザードを点ける。帯の外で止まると見えないため、入りきるまでは走らせる
+export function stepCar(car, { action, width, size, dt, reduceMotion = false }) {
+  const next = { ...car, dir: 1, lift: 0, hopLeft: 0 };
+  const inside = next.x >= 0 && next.x <= width;
+  const stopped = action === 'waving' && inside;
+  const speed = stopped ? 0 : action === 'dash' ? CAR_SPEEDS.fast : CAR_SPEEDS.cruise;
+  if (!reduceMotion && width > 0) next.x += speed * dt;
+  if (next.x > width + size) next.x = -size;
+  const animation = action === 'waving' ? 'hazard' : 'drive';
+  // タイヤの回る速さは走る速さに合わせ、止まっている間は回さない
+  const rate = animation === 'hazard' ? 1 : speed / CAR_SPEEDS.cruise;
+  return advanceFrame(next, CAR_ANIMATIONS, animation, dt * rate, reduceMotion);
 }
 
 // すれ違った猫どうしは、後ろから来たほうが跳ねる。before と after は同じ並びの位置
@@ -117,33 +152,37 @@ export function crossings(before, after) {
 }
 
 // 背景の位置。height は表示の高さ（px）
-export function spritePosition(animation, frame, height) {
-  const scale = height / PET_CELL.height;
-  const { row } = PET_ANIMATIONS[animation];
-  return { x: -frame * PET_CELL.width * scale, y: -row * PET_CELL.height * scale,
-    width: PET_CELL.width * scale, sheetWidth: PET_COLUMNS * PET_CELL.width * scale, sheetHeight: PET_ROWS * PET_CELL.height * scale };
+export function spritePosition(kind, animation, frame, height) {
+  const { cell, columns, rows } = kind;
+  const scale = height / cell.height;
+  const { row } = kind.animations[animation];
+  return { x: -frame * cell.width * scale, y: -row * cell.height * scale,
+    width: cell.width * scale, sheetWidth: columns * cell.width * scale, sheetHeight: rows * cell.height * scale };
 }
 
-export function createPetBar(host, { sheet, height = 32, onPick, now = () => performance.now(), reduceMotion = () => false }) {
+export function createPetBar(host, { kinds = PET_KINDS, onPick, now = () => performance.now(), reduceMotion = () => false }) {
   const pets = new Map();
   let frame = null;
   let last = null;
   let items = [];
+  let kindName = 'cat';
+  let kind = kinds.cat;
 
   function element(item) {
     const el = document.createElement('button');
     el.type = 'button';
     el.className = 'pet';
-    el.style.backgroundImage = `url("${sheet}")`;
+    el.dataset.kind = kindName;
+    el.style.backgroundImage = `url("${kind.sheet}")`;
     el.addEventListener('click', () => onPick?.(item.id));
     host.append(el);
     return el;
   }
 
   function draw(pet, item) {
-    const p = spritePosition(pet.animation, pet.frame, height);
+    const p = spritePosition(kind, pet.animation, pet.frame, kind.height);
     pet.el.style.width = `${p.width}px`;
-    pet.el.style.height = `${height}px`;
+    pet.el.style.height = `${kind.height}px`;
     pet.el.style.backgroundSize = `${p.sheetWidth}px ${p.sheetHeight}px`;
     pet.el.style.backgroundPosition = `${p.x}px ${p.y}px`;
     pet.el.style.transform = `translate(${Math.round(pet.x)}px, ${-Math.round(pet.lift || 0)}px)`;
@@ -158,15 +197,20 @@ export function createPetBar(host, { sheet, height = 32, onPick, now = () => per
     const t = now();
     const dt = last === null ? 0 : Math.min(200, t - last);
     last = t;
-    const width = Math.max(0, host.clientWidth - spritePosition('idle', 0, height).width);
+    const size = kind.cell.width * kind.height / kind.cell.height;
+    const width = Math.max(0, host.clientWidth - size);
     const reduce = reduceMotion();
     const before = items.map((item) => pets.get(item.id).x);
     for (const item of items) {
       const pet = pets.get(item.id);
       const action = petAction(item.state, { doneAt: item.doneAt, now: Date.now() });
-      Object.assign(pet, stepPet(pet, { action, width, dt, reduceMotion: reduce }), { action });
+      const moved = kind.motion === 'drive'
+        ? stepCar(pet, { action, width, size, dt, reduceMotion: reduce })
+        : stepPet(pet, { action, width, dt, reduceMotion: reduce });
+      Object.assign(pet, moved, { action });
     }
-    if (!reduce) {
+    // 車は同じ向きに走るため、追い抜いても跳ねさせない
+    if (!reduce && kind.motion === 'wander') {
       for (const index of crossings(before, items.map((item) => pets.get(item.id).x))) {
         const pet = pets.get(items[index].id);
         if (pet.action === 'wander' || pet.action === 'dash') pet.hopLeft = HOP_MS;
@@ -187,8 +231,16 @@ export function createPetBar(host, { sheet, height = 32, onPick, now = () => per
   document.addEventListener('visibilitychange', () => { if (!document.hidden) schedule(); });
 
   return {
-    // items: [{ id, state, label, doneAt }]。並びは左の一覧の順。最大 PET_MAX 匹
-    update(next) {
+    // items: [{ id, state, label, doneAt }]。並びは左の一覧の順。最大 PET_MAX 匹。kindName は cat・dog・car
+    update(next, name = 'cat') {
+      const nextName = kinds[name] ? name : 'cat';
+      // 種類を替えたら、絵も動かし方も違うため、出ているペットを全部出し直す
+      if (nextName !== kindName) {
+        for (const pet of pets.values()) pet.el.remove();
+        pets.clear();
+        kindName = nextName;
+        kind = kinds[kindName];
+      }
       items = next.slice(0, PET_MAX);
       // 隠れたままでは幅が測れず、出てくる場所が左端に寄るため、先に出す
       host.hidden = items.length === 0;
@@ -204,7 +256,7 @@ export function createPetBar(host, { sheet, height = 32, onPick, now = () => per
       });
       schedule();
     },
-    pets: () => [...pets.entries()].map(([id, pet]) => ({ id, x: pet.x, lift: pet.lift || 0, action: pet.action, mood: pet.mood, animation: pet.animation, frame: pet.frame })),
+    pets: () => [...pets.entries()].map(([id, pet]) => ({ id, kind: pet.el.dataset.kind, x: pet.x, lift: pet.lift || 0, action: pet.action, mood: pet.mood, animation: pet.animation, frame: pet.frame })),
     destroy() {
       if (frame !== null) cancelAnimationFrame(frame);
       for (const pet of pets.values()) pet.el.remove();

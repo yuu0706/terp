@@ -63,7 +63,9 @@ const DEFAULT_CONFIG = {
   frequentTabs: true,
   // 上の帯に、エージェントを動かしているターミナルごとのペットを出す（beta）
   pets: true,
-  // ペットの後ろに敷く背景（none・grass・room）
+  // ペットの種類（cat・dog・car）
+  petKind: 'cat',
+  // ペットの後ろに敷く背景（none・grass・room・city）
   petScene: 'grass',
   // AI の手伝い。aiAssist で全体を切り、機能ごとにも切れる。aiAutoTitle は画面の文字を claude に送るため既定で切る。
   // aiDailyLimit は1日に claude を呼ぶ回数の上限（0 なら上限なし）
@@ -448,7 +450,8 @@ function loadConfig() {
     agentRename: config.agentRename !== false,
     frequentTabs: config.frequentTabs !== false,
     pets: config.pets !== false,
-    petScene: ['none', 'grass', 'room'].includes(config.petScene) ? config.petScene : 'grass',
+    petKind: ['cat', 'dog', 'car'].includes(config.petKind) ? config.petKind : 'cat',
+    petScene: ['none', 'grass', 'room', 'city'].includes(config.petScene) ? config.petScene : 'grass',
     confirmDraftRemove: config.confirmDraftRemove !== false,
     ai: {
       enabled: config.aiAssist,

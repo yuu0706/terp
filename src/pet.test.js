@@ -4,7 +4,7 @@ const path = require('node:path');
 
 (async () => {
   const source = fs.readFileSync(path.join(__dirname, 'renderer/pet.js'), 'utf8');
-  const { petAction, stepPet, spritePosition, crossings, PET_ANIMATIONS, DONE_JUMP_MS, PET_SPEEDS, WANDER_MOODS, HOP_MS } = await import('data:text/javascript;base64,' + Buffer.from(source).toString('base64'));
+  const { petAction, stepPet, stepCar, spritePosition, crossings, PET_ANIMATIONS, PET_KINDS, DONE_JUMP_MS, PET_SPEEDS, CAR_SPEEDS, WANDER_MOODS, HOP_MS } = await import('data:text/javascript;base64,' + Buffer.from(source).toString('base64'));
   let count = 0;
   const check = (label, actual, expected) => { assert.deepEqual(actual, expected, label); count++; };
 
@@ -51,8 +51,27 @@ const path = require('node:path');
   check('すれ違ったら後ろの猫が跳ねる', [...crossings([10, 20, 90], [25, 15, 95])], [1]);
   check('すれ違わなければ跳ねない', [...crossings([10, 20], [12, 22])], []);
 
-  const p = spritePosition('waving', 2, 32);
+  const car = { x: 10, dir: 1, animation: null, frame: 0, elapsed: 0 };
+  const cruising = stepCar(car, { action: 'wander', width: 1000, size: 60, dt: 100 });
+  check('車は普段ゆっくり右へ走る', [cruising.x, cruising.animation], [10 + CAR_SPEEDS.cruise * 100, 'drive']);
+  check('車は考え中は速く右へ走る', stepCar(car, { action: 'dash', width: 1000, size: 60, dt: 100 }).x, 10 + CAR_SPEEDS.fast * 100);
+  check('車は終わった直後も跳ねずに走る', stepCar(car, { action: 'jumping', width: 1000, size: 60, dt: 100 }).animation, 'drive');
+  check('車は左へは走らない', stepCar({ ...car, dir: -1 }, { action: 'dash', width: 1000, size: 60, dt: 100 }).x > 10, true);
+  const through = stepCar({ ...car, x: 1059 }, { action: 'dash', width: 1000, size: 60, dt: 100 });
+  check('右の端から出きったら左の外から入り直す', through.x, -60);
+  const parked = stepCar({ ...cruising }, { action: 'waving', width: 1000, size: 60, dt: 1000 });
+  check('許可待ちは帯の中で止まってハザードを点ける', [parked.x, parked.animation], [cruising.x, 'hazard']);
+  const entering = stepCar({ ...car, x: -30 }, { action: 'waving', width: 1000, size: 60, dt: 100 });
+  check('許可待ちでも帯の外にいる間は、入りきるまで走る', entering.x > -30, true);
+  const blinking = stepCar({ ...parked }, { action: 'waving', width: 1000, size: 60, dt: 460 });
+  check('ハザードは点いたり消えたりする', blinking.frame, 1);
+  check('動きを減らす設定では車も走らない', stepCar({ ...cruising }, { action: 'dash', width: 1000, size: 60, dt: 1000, reduceMotion: true }).x, cruising.x);
+
+  const p = spritePosition(PET_KINDS.cat, 'waving', 2, 32);
   const scale = 32 / 104;
   check('行とコマから背景の位置を出す', [p.x, p.y, p.width], [-2 * 96 * scale, -3 * 104 * scale, 96 * scale]);
+  const c = spritePosition(PET_KINDS.car, 'hazard', 1, 32);
+  check('車は車のシートの行とコマから位置を出す', [c.x, c.y, c.width, c.sheetWidth], [-64, -32, 64, 256]);
+  check('犬は猫と同じ並びのシートを使う', [PET_KINDS.dog.animations, PET_KINDS.dog.cell, PET_KINDS.dog.motion], [PET_ANIMATIONS, PET_KINDS.cat.cell, 'wander']);
   console.log(`ペット: ${count}例 OK`);
 })().catch((error) => { console.error(error); process.exitCode = 1; });

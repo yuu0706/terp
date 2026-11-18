@@ -1953,6 +1953,16 @@ button.subagent:hover,
 
 .pets[data-scene='grass'] { background-image: url('pets/scenes/grass.webp'); }
 .pets[data-scene='room'] { background-image: url('pets/scenes/room.webp'); }
+.pets[data-scene='city'] { background-image: url('pets/scenes/city.webp'); }
+
+/* 背景の絵は暗い夜の色で作ってあるため、明るいテーマでは帯だけ浮いて見える。テーマの地の色を、地が明るいほど濃く重ねてなじませる。
+   暗いテーマでは重ねない。明るいテーマ用の絵を別に持つ案は、種類を足すたびに絵が倍になるため採らない */
+.pets:not([data-scene='none'])::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: oklch(from var(--color-bg) l c h / clamp(0, calc((l - 0.45) * 1.3), 0.6));
+}
 
 .pets[hidden] { display: none; }
 

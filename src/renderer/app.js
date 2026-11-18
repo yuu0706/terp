@@ -497,10 +497,9 @@ function renderAll() {
 }
 
 // ---- 上の帯のペット ----
-// エージェントを動かしているターミナル1つにつき1匹。考え中は走り、許可待ちは手を振り、終わった直後は跳ねる（pet.js）
+// エージェントを動かしているターミナル1つにつき1匹。種類（猫・犬・車）は設定で選ぶ。動かし方は pet.js
 const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
 const petBar = createPetBar(document.getElementById('pets'), {
-  sheet: 'pets/cat/spritesheet.webp',
   onPick: (id) => activate(id),
   reduceMotion: () => reducedMotion.matches,
 });
@@ -518,7 +517,7 @@ function renderPets() {
   for (const id of petDone.keys()) if (!sessions.has(id)) petDone.delete(id);
   const host = document.getElementById('pets');
   if (host.dataset.scene !== config.petScene) host.dataset.scene = config.petScene || 'grass';
-  petBar.update(items);
+  petBar.update(items, config.petKind);
 }
 
 // ---- 枠のタブ ----
