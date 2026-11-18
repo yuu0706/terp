@@ -1480,6 +1480,83 @@ require('readline').createInterface({ input: process.stdin }).on('line', (comman
   check('1枠でも帯を保ち、× を隠す', await js(`document.querySelectorAll('#panes .pane__title').length === 1 && document.querySelector('.pane__close').hidden`));
 }
 
+// TERP_SELFTEST_PET は、上の帯のペットを偽の claude で確かめる。エージェントのターミナルにだけ出て、状態で動きを変え、押すと移る
+async function runPetTest({ win, js, check, outDir }) {
+  const { execFileSync } = require('child_process');
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(path.resolve(outDir), 'pet-')));
+  const fake = path.join(dir, 'claude');
+  fs.copyFileSync(execFileSync('/bin/zsh', ['-lc', 'command -v node'], { encoding: 'utf8' }).trim(), fake);
+  fs.chmodSync(fake, 0o755);
+  const script = path.join(dir, 'pet-agent.js');
+  fs.writeFileSync(script, `require('child_process').execSync('stty -echo', { stdio: 'inherit' });
+const out = (text) => process.stdout.write(text);
+out('pet-agent-ready\\n');
+require('readline').createInterface({ input: process.stdin }).on('line', (command) => {
+  if (command === 'work') out('\\x1b]2;⠂ 作業中\\x07');
+  if (command === 'rest') out('\\x1b]2;✳ 休憩\\x07');
+  if (command === 'permission') out('\\x1b]9;permission required\\x07');
+});
+`);
+  const quote = (value) => "'" + value.replace(/'/g, "'\\''") + "'";
+  const wait = async (condition, ms = 10000) => {
+    for (let t = 0; t < ms; t += 100) { if (await condition()) return true; await sleep(100); }
+    return false;
+  };
+  const pets = () => js('window.__terp.pets()');
+  const input = (id, command) => js(`window.__terp.sessions.get(${id}).term.input(${JSON.stringify(command + '\r')}, true)`);
+  const agent = await js(`window.__terp.open(${JSON.stringify(dir)})`);
+  const shell = await js(`window.__terp.open(${JSON.stringify(dir)})`);
+  await wait(() => js(`window.__terp.bufferText(${agent}).length > 0`));
+  await js(`window.terp.write(${agent}, ${JSON.stringify(quote(fake) + ' ' + quote(script) + '\r')})`);
+  await wait(() => js(`window.__terp.sessions.get(${agent}).program === 'claude' && window.__terp.bufferText(${agent}).includes('pet-agent-ready')`));
+  await js('window.__terp.renderAll()');
+  const list = await pets();
+  check('エージェントのターミナルにだけペットを出す', list.length === 1 && list[0].id === agent && !list.some((p) => p.id === shell), JSON.stringify(list));
+  // 何もしていない猫も、歩く・走る・跳ねるを気ままに繰り返す（2026-11-18 利用者の指摘。座ってばかりでおとなしすぎた）
+  const seen = new Set();
+  let moved = 0;
+  let lastX = null;
+  for (let t = 0; t < 8000; t += 200) {
+    const pet = (await pets())[0];
+    if (pet) { seen.add(pet.animation); if (lastX !== null) moved += Math.abs(pet.x - lastX); lastX = pet.x; }
+    await sleep(200);
+  }
+  check('何もしていない猫も帯の上を動き回る', moved > 20 && [...seen].some((a) => a.startsWith('running')), JSON.stringify({ moved, seen: [...seen] }));
+  check('走り回る間は正面向きの跳ねる絵を使わない', !seen.has('jumping'), JSON.stringify([...seen]));
+  check('ペットの絵を読み込める', await js(`new Promise((resolve) => { const img = new Image(); img.onload = () => resolve(img.naturalWidth === 768 && img.naturalHeight === 520); img.onerror = () => resolve(false); img.src = 'pets/cat/spritesheet.webp'; })`));
+  await js(`window.__terp.activate(${shell})`);
+  await input(agent, 'work');
+  check('考え中は全力で走る', await wait(async () => (await pets())[0]?.action === 'dash'), JSON.stringify(await pets()));
+  const x1 = (await pets())[0].x;
+  await sleep(800);
+  const x2 = (await pets())[0].x;
+  check('走ると帯の上を動く', Math.abs(x2 - x1) > 20, JSON.stringify({ x1, x2 }));
+  await input(agent, 'permission');
+  check('許可待ちは立ち止まって手を振る', await wait(async () => (await pets())[0]?.animation === 'waving'), JSON.stringify(await pets()));
+  const x3 = (await pets())[0].x;
+  await sleep(500);
+  check('手を振る間は動かない', (await pets())[0].x === x3);
+  await input(agent, 'work');
+  await wait(async () => (await pets())[0]?.action === 'dash');
+  await input(agent, 'rest');
+  check('終わった直後は跳ねる', await wait(async () => (await pets())[0]?.animation === 'jumping'), JSON.stringify(await pets()));
+  await win.webContents.capturePage().then((img) => fs.writeFileSync(path.join(outDir, 'pet.png'), img.toPNG()));
+  await js(`document.querySelector('#pets .pet').click()`);
+  check('ペットを押すとそのターミナルへ移る', await wait(() => js(`window.__terp.activeKey === 't:${agent}'`)));
+  // 猫の後ろに敷く背景。既定は草むら。設定で家の中・なしに替えられる
+  const scene = () => js(`(() => { const el = document.getElementById('pets'); return { scene: el.dataset.scene, image: getComputedStyle(el).backgroundImage }; })()`);
+  const loads = (name) => js(`new Promise((resolve) => { const img = new Image(); img.onload = () => resolve(img.naturalWidth === 1600 && img.naturalHeight === 80); img.onerror = () => resolve(false); img.src = 'pets/scenes/${name}.webp'; })`);
+  check('猫の後ろに草むらの背景を敷く', (await scene()).image.includes('grass.webp') && await loads('grass'), JSON.stringify(await scene()));
+  await js(`window.terp.updateConfig({ petScene: 'room' })`);
+  check('設定で家の中の背景に替えられる', await wait(async () => (await scene()).image.includes('room.webp')) && await loads('room'), JSON.stringify(await scene()));
+  await js(`window.terp.updateConfig({ petScene: 'none' })`);
+  check('設定で背景を無くせる', await wait(async () => (await scene()).image === 'none'), JSON.stringify(await scene()));
+  await js(`window.terp.updateConfig({ petScene: 'grass' })`);
+  await js('window.terp.updateConfig({ pets: false })');
+  check('設定で切るとペットを出さない', await wait(async () => (await pets()).length === 0 && await js(`document.getElementById('pets').hidden`)));
+  await js('window.terp.updateConfig({ pets: true })');
+}
+
 // TERP_SELFTEST_DROPPATHS は、パスの入力・閲覧枠の除外・既存の分割との切り替えを確かめる。
 async function runDropPathsTest({ js, check, outDir }) {
   const { execFileSync } = require('child_process');
@@ -4879,6 +4956,13 @@ exports.run = (win) => {
 
     if (process.env.TERP_SELFTEST_DROPPATHS === '1') {
       await runDropPathsTest({ js, check, outDir });
+      fs.writeFileSync(path.join(outDir, 'result.txt'), log.join('\n') + '\n');
+      await finish();
+      return;
+    }
+
+    if (process.env.TERP_SELFTEST_PET) {
+      await runPetTest({ win, js, check, outDir });
       fs.writeFileSync(path.join(outDir, 'result.txt'), log.join('\n') + '\n');
       await finish();
       return;

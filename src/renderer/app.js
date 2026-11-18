@@ -21,6 +21,7 @@ import { checkScreen } from './screencheck.js';
 import { MARK_LENGTH, appendTail, recordSize, planReplay } from './replay.js';
 import { initTooltips } from './tooltip.js';
 import { initDialogPlacement } from './dialogplace.js';
+import { createPetBar } from './pet.js';
 
 // xterm.js の WebGL の描画は blendFunc(SRC_ALPHA, ONE_MINUS_SRC_ALPHA) で重ねるため、透明な面に描いた画素の透明度が
 // a×a になる。窓を透かすと薄い文字（\e[2m）や文字の縁が後ろの色で白く抜け、明るいテーマで文字が読みにくくなった
@@ -490,11 +491,37 @@ function renderAll() {
   updateDockBadge();
   renderTabs();
   renderPaneTitles();
+  renderPets();
   renderPermissionCards();
   empty.hidden = Boolean(activeKey);
 }
 
-// ---- 上のタブ ----
+// ---- 上の帯のペット ----
+// エージェントを動かしているターミナル1つにつき1匹。考え中は走り、許可待ちは手を振り、終わった直後は跳ねる（pet.js）
+const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
+const petBar = createPetBar(document.getElementById('pets'), {
+  sheet: 'pets/cat/spritesheet.webp',
+  onPick: (id) => activate(id),
+  reduceMotion: () => reducedMotion.matches,
+});
+const petDone = new Map();
+function renderPets() {
+  const list = config.pets === false ? [] : allSessionsInListOrder().filter((s) => s.workspace === activeWorkspace && isAgent(s));
+  const now = Date.now();
+  const items = list.map((s) => {
+    const state = stateOf(s, now);
+    const previous = petDone.get(s.id);
+    if (state === 'done' && previous?.state !== 'done') petDone.set(s.id, { state, at: now });
+    else if (state !== 'done') petDone.set(s.id, { state, at: 0 });
+    return { id: s.id, state, doneAt: petDone.get(s.id).at, label: `${displayName(s)}（${STATE_LABELS[state] || state}）` };
+  });
+  for (const id of petDone.keys()) if (!sessions.has(id)) petDone.delete(id);
+  const host = document.getElementById('pets');
+  if (host.dataset.scene !== config.petScene) host.dataset.scene = config.petScene || 'grass';
+  petBar.update(items);
+}
+
+// ---- 枠のタブ ----
 
 const TAB_FILE_ICON = `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" /><path d="M14 3v5h5" /></svg>`;
 
@@ -3975,6 +4002,7 @@ window.__terp = {
   addProject,
   refreshProjects,
   refreshSubagents,
+  pets: () => petBar.pets(),
   refreshAgents,
   get agents() {
     return agentList;
