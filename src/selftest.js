@@ -2423,7 +2423,10 @@ async function runShortcutsTest({ win, js, check, outDir }) {
 `)})`);
   const moved = await waitFor(`window.__terp.sessions.get(${second2})?.cwd === ${JSON.stringify(dir)}`);
   check('試しの端末が試しの場所へ移る', moved);
+  // ⌘W（タブを閉じる）はターミナルを残すため、ターミナルは左の一覧の × で閉じる
   await menu('タブを閉じる');
+  check('⌘W ではターミナルを閉じず、閉じた端末としても覚えない', await js(`window.__terp.sessions.has(${second2}) && !window.__terp.closedTabs.length`));
+  await js(`window.__terp.sessions.get(${second2}).li.querySelector('.session__close').click()`);
   await waitFor(`!window.__terp.sessions.has(${second2})`);
   check('閉じた端末を覚える', (await js('window.__terp.closedTabs[0]?.name')) === 'REOPENME');
   await menu('閉じたタブを開き直す');
@@ -5138,14 +5141,26 @@ exports.run = (win) => {
     }
     check('claude を抜けたらフォルダ名（作業の下ならターミナル）に戻る', shellName === expected, `${shellName} / ${expected}`);
 
-    // ⌘W 相当で3枚目を閉じる
+    // ⌘W は枠のタブを閉じるだけで、ターミナルは左の一覧に残す（2026-11-19 利用者の指示）
     await js(`window.__terp.activate(${id3})`);
     win.webContents.send('menu', 'close');
     await sleep(1500);
-    const count = await js('window.__terp.sessions.size');
-    check('閉じると一覧から消える', count === 2, `残り ${count}`);
+    const inPanes = (id) => js(`(() => { const visit = (n) => n.type === 'pane' ? (n.tabs || []) : n.children.flatMap(visit); return visit(window.__terp.layout()).includes('t:${id}'); })()`);
+    const kept = await js('window.__terp.sessions.size');
+    check('⌘W はタブを閉じるだけで、ターミナルは一覧に残る', kept === 3 && !(await inPanes(id3)) && await js(`Boolean(window.__terp.sessions.get(${id3})?.li.isConnected)`), `残り ${kept}`);
     const afterClose = await js('window.__terp.activeId');
-    check('閉じた後は直前のターミナルへ戻る', afterClose === id1, `表示中 ${afterClose}`);
+    check('タブを閉じた後は直前のターミナルへ戻る', afterClose === id1, `表示中 ${afterClose}`);
+    await js(`window.__terp.activate(${id3})`);
+    check('一覧から押すと、閉じたタブを枠に出し直す', await inPanes(id3) && (await js('window.__terp.activeId')) === id3);
+    await js(`[...document.querySelectorAll('#panes .tab')].find((tab) => tab.dataset.key === 't:${id3}').querySelector('.tab__close').click()`);
+    await sleep(300);
+    check('枠のタブの × もタブを閉じるだけで、ターミナルは一覧に残る', !(await inPanes(id3)) && await js(`window.__terp.sessions.has(${id3})`));
+    await js(`window.__terp.activate(${id3})`);
+    // ターミナルを閉じるのは左の一覧の × で行う
+    await js(`window.__terp.sessions.get(${id3}).li.querySelector('.session__close').click()`);
+    await sleep(1500);
+    const count = await js('window.__terp.sessions.size');
+    check('一覧の × で閉じると一覧から消える', count === 2, `残り ${count}`);
 
     // ⌘V 相当の貼り付けと、⌘C 相当のコピー
     await clipboard.writeText('echo pasted-ok');
