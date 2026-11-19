@@ -29,6 +29,7 @@ const agenthistory = require('./agenthistory');
 const { PtyClient, SOCKET } = require('./ptyclient');
 const { createDockIcon } = require('./dockicon');
 const { createAppliedStore, refreshDockAfterExit } = require('./bundleicon');
+const { leaveFullScreenThen } = require('./fullscreen');
 // 起動時の貼り付けより先に、自己診断専用の空のアプリを用意する
 if (process.env.TERP_SELFTEST && process.env.TERP_SELFTEST_THEMEICON === '1') require('./selftest').prepareThemeIconTarget();
 const dockIcon = createDockIcon({ app, BrowserWindow, appliedStore: createAppliedStore(path.join(config.CONFIG_DIR, 'bundle-icon.json')) });
@@ -649,8 +650,10 @@ function finishClose(allow) {
     return;
   }
   allowClose = true;
-  if (quitRequested) app.quit();
-  else win?.close();
+  leaveFullScreenThen(win, () => {
+    if (quitRequested) app.quit();
+    else win?.close();
+  });
 }
 
 ipcMain.on('window:close-reply', (event, id, answer) => {

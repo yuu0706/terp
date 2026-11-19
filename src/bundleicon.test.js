@@ -86,7 +86,7 @@ test('Dock の作り直しは terp が終わるのを待ってから、切り離
   const args = dockRefreshArgs(4321);
   assert.equal(args[0], '-c');
   assert.match(args[1], /kill -0 4321 /);
-  assert.match(args[1], /\/usr\/bin\/killall Dock$/);
+  assert.match(args[1], /done; sleep 1; \/usr\/bin\/killall Dock$/, '全画面の片付けを待ってから作り直す');
   assert.match(dockRefreshArgs('1; rm -rf /')[1], /kill -0 NaN /, 'pid は数として埋める');
   const calls = [];
   let unref = false;
