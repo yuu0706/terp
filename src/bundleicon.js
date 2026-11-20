@@ -68,9 +68,10 @@ function createAppliedStore(file) {
 }
 
 // Dock は閉じているアプリの絵を覚えていて、アプリのフォルダの絵を変えても古い絵のまま出す（2026-10-29 利用者の画面で確認。
-// killall Dock で作り直すと新しい絵になった）。terp が終わるのを待ってから Dock を作り直す。最大10秒待つ
+// killall Dock で作り直すと新しい絵になった）。terp が終わるのを待ってから Dock を作り直す。最大10秒待つ。
+// 全画面の Space は Dock が受け持つため、窓を片付けている途中で作り直すと空の画面が残るおそれがある。終わった後も1秒置く
 function dockRefreshArgs(pid) {
-  return ['-c', `for i in $(seq 50); do kill -0 ${Number(pid)} 2>/dev/null || break; sleep 0.2; done; /usr/bin/killall Dock`];
+  return ['-c', `for i in $(seq 50); do kill -0 ${Number(pid)} 2>/dev/null || break; sleep 0.2; done; sleep 1; /usr/bin/killall Dock`];
 }
 
 function refreshDockAfterExit(pid = process.pid, run = spawn) {
