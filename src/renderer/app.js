@@ -540,14 +540,16 @@ function createTab(key) {
   tab.dataset.key = key;
   makeTabDraggable(tab, key);
   tab.setAttribute('role', 'tab');
+  // ターミナルのタブの × はタブを閉じるだけで、ターミナルは左の一覧に残る。一覧の × の「閉じる」と言葉を分ける
+  const closeLabel = key.startsWith('t:') ? 'タブを閉じる' : '閉じる';
   tab.innerHTML = `${key.startsWith('t:') ? '<span class="session__dot tab__dot"></span>' : key.startsWith('s:') ? AGENT_ICON : TAB_FILE_ICON}<span class="tab__name"></span>
-    <button class="tab__close" type="button" aria-label="閉じる" data-shortcut-title="close" data-shortcut-label="閉じる" title="${escapeHtml(shortcutLabel('閉じる', 'close'))}">${CLOSE_ICON}</button>`;
+    <button class="tab__close" type="button" aria-label="${closeLabel}" data-shortcut-title="close" data-shortcut-label="${closeLabel}" title="${escapeHtml(shortcutLabel(closeLabel, 'close'))}">${CLOSE_ICON}</button>`;
   tab.addEventListener('click', (e) => {
-    if (e.target.closest('.tab__close')) closeKey(key);
+    if (e.target.closest('.tab__close')) closeTab(key);
     else if (!e.target.closest('input')) activateKey(key, true, { pane: tab.closest('.pane')?.dataset.paneId });
   });
   // 中ボタンで閉じる（ブラウザと同じ）
-  tab.addEventListener('auxclick', (e) => e.button === 1 && closeKey(key));
+  tab.addEventListener('auxclick', (e) => e.button === 1 && closeTab(key));
   // ターミナルのタブのダブルクリックは、一覧と共通の名前入力を開く
   tab.addEventListener('dblclick', (e) => {
     const name = tab.querySelector('.tab__name');
@@ -1999,7 +2001,7 @@ function createItem(s) {
       <span class="session__clash" hidden>同じファイル</span>
       <span class="session__sub"></span>
     </span>
-    <button class="session__close" type="button" aria-label="閉じる" data-shortcut-title="close" data-shortcut-label="閉じる" title="${escapeHtml(shortcutLabel('閉じる', 'close'))}">
+    <button class="session__close" type="button" aria-label="ターミナルを閉じる" title="ターミナルを閉じる">
       <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
     </button>`;
   li.addEventListener('click', () => activate(s.id));
@@ -2617,6 +2619,14 @@ async function openFile(path, { line, column, show = true, workspace = activeWor
   return f;
 }
 
+// 枠のタブの × と ⌘W。ターミナルは閉じずに枠から外すだけにし、左の一覧に残して動かし続ける（2026-11-19 利用者の指示）。
+// 用の済んだタブを片付けるたびにシェルやエージェントまで終わっていたため。ターミナルを閉じるのは左の一覧の × で行う。
+// ファイルなどは左の一覧に出ず、外すと戻る道が無くなるため、今までどおり閉じる
+function closeTab(key) {
+  if (key?.startsWith('t:') && viewOf(key)) dropTab(key, undefined, { keep: true });
+  else closeKey(key);
+}
+
 function closeKey(key) {
   if (!key) return;
   if (key.startsWith('t:')) closeSession(Number(key.slice(2)));
@@ -2721,9 +2731,12 @@ terp.onCloseRequest(async (id) => {
 });
 
 // 閉じたタブの枠は、同じ作業の未表示のタブで埋める。
-function dropTab(key, group = groupOf(key)) {
-  tabOrder = tabOrder.filter((k) => k !== key);
-  recent = recent.filter((k) => k !== key);
+// keep のときは、タブを枠から外すだけで、開いている物としては残す（closeTab）
+function dropTab(key, group = groupOf(key), { keep = false } = {}) {
+  if (!keep) {
+    tabOrder = tabOrder.filter((k) => k !== key);
+    recent = recent.filter((k) => k !== key);
+  }
   const pane = paneList(layout).find((p) => p.key === key);
   if (pane) {
     const displayed = new Set(paneList(layout).map((p) => p.key));
@@ -2732,7 +2745,8 @@ function dropTab(key, group = groupOf(key)) {
     let next = nextPaneKey({ ...pane, tabs: (pane.tabs || []).filter((k) => k === key || (tabOrder.includes(k) && viewOf(k) && !displayed.has(k))) }, key);
     // 最後の枠が空になるなら、最近見たターミナルなどを出す。空にすると、タブに戻る道が左の一覧だけになるため
     if (!next && paneList(layout).length === 1) {
-      next = recent.find((k) => tabOrder.includes(k) && workspaceOfKey(k) === activeWorkspace) || tabOrder.find((k) => workspaceOfKey(k) === activeWorkspace);
+      const other = (k) => k !== key && tabOrder.includes(k) && workspaceOfKey(k) === activeWorkspace;
+      next = recent.find(other) || tabOrder.find(other);
     }
     if (next) layout = replacePane(layout, pane.id, next);
     else layout = closePane(layout, pane.id);
@@ -3712,7 +3726,7 @@ terp.onMenu((action, arg) => {
       movePane(action.slice(5).replace('up', 'top').replace('down', 'bottom'));
       break;
     case 'close':
-      closeKey(activeKey);
+      closeTab(activeKey);
       break;
     case 'find':
       openTermSearch();
