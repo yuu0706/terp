@@ -929,7 +929,7 @@ async function runFilesTest({ win, js, check, outDir }) {
   fs.appendFileSync(path.join(repo, 'src', 'a.js'), '// changed\n');
   fs.writeFileSync(path.join(repo, 'new.txt'), 'new\n');
   const shot = (name) => win.webContents.capturePage().then((img) => fs.writeFileSync(path.join(outDir, `${name}.png`), img.toPNG()));
-  const tabs = () => js(`[...document.querySelectorAll('#tabs .tab')].map((t) => t.querySelector('.tab__name').textContent)`);
+  const tabs = () => js(`[...document.querySelectorAll('#panes .tab')].map((t) => t.querySelector('.tab__name').textContent)`);
   const treeNames = () => js(`[...document.querySelectorAll('#files-tree .files__name')].map((n) => n.textContent)`);
   const clickTree = (name) => js(`[...document.querySelectorAll('#files-tree .files__item')].find((li) => li.querySelector('.files__name').textContent === ${JSON.stringify(name)}).click()`);
 
@@ -954,8 +954,8 @@ async function runFilesTest({ win, js, check, outDir }) {
   await sleep(1200);
   check('ファイルを押すとタブで開く', (await js('window.__terp.activeKey')) === `f:${path.join(repo, 'src', 'a.js')}`, await js('window.__terp.activeKey'));
   const t1 = await tabs();
-  // 起動したときの ~ のターミナルはその他のため、リポジトリのタブの後ろに並ぶ
-  check('上のタブにターミナルとファイルが並ぶ', t1.length === 3 && t1[1] === 'a.js', t1.join(', '));
+  // 枠のタブには、その枠で出したタブを、出していたタブの隣に足していく（起動したときの ~ のターミナル・リポジトリのターミナル・a.js）
+  check('枠のタブに、その枠で出したターミナルとファイルが並ぶ', t1.length === 3 && t1[2] === 'a.js', t1.join(', '));
   const editorPath = JSON.stringify(path.join(repo, 'src', 'a.js'));
   const editorInfo = await js(`(() => {
     const editor = window.__terp.editorOf(${editorPath});
@@ -972,29 +972,25 @@ async function runFilesTest({ win, js, check, outDir }) {
   await sleep(1000);
   check('バイナリは中身を出さない', (await js(`document.querySelector('.fileview:not([hidden]) .fileview__notice')?.textContent || ''`)).includes('バイナリ'));
 
-  // ⌘1 相当で1つ目のタブ（ターミナル）へ
-  await js(`window.__terp.activateKey(window.__terp.visibleKeys()[0])`);
+  // ⌘1 相当で、操作中の枠の1つ目のタブへ
+  const firstKey = (await js('window.__terp.visibleKeys()'))[0];
+  await js(`window.__terp.activateKey(${JSON.stringify(firstKey)})`);
   await sleep(500);
-  check('1つ目のタブへ移れる', (await js('window.__terp.activeKey')) === `t:${termId}`);
+  check('枠の1つ目のタブへ移れる', firstKey?.startsWith('t:') && (await js('window.__terp.activeKey')) === firstKey, firstKey);
+  await js(`window.__terp.activateKey('t:${termId}')`);
+  await sleep(300);
 
-  // 作業の外のターミナルを開いても、上のタブはドラフトのリポジトリのタブを残し、その他のタブを後ろに並べる
+  // 新しく出したタブは、出していたタブの隣に入る
   const looseId = await js(`window.__terp.open(${JSON.stringify(os.homedir())})`);
   await sleep(2000);
   const k2 = await js('window.__terp.visibleKeys()');
   const repoKeys = k2.filter((k) => k === `t:${termId}` || k.startsWith(`f:${repo}/`));
-  // 起動したときの ~ のターミナルも作業の外のため、その他として後ろに並ぶ
-  check('作業の外のターミナルを開いても、リポジトリのタブを残してその他を後ろに並べる',
-    repoKeys.length === 4 && k2.length > 4 && k2.slice(0, 4).join() === repoKeys.join() && k2.at(-1) === `t:${looseId}`, k2.join(', '));
-  check('リポジトリの境目のタブの前を空ける', await js(`(() => {
-    const tabs = [...document.querySelectorAll('#tabs .tab')];
-    return tabs.map((t) => t.hasAttribute('data-group-start')).join() === tabs.map((_, i) => i === 4).join()
-      && parseFloat(getComputedStyle(tabs[4]).marginLeft) > parseFloat(getComputedStyle(tabs[1]).marginLeft);
-  })()`));
+  check('新しく出したターミナルは、出していたタブの隣に入る', k2[k2.indexOf(`t:${termId}`) + 1] === `t:${looseId}` && repoKeys.length === 4, k2.join(', '));
   // 作業の行を押すと、その作業のタブに戻る
   await js(`document.querySelector('.work[data-path=${JSON.stringify(repo)}] .work__row').click()`);
   await sleep(800);
   const t3 = await tabs();
-  check('作業の行を押すとその作業のタブに戻り、上のタブの並びは変わらない', repoKeys.includes(await js('window.__terp.activeKey')) && t3.length === k2.length, t3.join(', '));
+  check('作業の行を押すとその作業のタブに戻り、枠のタブの並びは変わらない', repoKeys.includes(await js('window.__terp.activeKey')) && t3.length === k2.length, t3.join(', '));
   // ドラフトに無いリポジトリのタブは、表示している間だけ出す
   const other = path.join(fs.realpathSync(outDir), 'files-other');
   fs.mkdirSync(other, { recursive: true });
@@ -1005,19 +1001,18 @@ async function runFilesTest({ win, js, check, outDir }) {
   const otherFile = `f:${path.join(other, 'b.txt')}`;
   await js(`window.__terp.openFile(${JSON.stringify(path.join(other, 'b.txt'))})`);
   await sleep(1500);
-  check('ドラフトの別のリポジトリのタブも上に並ぶ', (await js('window.__terp.visibleKeys()')).includes(otherFile));
+  check('別のリポジトリのファイルも、開いた枠のタブに入る', (await js('window.__terp.visibleKeys()')).includes(otherFile));
   await js(`document.querySelector('.project[data-path=${JSON.stringify(other)}] [data-action="draft"]').click()`);
   for (let i = 0; i < 30 && (await js(`window.__terp.projects.find((p) => p.path === ${JSON.stringify(other)}).draft`)); i++) await sleep(100);
-  check('表示中なら、ドラフトから外したリポジトリのタブも出す', (await js('window.__terp.visibleKeys()')).includes(otherFile));
   await js(`window.__terp.activateKey('t:${termId}')`);
   await sleep(500);
-  check('ドラフトに無いリポジトリのタブは、表示していなければ出さない', !(await js('window.__terp.visibleKeys()')).includes(otherFile) && (await js('window.__terp.tabOrder')).includes(otherFile));
+  check('ドラフトから外したリポジトリのタブも、出していなくても枠のタブに残る', (await js('window.__terp.visibleKeys()')).includes(otherFile));
   await js(`window.__terp.activateKey(${JSON.stringify(`f:${path.join(repo, 'src', 'a.js')}`)})`);
   await sleep(500);
 
   // タブの × で閉じる
   const before = (await tabs()).length;
-  await js(`[...document.querySelectorAll('#tabs .tab')].find((t) => t.querySelector('.tab__name').textContent === 'data.bin').querySelector('.tab__close').click()`);
+  await js(`[...document.querySelectorAll('#panes .tab')].find((t) => t.querySelector('.tab__name').textContent === 'data.bin').querySelector('.tab__close').click()`);
   await sleep(500);
   check('タブの × でファイルを閉じる', (await tabs()).length === before - 1);
 
@@ -1063,11 +1058,11 @@ async function runFilesTest({ win, js, check, outDir }) {
   await sleep(700);
   const frequentMarks = async () => js(`(() => {
     const row = (id) => window.__terp.sessions.get(id).li.dataset.frequent || '';
-    const tab = (id) => document.querySelector('#tabs .tab[data-key="t:' + id + '"]')?.dataset.frequent || '';
+    const tab = (id) => document.querySelector('#panes .tab[data-key="t:' + id + '"]')?.dataset.frequent || '';
     return { stayed: [row(${termId}), tab(${termId})], passed: [row(${subId}), tab(${subId})] };
   })()`);
   const marked = await frequentMarks();
-  check('3 回以上とどまって戻ったタブは、左の行と上のタブに印が付き、通り過ぎたタブには付かない', JSON.stringify(marked) === JSON.stringify({ stayed: ['1', '1'], passed: ['', ''] }), JSON.stringify(marked));
+  check('3 回以上とどまって戻ったタブは、左の行と枠のタブに印が付き、通り過ぎたタブには付かない', JSON.stringify(marked) === JSON.stringify({ stayed: ['1', '1'], passed: ['', ''] }), JSON.stringify(marked));
   await shot('3-frequent');
   // 表示中の行は左端に強調色の線があり、よく戻る行には無い。表示中の行を含むカードの枠は、ほかのカードと違う色になる
   const looks = await js(`(() => {
@@ -1105,15 +1100,17 @@ async function runFilesTest({ win, js, check, outDir }) {
   check('ターミナルで選んだ範囲を、地の色から作った選択色で塗る', sampled.every((v, i) => Math.abs(v - want[i]) <= 16), JSON.stringify({ sampled, expected }));
   await js(`window.__terp.sessions.get(${termId}).term.clearSelection()`);
 
-  // 上のタブを右の端まで送ったら、描き直しで表示中のタブへ引き戻さない
+  // 枠のタブを右の端まで送ったら、描き直しで出しているタブへ引き戻さない。入りきらない幅にして確かめる
   await js(`window.__terp.activateKey(window.__terp.visibleKeys()[0])`);
   await sleep(600);
-  const scrolled = await js(`(() => { const el = document.getElementById('tabs'); el.scrollLeft = el.scrollWidth; return { left: el.scrollLeft, overflow: el.scrollWidth > el.clientWidth }; })()`);
+  const strip = `document.querySelector('.pane[data-active="true"] .pane__tabs')`;
+  const scrolled = await js(`(() => { const el = ${strip}; el.style.maxWidth = '160px'; el.scrollLeft = el.scrollWidth; return { left: el.scrollLeft, overflow: el.scrollWidth > el.clientWidth }; })()`);
   await sleep(1600);
-  const after = await js(`document.getElementById('tabs').scrollLeft`);
-  check('右の端まで送った上のタブは、描き直しても動かない', scrolled.overflow && scrolled.left > 0 && after === scrolled.left, JSON.stringify({ ...scrolled, after }));
+  const after = await js(`${strip}.scrollLeft`);
+  check('右の端まで送った枠のタブは、描き直しても動かない', scrolled.overflow && scrolled.left > 0 && after === scrolled.left, JSON.stringify({ ...scrolled, after }));
+  await js(`${strip}.style.maxWidth = ''`);
 
-  // その他のタブを全部閉じても、ドラフトのリポジトリのタブを出して上のタブを残す
+  // その他のタブを全部閉じても、枠に残るリポジトリのタブを出す
   const looseKeys = await js(`window.__terp.visibleKeys().filter((k) => k.startsWith('t:') && !window.__terp.workOf(Number(k.slice(2))))`);
   await js(`window.__terp.activateKey(${JSON.stringify(looseKeys[0])})`);
   await sleep(300);
@@ -1123,7 +1120,7 @@ async function runFilesTest({ win, js, check, outDir }) {
     await sleep(600);
   }
   const left = { active: await js('window.__terp.activeKey'), tabs: await tabs(), empty: await js(`!document.getElementById('empty').hidden`) };
-  check('その他のタブを全部閉じても、ドラフトのリポジトリのタブを出して上のタブを残す',
+  check('その他のタブを全部閉じても、枠に残るリポジトリのタブを出す',
     looseKeys.length >= 2 && Boolean(left.active) && !looseKeys.includes(left.active) && left.tabs.length > 0 && !left.empty, JSON.stringify({ looseKeys, ...left }));
 }
 
@@ -1246,7 +1243,7 @@ async function runSplitTest({ win, js, check, outDir }) {
 
   const third = await js('window.__terp.open(window.terp.home)');
   await js(`(() => {
-    const tab = [...document.querySelectorAll('#tabs .tab')].find((el) => el.dataset.key === 't:${second}');
+    const tab = [...document.querySelectorAll('#panes .tab')].find((el) => el.dataset.key === 't:${second}');
     const pane = document.querySelector('[data-pane-id="${target}"]');
     const r = pane.getBoundingClientRect();
     const dataTransfer = new DataTransfer();
@@ -1270,7 +1267,7 @@ async function runSplitTest({ win, js, check, outDir }) {
   check('境目をずらすと左の端末の列数が変わる', await waitFor(() => js(`window.__terp.sessions.get(${first}).term.cols !== ${beforeCols}`)));
   await js(`document.querySelector('[data-pane-id="${target}"] .xterm-helper-textarea').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))`);
   check('端末を押すとその枠が操作中になる', (await js('window.__terp.activeKey')) === `t:${first}`);
-  await js(`document.querySelector('#tabs .tab[data-key="t:${third}"]').click()`);
+  await js(`document.querySelector('#panes .tab[data-key="t:${third}"]').click()`);
   const thirdPane = (await leaves()).find((p) => p.key === `t:${third}`);
   check('別の枠のタブを押すとその枠が操作中になる', (await js('window.__terp.activePaneId')) === thirdPane.id && (await leaves()).length === 3);
   const sessionCount = await js('window.__terp.sessions.size');
@@ -1292,6 +1289,60 @@ async function runSplitTest({ win, js, check, outDir }) {
   win.webContents.send('menu', 'pane-right');
   await sleep(100);
   check('右の枠のメニューで隣へ移る', (await js('window.__terp.activePaneId')) === right.id);
+
+  // タブを閉じたら、その枠で前に出していたタブへ戻す。以前は同じ作業で最近使ったタブを出し、無ければ枠ごと閉じていた（2026-11-17 利用者の指示）
+  const historyDir = fs.mkdtempSync(path.join(path.resolve(outDir), 'pane-history-'));
+  const [fileA, fileB] = ['a.md', 'b.md'].map((name) => path.join(historyDir, name));
+  fs.writeFileSync(fileA, '# a\n');
+  fs.writeFileSync(fileB, '# b\n');
+  await js(`window.__terp.openFile(${JSON.stringify(fileA)})`);
+  const historyPane = (await leaves()).find((p) => p.key === `f:${fileA}`);
+  const leftPane = (await leaves()).find((p) => p.id !== historyPane?.id);
+  check('開いたファイルは操作中の枠に出る', historyPane?.id === right.id && historyPane.history?.[0] === right.key, JSON.stringify(await leaves()));
+  // 左の枠で別のファイルを開いて戻し、最近使った順では b.md が先に来るようにする
+  win.webContents.send('menu', 'pane-left');
+  await sleep(100);
+  await js(`window.__terp.openFile(${JSON.stringify(fileB)})`);
+  await js(`window.__terp.activateKey(${JSON.stringify(leftPane.key)})`);
+  await js(`window.__terp.activateKey(${JSON.stringify(`f:${fileA}`)})`);
+  await js(`window.__terp.closeKey(${JSON.stringify(`f:${fileA}`)})`);
+  await sleep(300);
+  const afterClose = await leaves();
+  check('タブを閉じると、最近使った別のタブではなく、その枠で前に出していたタブに戻る',
+    afterClose.length === 2 && afterClose.find((p) => p.id === right.id)?.key === right.key, afterClose.map((p) => p.key).join(','));
+  check('閉じたタブは枠の履歴から外れる', afterClose.every((p) => !(p.history || []).includes(`f:${fileA}`)));
+  // 前のタブが閉じていたら、今までどおり同じ作業で最近使ったタブを出す
+  await js(`window.__terp.openFile(${JSON.stringify(fileA)})`);
+  await js(`window.__terp.closeKey(${JSON.stringify(right.key)})`);
+  await waitFor(async () => !(await leaves()).some((p) => p.key === right.key));
+  await js(`window.__terp.closeKey(${JSON.stringify(`f:${fileA}`)})`);
+  await sleep(300);
+  const fallback = await leaves();
+  check('枠のタブが無くなったら、枠を畳む', fallback.length === 1 && !fallback.some((p) => p.id === right.id), fallback.map((p) => p.key).join(','));
+
+  // 上の全体のタブをやめ、枠ごとの見出しにその枠のタブを並べる（2026-11-17 利用者の指示）
+  check('上の帯に全体のタブを出さない', await js(`!document.getElementById('tabs') && !document.querySelector('.topbar .tab')`));
+  win.webContents.send('menu', 'split-right');
+  await waitFor(async () => (await leaves()).length === 2);
+  const [stripLeft, stripRight] = await leaves();
+  await js(`window.__terp.openFile(${JSON.stringify(fileA)})`);
+  await sleep(500);
+  const stripKeys = (id) => js(`[...document.querySelectorAll('[data-pane-id="${id}"] .pane__tabs .tab')].map((t) => t.dataset.key)`);
+  const leftKeys = await stripKeys(stripLeft.id);
+  const rightKeys = await stripKeys(stripRight.id);
+  check('枠の見出しには、その枠のタブだけが並ぶ', rightKeys.includes(`f:${fileA}`) && !leftKeys.includes(`f:${fileA}`) && leftKeys.includes(`f:${fileB}`) && !rightKeys.includes(`f:${fileB}`), JSON.stringify({ leftKeys, rightKeys }));
+  check('新しいタブのボタンは操作中の枠の見出しに置く', await js(`Boolean(document.querySelector('[data-pane-id="${stripRight.id}"] .pane__actions #tab-new'))`));
+  await js(`[...document.querySelectorAll('[data-pane-id="${stripLeft.id}"] .pane__tabs .tab')].find((t) => t.dataset.key === ${JSON.stringify(`f:${fileB}`)}).click()`);
+  await sleep(300);
+  const clicked = await leaves();
+  check('操作していない枠のタブを押すと、その枠に出す', clicked.find((p) => p.id === stripLeft.id)?.key === `f:${fileB}` && clicked.find((p) => p.id === stripRight.id)?.key === `f:${fileA}`, clicked.map((p) => p.key).join(','));
+  const rightTerminal = rightKeys.find((k) => k.startsWith('t:'));
+  await js(`document.querySelector('[data-pane-id="${stripRight.id}"] .pane__close').click()`);
+  await sleep(300);
+  const merged = await leaves();
+  check('枠の × で閉じると、ファイルは残る枠のタブへ移り、ターミナルは終了せずにタブから外れる',
+    merged.length === 1 && merged[0].tabs.includes(`f:${fileA}`) && !merged[0].tabs.includes(rightTerminal) && (await js(`window.__terp.sessions.has(${Number(rightTerminal?.slice(2))})`)),
+    JSON.stringify(merged.map((p) => p.tabs)));
 }
 
 // TERP_SELFTEST_PANETITLE は、帯の更新・改名・分割・ファイル・端末の収まりを確かめる。
@@ -1325,7 +1376,9 @@ require('readline').createInterface({ input: process.stdin }).on('line', (comman
   };
   const header = (id) => `window.__terp.sessions.get(${id}).el.closest('.pane').querySelector('.pane__title')`;
   const input = (id, command) => js(`window.__terp.sessions.get(${id}).term.input(${JSON.stringify(command + '\r')}, true)`);
-  const name = (id) => js(`${header(id)}.querySelector('.pane__name')?.textContent`);
+  // 枠の見出しには、その枠のタブを並べる。出しているタブが選ばれた形になり、状態の印もタブに付く
+  const tabOf = (id) => `${header(id)}.querySelector('.tab[data-key="t:${id}"]')`;
+  const name = (id) => js(`${header(id)}.querySelector('.tab[aria-selected="true"] .tab__name')?.textContent`);
   const leaves = () => js(`(() => {
     const visit = (n) => n.type === 'pane' ? [n] : n.children.flatMap(visit);
     return visit(window.__terp.layout());
@@ -1351,17 +1404,17 @@ require('readline').createInterface({ input: process.stdin }).on('line', (comman
   const longTitle = '枠の上端で長い会話の題名を最後まで確認し、端末とファイルを並べて作業するための表示と名前の変更の検証';
   await input(first, 'title ' + longTitle);
   await wait(async () => await name(first) === longTitle);
-  check('OSC 2 の長い題名を字数で切らず帯と title に出す', await js(`${header(first)}.querySelector('.pane__name').textContent === ${JSON.stringify(longTitle)} && ${header(first)}.title.includes(${JSON.stringify(longTitle)})`));
-  check('名前の省略は帯の実際の幅だけで決める', await js(`(() => {
-    const h = ${header(first)}, n = h.querySelector('.pane__name'), style = getComputedStyle(n);
-    return style.textOverflow === 'ellipsis' && style.whiteSpace === 'nowrap' && style.maxWidth === 'none'
+  check('OSC 2 の長い題名を字数で切らず枠のタブと説明に出す', await name(first) === longTitle && await js(`${header(first)}.title.includes(${JSON.stringify(longTitle)})`));
+  check('名前の省略はタブの幅だけで決める', await js(`(() => {
+    const h = ${header(first)}, n = ${tabOf(first)}.querySelector('.tab__name'), style = getComputedStyle(n);
+    return style.textOverflow === 'ellipsis' && style.whiteSpace === 'nowrap'
       && n.textContent === ${JSON.stringify(longTitle)} && n.getBoundingClientRect().width <= h.getBoundingClientRect().width;
   })()`));
   check('帯にプログラムとリポジトリとブランチ、説明にフルパスを出す', await js(`${header(first)}.querySelector('.pane__detail').textContent === 'claude · title-repo / pane-title' && ${header(first)}.title.includes('claude') && ${header(first)}.title.includes(${JSON.stringify(repo)})`));
   await input(first, 'work');
-  await wait(() => js(`${header(first)}.dataset.agentState === 'working'`));
-  check('帯と一覧で状態の属性・印の見た目・読み上げ名を揃える', await js(`(() => {
-    const s = window.__terp.sessions.get(${first}), h = ${header(first)};
+  await wait(() => js(`${tabOf(first)}.dataset.agentState === 'working'`));
+  check('枠のタブと一覧で状態の属性・印の見た目・読み上げ名を揃える', await js(`(() => {
+    const s = window.__terp.sessions.get(${first}), h = ${tabOf(first)};
     const a = h.querySelector('.session__dot'), b = s.li.querySelector('.session__dot');
     return h.dataset.state === s.li.dataset.state && h.dataset.agentState === s.li.dataset.agentState
       && a.getAttribute('aria-label') === b.getAttribute('aria-label')
@@ -1369,12 +1422,12 @@ require('readline').createInterface({ input: process.stdin }).on('line', (comman
       && getComputedStyle(a).borderTopColor === getComputedStyle(b).borderTopColor;
   })()`));
   await input(first, 'permission');
-  await wait(() => js(`${header(first)}.dataset.agentState === 'waiting'`));
-  check('状態の変化で許可待ちの印を更新する', await js(`${header(first)}.dataset.state === 'notify' && ${header(first)}.querySelector('.session__dot').textContent === '!'`));
+  await wait(() => js(`${tabOf(first)}.dataset.agentState === 'waiting'`));
+  check('状態の変化で許可待ちの印を更新する', await js(`${tabOf(first)}.dataset.state === 'notify' && ${tabOf(first)}.querySelector('.session__dot').textContent === '!'`));
   await input(first, 'title ' + longTitle);
   await wait(async () => await name(first) === longTitle);
   await rename(first, '帯で変更した名前');
-  check('帯の改名を帯・タブ・一覧に反映する', await js(`${header(first)}.querySelector('.pane__name').textContent === '帯で変更した名前' && document.querySelector('.tab[data-key="t:${first}"] .tab__name').textContent === '帯で変更した名前' && window.__terp.sessions.get(${first}).li.querySelector('.session__name').textContent === '帯で変更した名前'`));
+  check('帯の改名を枠のタブ・一覧に反映する', await js(`${tabOf(first)}.querySelector('.tab__name').textContent === '帯で変更した名前' && window.__terp.sessions.get(${first}).li.querySelector('.session__name').textContent === '帯で変更した名前'`));
   await rename(first, '取り消す名前', 'Escape');
   check('Esc は改名を取り消す', await name(first) === '帯で変更した名前');
   await rename(first, '');
@@ -1394,7 +1447,7 @@ require('readline').createInterface({ input: process.stdin }).on('line', (comman
   check('× は帯の中に収まり文字と重ならず押せる', await js(`[...document.querySelectorAll('#panes .pane__title')].every((h) => {
     const b = h.querySelector('.pane__close'), r = b.getBoundingClientRect(), t = h.getBoundingClientRect();
     return !b.hidden && r.top >= t.top && r.bottom <= t.bottom && r.right <= t.right
-      && h.querySelector('.pane__name').getBoundingClientRect().right <= r.left
+      && h.querySelector('.pane__tabs').getBoundingClientRect().right <= r.left
       && document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)?.closest('button') === b;
   })`));
   await js(`new Promise((resolve) => {
@@ -1413,14 +1466,15 @@ require('readline').createInterface({ input: process.stdin }).on('line', (comman
   await js(`window.__terp.openFile(${JSON.stringify(file)})`);
   await wait(() => js(`Boolean(window.__terp.editorOf(${JSON.stringify(file)}))`));
   const fileHeader = `document.querySelector('.pane[data-active="true"] .pane__title')`;
-  check('ファイルの帯に名前と相対パスを出し、端末の状態を残さない', await js(`${fileHeader}.querySelector('.pane__name').textContent === 'sample.js' && ${fileHeader}.querySelector('.pane__detail').textContent === 'src/sample.js' && !${fileHeader}.hasAttribute('data-state') && ${fileHeader}.querySelector('.session__dot').hidden`));
+  const fileName = `${fileHeader}.querySelector('.tab[aria-selected="true"] .tab__name').textContent`;
+  check('ファイルの帯に名前と相対パスを出し、端末の状態を残さない', await js(`${fileName} === 'sample.js' && ${fileHeader}.querySelector('.pane__detail').textContent === 'src/sample.js' && !${fileHeader}.hasAttribute('data-state') && !${fileHeader}.querySelector('.tab[aria-selected="true"] .session__dot')`));
   await js(`${fileHeader}.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))`);
   check('ファイルの帯では改名しない', await js(`!${fileHeader}.querySelector('input')`));
   await js(`window.__terp.editorOf(${JSON.stringify(file)}).getModel().setValue('const value = 2;\\n')`);
-  await wait(() => js(`${fileHeader}.querySelector('.pane__name').textContent === 'sample.js ●'`));
+  await wait(() => js(`${fileName} === 'sample.js ●'`));
   check('未保存の印をタブと帯に揃える', await js(`document.querySelector('.tab[data-key="' + CSS.escape(${JSON.stringify('f:' + file)}) + '"] .tab__name').textContent === 'sample.js ●'`));
   await js(`window.__terp.editorOf(${JSON.stringify(file)}).getModel().setValue('const value = 1;\\n')`);
-  await wait(() => js(`${fileHeader}.querySelector('.pane__name').textContent === 'sample.js'`));
+  await wait(() => js(`${fileName} === 'sample.js'`));
   await js(`document.querySelector('.pane[data-active="true"] .pane__close').click()`);
   check('× で枠だけ閉じ、タブを残す', (await leaves()).length === 1 && await js(`window.__terp.tabOrder.includes(${JSON.stringify('f:' + file)})`));
   check('1枠でも帯を保ち、× を隠す', await js(`document.querySelectorAll('#panes .pane__title').length === 1 && document.querySelector('.pane__close').hidden`));
@@ -1733,7 +1787,7 @@ async function runSubagentsTest({ win, js, check, outDir }) {
     const savedTabs = await js('window.terp.loadTabs()');
     check('記録のタブを控えに残さない', savedTabs.ok && !savedTabs.value.order.includes(key) && savedTabs.value.active !== key);
     await win.webContents.capturePage().then((img) => fs.writeFileSync(path.join(outDir, 'subagents.png'), img.toPNG()));
-    await js(`[...document.querySelectorAll('#tabs .tab')].find((tab) => tab.dataset.key === ${JSON.stringify(key)}).querySelector('.tab__close').click()`);
+    await js(`[...document.querySelectorAll('#panes .tab')].find((tab) => tab.dataset.key === ${JSON.stringify(key)}).querySelector('.tab__close').click()`);
     check('サブエージェントのタブを閉じられる', await js(`!window.__terp.tabOrder.includes(${JSON.stringify(key)}) && !document.querySelector('.subagent-view')`));
     await js(`document.getElementById('settings-open').click()`);
     check('設定のボタンで設定の画面が開く', await wait(() => js(`!document.getElementById('settings').hidden`)));
@@ -1756,7 +1810,7 @@ async function runEditorTest({ win, js, check, outDir }) {
   const p = JSON.stringify(file);
   const editor = `window.__terp.editorOf(${p})`;
   const value = () => js(`${editor}?.getValue()`);
-  const tabName = () => js(`[...document.querySelectorAll('#tabs .tab')].find((t) => t.dataset.key === ${JSON.stringify(`f:${file}`)})?.querySelector('.tab__name').textContent`);
+  const tabName = () => js(`[...document.querySelectorAll('#panes .tab')].find((t) => t.dataset.key === ${JSON.stringify(`f:${file}`)})?.querySelector('.tab__name').textContent`);
   const wait = async (test, ms = 7000) => {
     for (let t = 0; t < ms; t += 100) {
       if (await test()) return true;
@@ -3474,24 +3528,7 @@ require('readline').createInterface({ input: process.stdin }).on('line', (comman
     await js('window.__terp.renderAll()');
     check('× で閉じたカードは、同じ許可待ちの間は出し直さない', !(await js(`Boolean(${card(b)})`)) && (await state(b)) === 'waiting');
 
-    await js(`document.getElementById('tabs').style.maxWidth = '150px'`);
-    await js('window.__terp.renderAll()');
-    const more = await js(`(() => { const el = document.getElementById('tabs-more'); return el.hidden ? null : { text: el.textContent, state: el.dataset.agentState || '' }; })()`);
-    check('幅に入らないタブは「他 N」にまとめる', Boolean(more && /^他 \d+$/.test(more.text)), JSON.stringify(more));
-    check('隠れたタブに許可待ちがあれば印を付ける', more?.state === 'waiting', JSON.stringify(more));
-    await js(`document.getElementById('tabs-more').click()`);
-    await sleep(200);
-    const menu = await js(`[...document.querySelectorAll('.menu:popover-open .menu__item')].map((el) => el.textContent)`);
-    check('押すと隠れたタブを選べる', menu.length >= 1, menu.join(' / '));
-    await js(`document.querySelector('.menu:popover-open .menu__item').click()`);
-    check('選ぶとそのタブへ移る', (await js('window.__terp.activeId')) !== c || (await js(`document.querySelector('.tab[aria-selected="true"]').dataset.key`)) !== `t:${c}`);
-    await js(`document.getElementById('tabs').style.maxWidth = ''`);
-    await js(`window.__terp.activate(${c})`);
-    await js('window.__terp.renderAll()');
-    await js(`for (const tab of document.getElementById('tabs').children) tab.style.maxWidth = '70px'`);
-    await js('window.__terp.renderAll()');
-    check('全部入ればまとめのボタンを隠す', await js(`document.getElementById('tabs-more').hidden`));
-    await js(`for (const tab of document.getElementById('tabs').children) tab.style.maxWidth = ''`);
+    // 幅に入らないタブの「他 N」は、上の全体のタブをやめたときに無くした。枠のタブは横に送る（FILES で確かめる）
 
     await js('window.__terp.overview.toggle()');
     await sleep(300);

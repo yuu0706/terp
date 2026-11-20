@@ -23,8 +23,10 @@ export function paneList(tree) {
   return !tree ? [] : tree.type === 'pane' ? [tree] : tree.children.flatMap(paneList);
 }
 
+// 枠は、出しているタブ（key）と、その枠のタブの並び（tabs）と、前に出していた順（history）を持つ。
+// 1つのタブは1つの枠のタブにだけ入る（VS Code のエディタのグループと同じ。2026-11-17 利用者の指示で上の全体のタブをやめた）
 export function createPane(key = null, id = 'pane-1') {
-  return { type: 'pane', id, key };
+  return { type: 'pane', id, key, tabs: key ? [key] : [], history: [] };
 }
 
 function mapPane(tree, id, change) {
@@ -66,11 +68,74 @@ export function openPaneFor(tree, activeId) {
   return list.find((p) => !p.locked)?.id ?? null;
 }
 
+// 枠ごとに、前に出していたタブを新しい順に覚える。閉じたときに、その枠へ戻す先にする
+export const PANE_HISTORY = 20;
+
+// 枠の中で、出しているタブを外したときに次に出すタブ。前に出していた順を先に見て、無ければ並びの隣
+export function nextPaneKey(pane, removed = pane.key) {
+  const tabs = (pane.tabs || []).filter((k) => k !== removed);
+  const fromHistory = (pane.history || []).find((k) => k !== removed && tabs.includes(k));
+  if (fromHistory) return fromHistory;
+  const at = (pane.tabs || []).indexOf(removed);
+  return tabs[Math.max(0, Math.min(at - 1, tabs.length - 1))] ?? null;
+}
+
+// ほかの枠のタブから key を外す。その枠が key を出していたら次のタブに替え、タブが無くなった枠は畳む
+function takeKey(tree, key, keepId) {
+  const emptied = [];
+  const next = mapPanes(tree, (pane) => {
+    if (pane.id === keepId || !(pane.tabs || []).includes(key)) return pane;
+    const rest = { ...pane, tabs: pane.tabs.filter((k) => k !== key), history: (pane.history || []).filter((k) => k !== key) };
+    if (pane.key !== key) return rest;
+    const replacement = nextPaneKey(pane, key);
+    if (!replacement) emptied.push(pane.id);
+    return { ...rest, key: replacement };
+  });
+  return emptied.reduce((t, id) => closePane(t, id), next);
+}
+
+function mapPanes(tree, change) {
+  if (tree.type === 'pane') return change(tree);
+  return { ...tree, children: tree.children.map((child) => mapPanes(child, change)) };
+}
+
 export function replacePane(tree, id, key) {
   if (!paneList(tree).some((p) => p.id === id)) return tree;
-  const source = paneList(tree).find((p) => p.key === key && p.id !== id);
-  const next = mapPane(tree, id, (pane) => ({ ...pane, key }));
-  return source ? closePane(next, source.id) : next;
+  const next = mapPane(tree, id, (pane) => {
+    const tabs = [...(pane.tabs || [])];
+    if (key && !tabs.includes(key)) {
+      const at = tabs.indexOf(pane.key);
+      tabs.splice(at < 0 ? tabs.length : at + 1, 0, key);
+    }
+    if (pane.key === key) return { ...pane, tabs };
+    const history = [pane.key, ...(pane.history || [])].filter((k, i, all) => k && k !== key && all.indexOf(k) === i && tabs.includes(k)).slice(0, PANE_HISTORY);
+    return { ...pane, key, tabs, history };
+  });
+  return key ? takeKey(next, key, id) : next;
+}
+
+// 閉じたタブは、どの枠のタブと履歴からも外す。出している枠の差し替えは呼び出し側が先に済ませる
+export function forgetPaneKey(tree, key) {
+  return mapPanes(tree, (pane) => (pane.tabs || []).includes(key) || (pane.history || []).includes(key)
+    ? { ...pane, tabs: (pane.tabs || []).filter((k) => k !== key), history: (pane.history || []).filter((k) => k !== key) }
+    : pane);
+}
+
+// 枠の × で閉じるとき、その枠のタブのうち keep が真のものを、残る枠（into）のタブの後ろへ移す
+export function closePaneMoving(tree, id, into, keep) {
+  const pane = paneList(tree).find((p) => p.id === id);
+  const moved = (pane?.tabs || []).filter(keep);
+  const next = closePane(tree, id);
+  if (!moved.length || !paneList(next).some((p) => p.id === into)) return next;
+  return mapPane(next, into, (target) => ({ ...target, tabs: [...(target.tabs || []), ...moved.filter((k) => !(target.tabs || []).includes(k))] }));
+}
+
+// 枠のタブに入っていないタブを、指定の枠のタブの後ろへ足す
+export function adoptKeys(tree, id, keys) {
+  const owned = new Set(paneList(tree).flatMap((p) => p.tabs || []));
+  const orphans = keys.filter((k) => !owned.has(k));
+  if (!orphans.length) return tree;
+  return mapPane(tree, id, (pane) => ({ ...pane, tabs: [...(pane.tabs || []), ...orphans] }));
 }
 
 export function splitPane(tree, id, key, side = 'right') {
@@ -81,13 +146,11 @@ export function splitPane(tree, id, key, side = 'right') {
   let serial = 1;
   while (ids.has(`pane-${serial}`)) serial++;
   const added = createPane(key, `pane-${serial}`);
-  const source = paneList(tree).find((p) => p.key === key);
-  let next = mapPane(tree, id, (pane) => ({
+  const next = mapPane(tree, id, (pane) => ({
     type: 'split', dir: ['left', 'right'].includes(side) ? 'row' : 'column',
     children: ['left', 'top'].includes(side) ? [added, pane] : [pane, added], sizes: [0.5, 0.5],
   }));
-  if (source) next = closePane(next, source.id);
-  return next;
+  return takeKey(next, key, added.id);
 }
 
 export function resizeSplit(tree, path, index, delta, extent, minimums = []) {
@@ -115,13 +178,17 @@ export function restoreLayout(value, keys, { transient = false } = {}) {
   const read = (node, depth = 0) => {
     if (!node || depth > 20 || count >= MAX_PANES) return null;
     if (node.type === 'pane') {
-      if (typeof node.key !== 'string' || (!transient && node.key.startsWith('s:')) || !allowed.has(node.key) || seen.has(node.key)) return null;
-      seen.add(node.key);
+      const usable = (k) => typeof k === 'string' && (transient || !k.startsWith('s:')) && allowed.has(k) && !seen.has(k);
+      const tabs = [...new Set([...(Array.isArray(node.tabs) ? node.tabs : []), node.key])].filter(usable);
+      const history = (Array.isArray(node.history) ? node.history : []).filter((k) => tabs.includes(k) && k !== node.key);
+      const key = tabs.includes(node.key) ? node.key : history[0] || tabs[0];
+      if (!key) return null;
+      for (const k of tabs) seen.add(k);
       count++;
       let id = typeof node.id === 'string' && node.id ? node.id : `pane-${count}`;
       while (ids.has(id)) id += '-restored';
       ids.add(id);
-      const pane = createPane(node.key, id);
+      const pane = { ...createPane(key, id), tabs, history: history.filter((k) => k !== key).slice(0, PANE_HISTORY) };
       return node.locked === true ? { ...pane, locked: true } : pane;
     }
     if (node.type !== 'split' || !['row', 'column'].includes(node.dir) || !Array.isArray(node.children)) return null;
@@ -194,10 +261,11 @@ export function createPaneView(host, { onActivate, onClose, onDrop, onResize, ca
       lock.addEventListener('click', (e) => { e.stopPropagation(); onLock?.(node.id); });
       const title = document.createElement('header');
       title.className = 'pane__title';
-      title.innerHTML = '<span class="session__dot" hidden></span><span class="pane__name"></span><span class="pane__detail"></span>';
+      // 見出しは、その枠のタブの並び・出しているタブの補助の文字・新しいタブのボタンの置き場・錠・× の順
+      title.innerHTML = '<div class="pane__tabs" role="tablist" aria-label="この枠のタブ"></div><span class="pane__detail"></span><div class="pane__actions"></div>';
       title.append(lock, close);
       title.addEventListener('dblclick', (event) => {
-        if (!event.target.closest('button, input')) onRename?.(node.id, title.querySelector('.pane__name'));
+        if (!event.target.closest('button, input, .tab')) onRename?.(node.id);
       });
       const body = document.createElement('div');
       body.className = 'pane__body';

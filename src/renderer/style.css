@@ -833,22 +833,7 @@ button.subagent:hover,
   gap: var(--space-1);
 }
 
-/* ---- 上のタブ（表示中の作業のターミナルとファイル） ---- */
-.tabs {
-  flex: 0 1 auto;
-  min-width: 0;
-  height: 100%;
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  overflow-x: auto;
-  scrollbar-width: none;
-}
-
-.tabs::-webkit-scrollbar {
-  display: none;
-}
-
+/* ---- 枠のタブ（その枠で出したターミナルとファイル）。枠の見出しに並べる ---- */
 .tab {
   -webkit-app-region: no-drag;
   flex: none;
@@ -856,12 +841,12 @@ button.subagent:hover,
   align-items: center;
   gap: var(--space-2);
   max-width: 220px;
-  height: 32px;
-  padding: 0 var(--space-1) 0 var(--space-3);
+  height: 26px;
+  padding: 0 2px 0 var(--space-2);
   border: 1px solid transparent;
   border-radius: var(--radius);
   color: var(--color-text-muted);
-  font-size: var(--text-md);
+  font-size: var(--text-sm);
   cursor: pointer;
   user-select: none;
 }
@@ -2633,8 +2618,8 @@ button.subagent:hover,
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  height: var(--control-h);
-  padding: 0 var(--space-2);
+  height: calc(var(--control-h) + 4px);
+  padding: 0 var(--space-1);
   border-bottom: 1px solid var(--color-border);
   font-size: var(--text-sm);
   white-space: nowrap;
@@ -2645,25 +2630,39 @@ button.subagent:hover,
   border-bottom-color: var(--color-accent);
 }
 
-.pane__title .session__dot { flex: none; }
-.pane__title .session__dot[hidden] { display: none; }
+/* タブの並びを先に収め、入りきらなければ横に送る。補助の文字は残りの幅で縮める */
+.pane__tabs {
+  flex: 0 1 auto;
+  min-width: 0;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
 
-.pane__name,
+.pane__tabs::-webkit-scrollbar { display: none; }
+
 .pane__detail {
+  flex: 1 1 0;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-
-/* 名前を先に収め、補助の文字から縮める。固定の字数では切らない。 */
-.pane__name { flex: 0 1 auto; }
-.pane__detail {
-  flex: 1 1 0;
   color: var(--color-text-muted);
 }
 
-.pane__title .pane__rename {
-  flex: 1;
+.pane__actions { flex: none; display: flex; }
+.pane__actions:empty { display: none; }
+.pane__actions .icon-btn--tab { width: 24px; height: 24px; }
+
+/* 操作していない枠の出しているタブは、操作中の枠より控えめにする */
+.panes[data-split='true'] .pane:not([data-active='true']) .tab[aria-selected='true'] {
+  background: transparent;
+}
+
+.tab .tab__rename {
+  width: 140px;
   font-size: var(--text-sm);
   background: transparent;
   border-radius: var(--radius);
@@ -2679,7 +2678,6 @@ button.subagent:hover,
 
 .pane__lock {
   flex: none;
-  margin-left: auto;
   visibility: hidden;
 }
 
@@ -3661,17 +3659,6 @@ button.subagent:hover,
 
 /* AI の手伝いの失敗（上限・切ってある・claude が無い）を数秒だけ出す */
 .ai-toast { z-index: 21; border-color: var(--color-border); }
-
-/* 幅に入らないタブをまとめるボタン。隠れた中に許可待ちなどがあれば印を付ける */
-.tabs__more {
-  flex: none;
-  gap: var(--space-1);
-  font-size: var(--text-sm);
-}
-
-.tabs__more[hidden] { display: none; }
-.tabs__more:not([data-agent-state]) .session__dot { display: none; }
-.tabs__more-state { display: inline-flex; margin-left: auto; }
 
 /* 表示していないエージェントの許可待ち。右下に重ね、移らずに答えられる */
 .permission-cards {
