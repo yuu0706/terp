@@ -1931,9 +1931,58 @@ button.subagent:hover,
 
 /* 空いたところでウィンドウをつかめるようにする */
 .topbar__spacer {
+  position: relative;
   flex: 1;
   align-self: stretch;
+  min-width: 0;
 }
+
+/* ---- 上の帯のペット。帯はウィンドウをつかめるまま、ペットだけを押せるようにする ---- */
+.pets {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  background-repeat: repeat-x;
+  background-size: auto 100%;
+  background-position: left bottom;
+  /* 帯の地になじむよう、背景の両端をぼかす */
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 48px, #000 calc(100% - 48px), transparent);
+  border-radius: var(--radius);
+}
+
+.pets[data-scene='grass'] { background-image: url('pets/scenes/grass.webp'); }
+.pets[data-scene='room'] { background-image: url('pets/scenes/room.webp'); }
+.pets[data-scene='city'] { background-image: url('pets/scenes/city.webp'); }
+
+/* 背景の絵は暗い夜の色で作ってあるため、明るいテーマでは帯だけ浮いて見える。テーマの地の色を、地が明るいほど濃く重ねてなじませる。
+   暗いテーマでは重ねない。明るいテーマ用の絵を別に持つ案は、種類を足すたびに絵が倍になるため採らない */
+.pets:not([data-scene='none'])::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: oklch(from var(--color-bg) l c h / clamp(0, calc((l - 0.45) * 1.3), 0.6));
+}
+
+.pets[hidden] { display: none; }
+
+.pet {
+  position: absolute;
+  left: 0;
+  /* 背景の地面（下から 1 割）に足を置く */
+  bottom: 4px;
+  padding: 0;
+  border: 0;
+  background-color: transparent;
+  background-repeat: no-repeat;
+  image-rendering: auto;
+  cursor: pointer;
+  pointer-events: auto;
+  -webkit-app-region: no-drag;
+  will-change: transform, background-position;
+}
+
+.pet:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; border-radius: 4px; }
 
 .menu {
   position: absolute;
