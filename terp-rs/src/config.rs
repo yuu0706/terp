@@ -53,6 +53,11 @@ pub struct Config {
     pub background_opacity: f32,
     pub background_blur: Blur,
     pub keybindings: BTreeMap<String, Option<String>>,
+    pub notifications: bool,
+    pub notify_agent_done: bool,
+    pub notify_bell: bool,
+    pub notify_when_visible: bool,
+    pub dock_badge: bool,
 }
 
 impl Default for Config {
@@ -73,6 +78,11 @@ impl Default for Config {
             background_opacity: 1.0,
             background_blur: Blur::Flag(false),
             keybindings: BTreeMap::new(),
+            notifications: true,
+            notify_agent_done: true,
+            notify_bell: true,
+            notify_when_visible: false,
+            dock_badge: true,
         }
     }
 }
@@ -130,6 +140,11 @@ impl Config {
             "backgroundOpacity" => self.background_opacity = parsed.background_opacity,
             "backgroundBlur" => self.background_blur = parsed.background_blur,
             "keybindings" => self.keybindings = parsed.keybindings,
+            "notifications" => self.notifications = parsed.notifications,
+            "notifyAgentDone" => self.notify_agent_done = parsed.notify_agent_done,
+            "notifyBell" => self.notify_bell = parsed.notify_bell,
+            "notifyWhenVisible" => self.notify_when_visible = parsed.notify_when_visible,
+            "dockBadge" => self.dock_badge = parsed.dock_badge,
             _ => {}
         }
     }

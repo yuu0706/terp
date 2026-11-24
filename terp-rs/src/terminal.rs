@@ -20,6 +20,8 @@ pub enum TermEvent {
     ResetTitle,
     Bell,
     Clipboard(String),
+    // OSC 9・777 の通知（claude などが応答の終わりや許可待ちを知らせる）
+    Notify(String),
     Exit,
 }
 
@@ -125,11 +127,15 @@ impl Terminal {
         let thread_wakeup = wakeup_pending.clone();
         std::thread::Builder::new().name("terp-pty-reader".into()).spawn(move || {
             let mut parser: Processor = Processor::new();
+            let mut scanner = crate::agent::OscScanner::default();
             let mut buf = vec![0u8; 64 * 1024];
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) | Err(_) => break,
                     Ok(n) => {
+                        for message in scanner.feed(&buf[..n]) {
+                            let _ = events_tx.unbounded_send(TermEvent::Notify(message));
+                        }
                         let mut term = thread_term.lock();
                         parser.advance(&mut *term, &buf[..n]);
                         drop(term);

@@ -1,7 +1,10 @@
+mod agent;
 mod app;
 mod appearance;
 mod config;
+mod dock;
 mod keys;
+mod panes;
 mod projects;
 mod terminal;
 mod terminal_view;
@@ -22,6 +25,12 @@ fn shortcuts() -> Vec<(&'static str, &'static str, Box<dyn Action>)> {
     vec![
         ("settings", "Command+,", Box::new(OpenConfig)),
         ("new", "Command+T", Box::new(NewTerminal)),
+        ("split-right", "Command+\\", Box::new(SplitRight)),
+        ("next-attention", "Command+Shift+J", Box::new(NextAttention)),
+        ("pane-left", "Command+Alt+Left", Box::new(PaneLeft)),
+        ("pane-right", "Command+Alt+Right", Box::new(PaneRight)),
+        ("pane-up", "Command+Alt+Up", Box::new(PaneUp)),
+        ("pane-down", "Command+Alt+Down", Box::new(PaneDown)),
         ("close", "Command+W", Box::new(CloseTab)),
         ("clear", "Command+K", Box::new(Clear)),
         ("select-all", "Command+A", Box::new(SelectAll)),
@@ -62,7 +71,6 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-q", Quit, None),
         KeyBinding::new("cmd-h", Hide, None),
         KeyBinding::new("alt-cmd-h", HideOthers, None),
-        KeyBinding::new("cmd-m", Minimize, None),
         KeyBinding::new("ctrl-cmd-f", ToggleFullScreen, None),
         KeyBinding::new("cmd-c", Copy, Some("Terminal")),
         KeyBinding::new("cmd-v", Paste, Some("Terminal")),
@@ -96,6 +104,7 @@ fn set_menus(cx: &mut App) {
         ]),
         Menu::new("ターミナル").items([
             MenuItem::action("新しいターミナル", NewTerminal),
+            MenuItem::action("右に分割", SplitRight),
             MenuItem::action("タブを閉じる", CloseTab),
             MenuItem::separator(),
             MenuItem::action("画面を消去", Clear),
@@ -117,6 +126,12 @@ fn set_menus(cx: &mut App) {
             MenuItem::action("直前のタブ", RecentTab),
             MenuItem::action("前のタブ", PrevTab),
             MenuItem::action("次のタブ", NextTab),
+            MenuItem::action("次の要対応", NextAttention),
+            MenuItem::separator(),
+            MenuItem::action("左の枠", PaneLeft),
+            MenuItem::action("右の枠", PaneRight),
+            MenuItem::action("上の枠", PaneUp),
+            MenuItem::action("下の枠", PaneDown),
         ]),
         Menu::new("表示").items([
             MenuItem::action("左の一覧", ToggleSidebar),

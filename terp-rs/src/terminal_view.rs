@@ -1,4 +1,5 @@
 // ターミナルの画面。文字の格子を描き、キー・マウス・入力方式（IME）の入力をシェルへ渡す。
+use crate::agent::{self, AgentEvent, AgentState, AgentStatus};
 use crate::appearance::{Appearance, hsla};
 use crate::config::{Rgb, Theme};
 use crate::keys::{self, Mods};
@@ -22,13 +23,21 @@ use gpui::{
 };
 use std::ops::Range;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 actions!(terminal, [Copy, Paste, SelectAll, Clear]);
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Attention {
+    Done,
+    Bell,
+}
 
 pub enum TerminalEvent {
     Changed,
     Exited,
-    Bell,
+    // 応答の終わり・許可待ち・ベル。通知を出すかは親が決める
+    Attention { kind: Attention, message: String },
 }
 
 #[derive(Clone, Copy, Default)]
@@ -47,6 +56,9 @@ pub struct TerminalView {
     pub process: Option<ProcessInfo>,
     pub start_cwd: PathBuf,
     pub unseen_bell: bool,
+    pub agent: AgentStatus,
+    pub agent_title: Option<String>,
+    title_working: bool,
     marked_text: Option<String>,
     layout: Layout,
     selecting: bool,
@@ -76,6 +88,9 @@ impl TerminalView {
                 process: None,
                 start_cwd: cwd,
                 unseen_bell: false,
+                agent: AgentStatus::default(),
+                agent_title: None,
+                title_working: false,
                 marked_text: None,
                 layout: Layout::default(),
                 selecting: false,
@@ -102,11 +117,28 @@ impl TerminalView {
         match event {
             TermEvent::Wakeup => {
                 self.terminal.clear_wakeup();
+                if self.is_agent() {
+                    self.agent.apply(AgentEvent::Output, Instant::now());
+                }
                 cx.notify();
             }
             TermEvent::Title(title) => {
+                let parsed = agent::parse_title(&title);
+                if parsed.text.is_some() {
+                    self.agent_title = parsed.text;
+                }
                 self.title = Some(title).filter(|t| !t.trim().is_empty());
+                // 作業中から入力待ちに変わったら、応答が終わったことを知らせる
+                let finished = self.title_working && !parsed.working;
+                self.title_working = parsed.working;
+                self.agent.apply(AgentEvent::Title { working: parsed.working }, Instant::now());
+                if finished {
+                    cx.emit(TerminalEvent::Attention { kind: Attention::Done, message: String::new() });
+                }
                 cx.emit(TerminalEvent::Changed);
+            }
+            TermEvent::Notify(message) => {
+                cx.emit(TerminalEvent::Attention { kind: Attention::Done, message });
             }
             TermEvent::ResetTitle => {
                 self.title = None;
@@ -114,7 +146,7 @@ impl TerminalView {
             }
             TermEvent::Bell => {
                 self.unseen_bell = true;
-                cx.emit(TerminalEvent::Bell);
+                cx.emit(TerminalEvent::Attention { kind: Attention::Bell, message: String::new() });
             }
             TermEvent::Clipboard(text) => cx.write_to_clipboard(ClipboardItem::new_string(text)),
             TermEvent::Exit => cx.emit(TerminalEvent::Exited),
@@ -124,6 +156,14 @@ impl TerminalView {
     pub fn refresh_process(&mut self, cx: &mut Context<Self>) {
         let process = self.terminal.foreground();
         if process != self.process {
+            let before = self.process.as_ref().map(|p| p.name.clone());
+            let after = process.as_ref().map(|p| p.name.clone());
+            // 別のプログラムに替わったら、前のエージェントの状態を捨てる
+            if before != after && agent::is_agent(before.as_deref()) {
+                self.agent.apply(AgentEvent::Reset, Instant::now());
+                self.agent_title = None;
+                self.title_working = false;
+            }
             self.process = process;
             cx.emit(TerminalEvent::Changed);
         }
@@ -133,8 +173,32 @@ impl TerminalView {
         self.process.as_ref().and_then(|p| p.cwd.clone()).unwrap_or_else(|| self.start_cwd.clone())
     }
 
-    // 一覧とタブに出す名前。端末のタイトル（claude の会話の題名など）を優先する
+    pub fn is_agent(&self) -> bool {
+        agent::is_agent(self.process.as_ref().map(|p| p.name.as_str()))
+    }
+
+    pub fn agent_state(&self) -> AgentState {
+        if self.is_agent() { self.agent.state(Instant::now()) } else { AgentState::Idle }
+    }
+
+    // 応答の終わり・許可待ちの知らせを状態に写す。seen は利用者が今その端末を見ているか
+    pub fn mark_done(&mut self, message: &str, seen: bool, cx: &mut Context<Self>) {
+        self.agent.apply(AgentEvent::Notification { message, seen }, Instant::now());
+        cx.notify();
+    }
+
+    pub fn mark_seen(&mut self) {
+        self.agent.apply(AgentEvent::Seen, Instant::now());
+        self.unseen_bell = false;
+    }
+
+    // 一覧とタブに出す名前。エージェントの会話の題名を優先する
     pub fn display_name(&self) -> String {
+        if self.is_agent()
+            && let Some(title) = &self.agent_title
+        {
+            return title.clone();
+        }
         if let Some(title) = &self.title {
             return title.clone();
         }
@@ -149,6 +213,7 @@ impl TerminalView {
     }
 
     fn write_input(&mut self, bytes: &[u8], cx: &mut Context<Self>) {
+        self.agent.apply(AgentEvent::Input, Instant::now());
         {
             let mut term = self.terminal.term.lock();
             term.scroll_display(Scroll::Bottom);
