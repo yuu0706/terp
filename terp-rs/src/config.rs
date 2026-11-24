@@ -26,10 +26,12 @@ pub enum Blur {
 }
 
 impl Blur {
-    pub fn enabled(&self) -> bool {
+    // true は半径 20。Ghostty の background-blur と同じ読み方
+    pub fn radius(&self) -> u32 {
         match self {
-            Blur::Flag(flag) => *flag,
-            Blur::Radius(radius) => *radius > 0.0,
+            Blur::Flag(true) => 20,
+            Blur::Flag(false) => 0,
+            Blur::Radius(radius) => radius.clamp(0.0, 100.0).round() as u32,
         }
     }
 }
@@ -52,6 +54,7 @@ pub struct Config {
     pub cursor_style: String,
     pub background_opacity: f32,
     pub background_blur: Blur,
+    pub minimum_contrast: f32,
     pub keybindings: BTreeMap<String, Option<String>>,
     pub notifications: bool,
     pub notify_agent_done: bool,
@@ -77,6 +80,7 @@ impl Default for Config {
             cursor_style: "block".into(),
             background_opacity: 1.0,
             background_blur: Blur::Flag(false),
+            minimum_contrast: 1.0,
             keybindings: BTreeMap::new(),
             notifications: true,
             notify_agent_done: true,
@@ -119,6 +123,7 @@ impl Config {
         config.background_opacity = config.background_opacity.clamp(0.2, 1.0);
         config.padding_x = config.padding_x.clamp(0.0, 40.0);
         config.padding_y = config.padding_y.clamp(0.0, 40.0);
+        config.minimum_contrast = config.minimum_contrast.clamp(1.0, 21.0);
         let error = (!errors.is_empty()).then(|| format!("値の型が正しくない項目を既定値にした: {}", errors.join("・")));
         (config, error)
     }
@@ -139,6 +144,7 @@ impl Config {
             "cursorStyle" => self.cursor_style = parsed.cursor_style,
             "backgroundOpacity" => self.background_opacity = parsed.background_opacity,
             "backgroundBlur" => self.background_blur = parsed.background_blur,
+            "minimumContrast" => self.minimum_contrast = parsed.minimum_contrast,
             "keybindings" => self.keybindings = parsed.keybindings,
             "notifications" => self.notifications = parsed.notifications,
             "notifyAgentDone" => self.notify_agent_done = parsed.notify_agent_done,
@@ -159,7 +165,7 @@ impl Config {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Rgb(pub u8, pub u8, pub u8);
 
 impl Rgb {
@@ -185,7 +191,7 @@ impl Rgb {
         [lin(self.0), lin(self.1), lin(self.2)]
     }
 
-    fn luminance(self) -> f64 {
+    pub fn luminance(self) -> f64 {
         let [r, g, b] = self.linear();
         r * 0.2126 + g * 0.7152 + b * 0.0722
     }
@@ -334,6 +340,30 @@ pub fn resolve_theme(config: &Config) -> (Theme, Option<String>) {
     (theme, error)
 }
 
+// 文字の色が地の色に対して ratio のコントラスト比に届かなければ、届くまで明るさをずらす。
+// 地が暗ければ明るい向きを先に試し、届かなければ逆の向きも試す（xterm.js の minimumContrastRatio と同じ考え方）
+pub fn ensure_contrast(fg: Rgb, bg: Rgb, ratio: f32) -> Rgb {
+    let ratio = ratio as f64;
+    if ratio <= 1.0 || fg.contrast(bg) >= ratio {
+        return fg;
+    }
+    let dark_ground = bg.luminance() < 0.5;
+    let order = if dark_ground { [WHITE, BLACK] } else { [BLACK, WHITE] };
+    let mut best = fg;
+    for target in order {
+        for step in 1..=20 {
+            let c = fg.mix(target, step as f32 / 20.0);
+            if c.contrast(bg) >= ratio {
+                return c;
+            }
+            if c.contrast(bg) > best.contrast(bg) {
+                best = c;
+            }
+        }
+    }
+    best
+}
+
 fn readable_on(base: Rgb, candidates: &[Rgb]) -> Rgb {
     candidates
         .iter()
@@ -455,9 +485,9 @@ mod tests {
 
     #[test]
     fn ぼかしは真偽値と半径の両方を読む() {
-        assert!(Config::parse(r#"{"backgroundBlur": true}"#).0.background_blur.enabled());
-        assert!(Config::parse(r#"{"backgroundBlur": 20}"#).0.background_blur.enabled());
-        assert!(!Config::parse(r#"{"backgroundBlur": 0}"#).0.background_blur.enabled());
+        assert_eq!(Config::parse(r#"{"backgroundBlur": true}"#).0.background_blur.radius(), 20);
+        assert_eq!(Config::parse(r#"{"backgroundBlur": 4}"#).0.background_blur.radius(), 4);
+        assert_eq!(Config::parse(r#"{"backgroundBlur": 0}"#).0.background_blur.radius(), 0);
     }
 
     #[test]
@@ -490,6 +520,23 @@ mod tests {
         assert!(selection_color(bg, fg).contrast(fg) >= 4.5);
         let (bg, fg) = (Rgb(0xff, 0xff, 0xff), Rgb(0x33, 0x33, 0x33));
         assert!(selection_color(bg, fg).contrast(fg) >= 4.5);
+    }
+
+    #[test]
+    fn 薄い文字は指定のコントラスト比まで濃くする() {
+        let bg = Rgb(0xe6, 0xec, 0xf5);
+        let fg = Rgb(0xc0, 0xc8, 0xd0);
+        let adjusted = ensure_contrast(fg, bg, 3.0);
+        assert!(adjusted.contrast(bg) >= 3.0);
+        assert_eq!(ensure_contrast(BLACK, bg, 3.0), BLACK);
+        assert_eq!(ensure_contrast(fg, bg, 1.0), fg);
+    }
+
+    #[test]
+    fn ぼかしの半径() {
+        assert_eq!(Blur::Flag(true).radius(), 20);
+        assert_eq!(Blur::Radius(4.0).radius(), 4);
+        assert_eq!(Blur::Radius(400.0).radius(), 100);
     }
 
     #[test]

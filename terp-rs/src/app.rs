@@ -4,6 +4,8 @@ use crate::appearance::{Appearance, hsla};
 use crate::config::{Config, config_path, home_dir};
 use crate::panes::{Axis, Direction, Layout, Node};
 use crate::projects::{self, Project, Projects, contains_path};
+use crate::ptyhost::SessionSummary;
+use crate::terminal::{GridSize, HostClient, Terminal};
 use crate::terminal_view::{Attention, TerminalEvent, TerminalView};
 use gpui::{
     AnyElement, App, Bounds, ClickEvent, Context, Entity, FocusHandle, Focusable, FontWeight, Hsla, MouseButton,
@@ -14,6 +16,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 actions!(
@@ -95,6 +98,7 @@ pub struct TerpApp {
     dock_count: usize,
     drag: Option<DividerDrag>,
     split_bounds: Rc<RefCell<HashMap<Vec<usize>, Bounds<Pixels>>>>,
+    host: Option<Arc<HostClient>>,
     _poll: Task<()>,
 }
 
@@ -106,13 +110,14 @@ pub fn load_appearance(font_delta: f32, cx: &mut App) {
 
 pub fn background_appearance(cx: &App) -> WindowBackgroundAppearance {
     let config = &cx.global::<Appearance>().config;
-    if config.background_opacity >= 1.0 {
-        WindowBackgroundAppearance::Opaque
-    } else if config.background_blur.enabled() {
-        WindowBackgroundAppearance::Blurred
-    } else {
-        WindowBackgroundAppearance::Transparent
-    }
+    // ぼかしは dock::set_blur_radius で半径を指定して掛ける
+    if config.background_opacity >= 1.0 { WindowBackgroundAppearance::Opaque } else { WindowBackgroundAppearance::Transparent }
+}
+
+pub fn apply_blur(cx: &App) {
+    let config = &cx.global::<Appearance>().config;
+    let radius = if config.background_opacity < 1.0 { config.background_blur.radius() } else { 0 };
+    crate::dock::set_blur_radius(radius);
 }
 
 fn mtime(path: &Path) -> Option<SystemTime> {
@@ -227,9 +232,22 @@ impl TerpApp {
             dock_count: 0,
             drag: None,
             split_bounds: Rc::default(),
+            host: None,
             _poll: poll,
         };
-        app.open_terminal(home_dir(), window, cx);
+        match HostClient::connect() {
+            Ok((host, sessions)) => {
+                app.host = Some(host);
+                app.restore_sessions(sessions, window, cx);
+            }
+            Err(err) => {
+                app.notice = Some(format!("終了後もシェルを残す常駐のプロセスを使えない（{err}）。この窓を閉じるとシェルも終わる"));
+            }
+        }
+        match app.active_id() {
+            Some(id) => app.select(id, window, cx),
+            None => app.open_terminal(home_dir(), window, cx),
+        }
         app
     }
 
@@ -315,19 +333,32 @@ impl TerpApp {
         load_appearance(self.font_delta, cx);
         crate::bind_keys(cx);
         window.set_background_appearance(background_appearance(cx));
+        apply_blur(cx);
         cx.refresh_windows();
     }
 
     fn spawn_session(&mut self, cwd: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Option<u64> {
         let cwd = if cwd.is_dir() { cwd } else { home_dir() };
-        let view = match TerminalView::spawn(&cwd, cx) {
-            Ok(view) => view,
+        let size = GridSize { cols: 80, rows: 24 };
+        let meta = serde_json::json!({ "workspace": self.workspace() });
+        let created = match &self.host {
+            Some(host) => Terminal::create_remote(host, &cwd, size, meta),
+            None => Terminal::spawn_local(&cwd, size),
+        };
+        let (terminal, events) = match created {
+            Ok(parts) => parts,
             Err(err) => {
                 self.notice = Some(format!("ターミナルを開けない: {err}"));
                 cx.notify();
                 return None;
             }
         };
+        let view = TerminalView::new(terminal, events, &cwd, cx);
+        let workspace = self.workspace();
+        Some(self.add_session(view, workspace, window, cx))
+    }
+
+    fn add_session(&mut self, view: Entity<TerminalView>, workspace: String, window: &mut Window, cx: &mut Context<Self>) -> u64 {
         let id = self.next_id;
         self.next_id += 1;
         let events = cx.subscribe_in(&view, window, move |app, _, event, window, cx| match event {
@@ -338,14 +369,26 @@ impl TerpApp {
         // 端末を押して入力を移したら、その枠とタブを選ぶ
         let focus_handle = view.read(cx).focus_handle(cx);
         let focus = cx.on_focus(&focus_handle, window, move |app, window, cx| app.select(id, window, cx));
-        self.sessions.push(Session {
-            id,
-            view,
-            workspace: self.workspace(),
-            last_notify: None,
-            _subscriptions: [events, focus],
-        });
-        Some(id)
+        self.sessions.push(Session { id, view, workspace, last_notify: None, _subscriptions: [events, focus] });
+        id
+    }
+
+    // 前に開いていた端末（PTY ホストに残っているシェル）へつなぎ直し、ワークスペースごとのタブに戻す
+    fn restore_sessions(&mut self, sessions: Vec<SessionSummary>, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(host) = self.host.clone() else { return };
+        for summary in sessions {
+            let workspace = summary
+                .meta
+                .get("workspace")
+                .and_then(|w| w.as_str())
+                .filter(|w| self.projects.workspaces.iter().any(|x| x.id == *w))
+                .map(String::from)
+                .unwrap_or_else(|| self.workspace());
+            let (terminal, events) = Terminal::attach_remote(&host, summary.id, summary.size);
+            let view = TerminalView::new(terminal, events, &summary.cwd, cx);
+            let id = self.add_session(view, workspace.clone(), window, cx);
+            self.layouts.entry(workspace).or_default().add_tab(id);
+        }
     }
 
     pub fn open_terminal(&mut self, cwd: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
@@ -399,6 +442,10 @@ impl TerpApp {
 
     fn close(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
         let Some(workspace) = self.session(id).map(|s| s.workspace.clone()) else { return };
+        // タブを閉じたときは、PTY ホストのシェルも終わらせる
+        if let Some(session) = self.session(id) {
+            session.view.update(cx, |view, _| view.terminal.kill());
+        }
         let was_active = self.active_id() == Some(id);
         let recent = self.recent.clone();
         if let Some(layout) = self.layouts.get_mut(&workspace) {

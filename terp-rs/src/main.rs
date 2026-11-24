@@ -6,6 +6,7 @@ mod dock;
 mod keys;
 mod panes;
 mod projects;
+mod ptyhost;
 mod terminal;
 mod terminal_view;
 
@@ -159,13 +160,27 @@ fn open_window(cx: &mut App) {
         window_min_size: Some(size(px(480.0), px(320.0))),
         ..Default::default()
     };
-    if let Err(err) = cx.open_window(options, |window, cx| cx.new(|cx| TerpApp::new(window, cx))) {
+    let opened = cx.open_window(options, |window, cx| {
+        // 窓ができた後でないと、ぼかしを掛ける窓の番号が無い
+        window.on_next_frame(|_, cx| apply_blur(cx));
+        cx.new(|cx| TerpApp::new(window, cx))
+    });
+    if let Err(err) = opened {
         eprintln!("窓を開けない: {err}");
         cx.quit();
     }
 }
 
 fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("--pty-host") {
+        let socket = args.get(2).map(std::path::PathBuf::from).unwrap_or_else(ptyhost::socket_path);
+        if let Err(err) = ptyhost::run_host(&socket, true) {
+            eprintln!("常駐のプロセスを始められない: {err}");
+            std::process::exit(1);
+        }
+        return;
+    }
     let app = application();
     app.on_reopen(|cx| {
         if cx.windows().is_empty() {

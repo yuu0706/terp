@@ -1,7 +1,7 @@
 // ターミナルの画面。文字の格子を描き、キー・マウス・入力方式（IME）の入力をシェルへ渡す。
 use crate::agent::{self, AgentEvent, AgentState, AgentStatus};
 use crate::appearance::{Appearance, hsla};
-use crate::config::{Rgb, Theme};
+use crate::config::{Rgb, Theme, ensure_contrast};
 use crate::keys::{self, Mods};
 use crate::terminal::{GridSize, ProcessInfo, TermEvent, Terminal};
 use alacritty_terminal::grid::{Dimensions, Scroll};
@@ -63,6 +63,7 @@ pub struct TerminalView {
     layout: Layout,
     selecting: bool,
     scroll_remainder: f32,
+    replaying: bool,
     _events: Task<()>,
 }
 
@@ -75,11 +76,10 @@ impl Focusable for TerminalView {
 }
 
 impl TerminalView {
-    // シェルを先に起動し、起動できたときだけ画面を作る
-    pub fn spawn(cwd: &Path, cx: &mut App) -> anyhow::Result<Entity<Self>> {
-        let (terminal, events) = Terminal::spawn(cwd, GridSize { cols: 80, rows: 24 })?;
+    // シェルは呼び出し側で先に起動し（またはつなぎ直し）、起動できたときだけ画面を作る
+    pub fn new(terminal: Terminal, events: UnboundedReceiver<TermEvent>, cwd: &Path, cx: &mut App) -> Entity<Self> {
         let cwd = cwd.to_path_buf();
-        Ok(cx.new(|cx| {
+        cx.new(|cx| {
             let task = cx.spawn(async move |this, cx| Self::pump(this, events, cx).await);
             TerminalView {
                 terminal,
@@ -95,9 +95,10 @@ impl TerminalView {
                 layout: Layout::default(),
                 selecting: false,
                 scroll_remainder: 0.0,
+                replaying: false,
                 _events: task,
             }
-        }))
+        })
     }
 
     pub fn focus(&self, window: &mut Window, cx: &mut App) {
@@ -117,7 +118,7 @@ impl TerminalView {
         match event {
             TermEvent::Wakeup => {
                 self.terminal.clear_wakeup();
-                if self.is_agent() {
+                if self.is_agent() && !self.replaying {
                     self.agent.apply(AgentEvent::Output, Instant::now());
                 }
                 cx.notify();
@@ -132,10 +133,17 @@ impl TerminalView {
                 let finished = self.title_working && !parsed.working;
                 self.title_working = parsed.working;
                 self.agent.apply(AgentEvent::Title { working: parsed.working }, Instant::now());
-                if finished {
+                if finished && !self.replaying {
                     cx.emit(TerminalEvent::Attention { kind: Attention::Done, message: String::new() });
                 }
                 cx.emit(TerminalEvent::Changed);
+            }
+            TermEvent::ReplayStart => self.replaying = true,
+            TermEvent::ReplayEnd => {
+                self.replaying = false;
+                // 流し直しで崩れた画面を、プログラムに描き直させる
+                self.terminal.redraw();
+                cx.notify();
             }
             TermEvent::Notify(message) => {
                 cx.emit(TerminalEvent::Attention { kind: Attention::Done, message });
@@ -144,6 +152,7 @@ impl TerminalView {
                 self.title = None;
                 cx.emit(TerminalEvent::Changed);
             }
+            TermEvent::Bell if self.replaying => {}
             TermEvent::Bell => {
                 self.unseen_bell = true;
                 cx.emit(TerminalEvent::Attention { kind: Attention::Bell, message: String::new() });
@@ -604,6 +613,8 @@ impl Element for TerminalElement {
         let font_size = appearance.font_size;
         let padding = point(px(appearance.config.padding_x), px(appearance.config.padding_y));
         let cursor_style = appearance.config.cursor_style.clone();
+        let minimum_contrast = appearance.config.minimum_contrast;
+        let mut contrast_cache: std::collections::HashMap<(Rgb, Rgb), Rgb> = std::collections::HashMap::new();
         let text_system = window.text_system().clone();
         let font_id = text_system.resolve_font(&font);
         let cell_width = text_system.advance(font_id, font_size, 'm').map(|s| s.width).unwrap_or(font_size * 0.6);
@@ -684,6 +695,8 @@ impl Element for TerminalElement {
             }
             if cell.flags.contains(Flags::HIDDEN) {
                 fg = bg;
+            } else if minimum_contrast > 1.0 {
+                fg = *contrast_cache.entry((fg, bg)).or_insert_with(|| ensure_contrast(fg, bg, minimum_contrast));
             }
             if selection.is_some_and(|s| s.contains(indexed.point)) {
                 bg = selection_bg;
