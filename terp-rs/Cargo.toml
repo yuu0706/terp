@@ -1,0 +1,17 @@
+[package]
+name = "terp"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[dependencies]
+gpui = { git = "https://github.com/zed-industries/zed", rev = "990491f0ea12ceab57a6174436795f5819ed2c67" }
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "990491f0ea12ceab57a6174436795f5819ed2c67", features = ["runtime_shaders", "font-kit"] }
+alacritty_terminal = { git = "https://github.com/zed-industries/alacritty", rev = "4c129667ce56611becdc82de6e28218c80e2e88f" }
+portable-pty = "0.9"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+libc = "0.2"
+futures = "0.3"
