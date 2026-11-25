@@ -19,5 +19,5 @@ unicode-segmentation = "1"
 rust-embed = "8"
 regex = "1"
 objc2 = "0.6"
-objc2-foundation = { version = "0.3", features = ["NSString"] }
+objc2-foundation = { version = "0.3", features = ["NSString", "NSFileManager", "NSURL", "NSError"] }
 objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSDockTile", "NSResponder", "NSWindow"] }

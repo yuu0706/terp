@@ -67,6 +67,9 @@ actions!(
         FontReset,
         OpenConfig,
         OpenSettings,
+        ToggleFiles,
+        ToggleChanges,
+        ToggleHistory,
     ]
 );
 
@@ -157,6 +160,7 @@ pub struct TerpApp {
     pub(crate) overview: Option<crate::overview::Overview>,
     pub(crate) overview_tab_memory: Option<String>,
     pub(crate) settings: Option<crate::settings::Settings>,
+    pub(crate) panel: Option<crate::rightpanel::RightPanel>,
     // 右下に数秒出す知らせ
     pub(crate) toast: Option<(String, Instant)>,
     // 閉じた許可のカード（同じ画面の間は出し直さない）
@@ -379,6 +383,7 @@ impl TerpApp {
             overview: None,
             overview_tab_memory: None,
             settings: None,
+            panel: None,
             toast: None,
             dismissed_prompts: HashMap::new(),
             poll_count: 0,
@@ -1889,6 +1894,9 @@ impl Render for TerpApp {
             .on_action(cx.listener(Self::open_config))
             .on_action(cx.listener(Self::reopen_closed))
             .on_action(cx.listener(|app, _: &OpenSettings, w, cx| app.open_settings(w, cx)))
+            .on_action(cx.listener(|app, _: &ToggleFiles, w, cx| app.toggle_panel(crate::rightpanel::PanelKind::Files, w, cx)))
+            .on_action(cx.listener(|app, _: &ToggleChanges, w, cx| app.toggle_panel(crate::rightpanel::PanelKind::Changes, w, cx)))
+            .on_action(cx.listener(|app, _: &ToggleHistory, w, cx| app.toggle_panel(crate::rightpanel::PanelKind::History, w, cx)))
             .on_action(cx.listener(|app, _: &ToggleOverview, w, cx| app.toggle_overview(w, cx)))
             .on_action(cx.listener(|app, _: &RecentTabBack, _, cx| app.cycle_overview_tab(-1, cx)))
             .on_action(cx.listener(|app, _: &NewWork, w, cx| app.new_work_dialog(None, w, cx)))
@@ -1935,7 +1943,7 @@ impl Render for TerpApp {
                     .flex_1()
                     .min_w_0()
                     .h_full()
-                    .child(div().flex_1().min_h_0().flex().child(panes))
+                    .child(div().flex_1().min_h_0().flex().flex_row().child(div().flex_1().min_w_0().h_full().flex().child(panes)).children(self.render_right_panel(&p, cx)))
                     .when_some(error, |d, error| {
                         d.child(div().flex_none().px_3().py_1().text_xs().bg(p.active).text_color(p.warning).child(error))
                     }),

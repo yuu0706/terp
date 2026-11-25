@@ -27,3 +27,13 @@ pub fn set_blur_radius(radius: u32) {
         unsafe { CGSSetWindowBackgroundBlurRadius(connection, number, radius as i32) };
     }
 }
+
+// ファイルやフォルダをゴミ箱へ移す（Finder のゴミ箱から戻せる）
+pub fn trash(path: &std::path::Path) -> anyhow::Result<()> {
+    use objc2_foundation::{NSFileManager, NSURL};
+    let url = NSURL::fileURLWithPath(&NSString::from_str(&path.display().to_string()));
+    let manager = NSFileManager::defaultManager();
+    manager
+        .trashItemAtURL_resultingItemURL_error(&url, None)
+        .map_err(|e| anyhow::anyhow!("ゴミ箱へ移せない: {}", e.localizedDescription()))
+}

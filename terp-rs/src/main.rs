@@ -7,6 +7,7 @@ mod appearance;
 mod config;
 mod dock;
 mod git;
+mod gitops;
 mod input;
 mod inputbox;
 mod keys;
@@ -16,6 +17,7 @@ mod overview;
 mod panes;
 mod permission;
 mod projects;
+mod rightpanel;
 mod ptyhost;
 mod search;
 mod settings;
@@ -84,6 +86,9 @@ fn shortcuts() -> Vec<(&'static str, &'static str, Box<dyn Action>)> {
         ("workspace-next", "Control+Command+]", Box::new(WorkspaceNext)),
         ("workspace-prev", "Control+Command+[", Box::new(WorkspacePrev)),
         ("toggle-sidebar", "Command+B", Box::new(ToggleSidebar)),
+        ("toggle-files", "Command+Shift+E", Box::new(ToggleFiles)),
+        ("toggle-changes", "Command+Shift+G", Box::new(ToggleChanges)),
+        ("toggle-history", "Command+Shift+H", Box::new(ToggleHistory)),
         ("reopen", "Command+Shift+T", Box::new(ReopenClosed)),
         ("overview", "Command+M", Box::new(ToggleOverview)),
         ("new-work", "Command+N", Box::new(NewWork)),
@@ -176,6 +181,9 @@ fn set_menus(cx: &mut App) {
         ]),
         Menu::new("表示").items([
             MenuItem::action("左の一覧", ToggleSidebar),
+            MenuItem::action("ファイル", ToggleFiles),
+            MenuItem::action("変更の一覧", ToggleChanges),
+            MenuItem::action("履歴", ToggleHistory),
             MenuItem::separator(),
             MenuItem::action("文字を大きく", FontBigger),
             MenuItem::action("文字を小さく", FontSmaller),
