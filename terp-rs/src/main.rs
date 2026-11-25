@@ -3,12 +3,15 @@ mod app;
 mod appearance;
 mod config;
 mod dock;
+mod input;
 mod keys;
 mod panes;
 mod projects;
 mod ptyhost;
+mod search;
 mod terminal;
 mod terminal_view;
+mod tooltip;
 
 use app::*;
 use appearance::Appearance;
@@ -17,7 +20,7 @@ use gpui::{
     point, prelude::*, px, size,
 };
 use gpui_platform::application;
-use terminal_view::{Clear, Copy, Paste, SelectAll};
+use terminal_view::{Clear, Copy, Find, FindNext, Paste, SelectAll};
 
 actions!(terp_app, [Quit, Hide, HideOthers, ShowAll, Minimize, ToggleFullScreen]);
 
@@ -34,6 +37,8 @@ fn shortcuts() -> Vec<(&'static str, &'static str, Box<dyn Action>)> {
         ("pane-down", "Command+Alt+Down", Box::new(PaneDown)),
         ("close", "Command+W", Box::new(CloseTab)),
         ("clear", "Command+K", Box::new(Clear)),
+        ("find", "Command+F", Box::new(Find)),
+        ("find-next", "Command+G", Box::new(FindNext)),
         ("select-all", "Command+A", Box::new(SelectAll)),
         ("recent", "Control+Tab", Box::new(RecentTab)),
         ("prev", "Command+Shift+[", Box::new(PrevTab)),
@@ -88,6 +93,7 @@ pub fn bind_keys(cx: &mut App) {
             bindings.push(binding);
         }
     }
+    bindings.extend(input::key_bindings());
     cx.clear_key_bindings();
     cx.bind_keys(bindings);
 }
@@ -109,6 +115,9 @@ fn set_menus(cx: &mut App) {
             MenuItem::action("タブを閉じる", CloseTab),
             MenuItem::separator(),
             MenuItem::action("画面を消去", Clear),
+            MenuItem::separator(),
+            MenuItem::action("端末の中を探す", Find),
+            MenuItem::action("次を探す", FindNext),
         ]),
         Menu::new("ワークスペース").items([
             MenuItem::action("ワークスペース 1", Workspace1),

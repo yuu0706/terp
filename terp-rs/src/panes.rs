@@ -17,6 +17,23 @@ pub enum Direction {
     Down,
 }
 
+// タブを落とす位置。端の25%はその側へ分割し、真ん中は枠のタブに足す
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Side {
+    Left,
+    Right,
+    Top,
+    Bottom,
+    Center,
+}
+
+// x・y は枠の中の位置を 0〜1 の割合で表したもの
+pub fn drop_side(x: f32, y: f32) -> Side {
+    let mut sides = [(Side::Left, x), (Side::Right, 1.0 - x), (Side::Top, y), (Side::Bottom, 1.0 - y)];
+    sides.sort_by(|a, b| a.1.total_cmp(&b.1));
+    if sides[0].1 < 0.25 { sides[0].0 } else { Side::Center }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Node {
     Leaf(u64),
@@ -169,6 +186,95 @@ impl Layout {
             .map(|(id, _)| *id)
     }
 
+    // タブを枠へ動かす。端なら新しい枠を作る。動かした結果、タブの無くなった枠が残れば（自分の枠の端へ落としたとき）その枠を返す
+    pub fn move_tab(&mut self, tab: u64, target: u64, side: Side) -> Option<u64> {
+        let source = self.pane_of(tab);
+        let side = if self.panes.len() >= MAX_PANES && source.is_none_or(|s| s != target || self.pane(s).is_some_and(|p| p.tabs.len() > 1)) {
+            Side::Center
+        } else {
+            side
+        };
+        if side == Side::Center {
+            if source == Some(target) {
+                self.select(tab);
+                return None;
+            }
+            self.detach(tab);
+            if let Some(p) = self.pane_mut(target) {
+                p.tabs.push(tab);
+                p.active = Some(tab);
+            }
+            self.active_pane = target;
+            self.collapse_empty(source);
+            return None;
+        }
+        if self.pane(target).is_none() {
+            return None;
+        }
+        self.detach(tab);
+        let id = self.next_pane;
+        self.next_pane += 1;
+        let (axis, before) = match side {
+            Side::Left => (Axis::Row, true),
+            Side::Right => (Axis::Row, false),
+            Side::Top => (Axis::Column, true),
+            _ => (Axis::Column, false),
+        };
+        insert_beside(&mut self.root, target, id, axis, before);
+        self.panes.push(Pane { id, tabs: vec![tab], active: Some(tab) });
+        self.active_pane = id;
+        let left_empty = source.filter(|s| self.pane(*s).is_some_and(|p| p.tabs.is_empty()));
+        if left_empty == Some(target) {
+            return left_empty;
+        }
+        self.collapse_empty(source);
+        None
+    }
+
+    // 枠からタブを外すだけ。枠は畳まない
+    fn detach(&mut self, tab: u64) {
+        let Some(pane) = self.pane_of(tab) else { return };
+        let p = self.pane_mut(pane).expect("枠がある");
+        p.tabs.retain(|t| *t != tab);
+        if p.active == Some(tab) {
+            p.active = p.tabs.last().copied();
+        }
+    }
+
+    fn collapse_empty(&mut self, pane: Option<u64>) {
+        let Some(pane) = pane else { return };
+        if self.panes.len() > 1 && self.pane(pane).is_some_and(|p| p.tabs.is_empty()) {
+            self.panes.retain(|p| p.id != pane);
+            remove_leaf(&mut self.root, pane);
+            collapse(&mut self.root);
+            if self.active_pane == pane {
+                self.active_pane = self.leaf_order().first().copied().unwrap_or(self.panes[0].id);
+            }
+        }
+    }
+
+    // 枠の中のタブの並びを変える。to は落とした先のタブの位置
+    pub fn reorder(&mut self, tab: u64, before: u64) {
+        let Some(pane) = self.pane_of(before) else { return };
+        if self.pane_of(tab) != Some(pane) {
+            self.move_tab(tab, pane, Side::Center);
+        }
+        let p = self.pane_mut(pane).expect("枠がある");
+        p.tabs.retain(|t| *t != tab);
+        let at = p.tabs.iter().position(|t| *t == before).unwrap_or(p.tabs.len());
+        p.tabs.insert(at, tab);
+        p.active = Some(tab);
+        self.active_pane = pane;
+    }
+
+    // 隣り合う枠を半分ずつに戻す
+    pub fn equalize(&mut self, path: &[usize]) {
+        if let Some(Node::Split { sizes, .. }) = node_at_mut(&mut self.root, path) {
+            let n = sizes.len() as f32;
+            sizes.iter_mut().for_each(|s| *s = 1.0 / n);
+        }
+    }
+
     // path は根から分割を辿る子の番号。index と index+1 の境目を delta（割合）だけ動かす
     pub fn resize(&mut self, path: &[usize], index: usize, delta: f32) {
         let Some(Node::Split { sizes, .. }) = node_at_mut(&mut self.root, path) else { return };
@@ -188,21 +294,43 @@ fn overlaps(a: f32, alen: f32, b: f32, blen: f32) -> bool {
 }
 
 fn insert_after(node: &mut Node, target: u64, new: u64, axis: Axis) -> bool {
+    let done = insert_beside(node, target, new, axis, false);
+    // ⌘\ の分割は、並びを等分する
+    equalize_parent(node, new);
+    done
+}
+
+fn equalize_parent(node: &mut Node, leaf: u64) {
+    if let Node::Split { children, sizes, .. } = node {
+        if children.iter().any(|c| matches!(c, Node::Leaf(id) if *id == leaf)) {
+            let n = sizes.len() as f32;
+            sizes.iter_mut().for_each(|s| *s = 1.0 / n);
+            return;
+        }
+        children.iter_mut().for_each(|c| equalize_parent(c, leaf));
+    }
+}
+
+fn insert_beside(node: &mut Node, target: u64, new: u64, axis: Axis, before: bool) -> bool {
     match node {
         Node::Leaf(id) if *id == target => {
-            *node = Node::Split { axis, children: vec![Node::Leaf(target), Node::Leaf(new)], sizes: vec![0.5, 0.5] };
+            let pair = if before { vec![Node::Leaf(new), Node::Leaf(target)] } else { vec![Node::Leaf(target), Node::Leaf(new)] };
+            *node = Node::Split { axis, children: pair, sizes: vec![0.5, 0.5] };
             true
         }
         Node::Leaf(_) => false,
         Node::Split { axis: own, children, sizes } => {
             let Some(i) = children.iter().position(|c| contains_leaf(c, target)) else { return false };
             if *own == axis && matches!(children[i], Node::Leaf(_)) {
-                children.insert(i + 1, Node::Leaf(new));
-                let n = children.len() as f32;
-                *sizes = vec![1.0 / n; children.len()];
+                // 落とした枠の幅を半分ずつに分ける
+                let half = sizes[i] / 2.0;
+                sizes[i] = half;
+                let at = if before { i } else { i + 1 };
+                children.insert(at, Node::Leaf(new));
+                sizes.insert(at, half);
                 true
             } else {
-                insert_after(&mut children[i], target, new, axis)
+                insert_beside(&mut children[i], target, new, axis, before)
             }
         }
     }
@@ -346,6 +474,51 @@ mod tests {
         assert_eq!(l.neighbor(Direction::Up), Some(1));
         l.focus_pane(1);
         assert_eq!(l.neighbor(Direction::Down), Some(2));
+    }
+
+    #[test]
+    fn 端の四分の一で分割の向きを決める() {
+        assert_eq!(drop_side(0.1, 0.5), Side::Left);
+        assert_eq!(drop_side(0.5, 0.9), Side::Bottom);
+        assert_eq!(drop_side(0.5, 0.5), Side::Center);
+        assert_eq!(drop_side(0.05, 0.2), Side::Left);
+    }
+
+    #[test]
+    fn 別の枠の端へ落とすと新しい枠になり元の空の枠は畳む() {
+        let mut l = layout_with(&[10]);
+        l.split(Axis::Row, 11);
+        assert_eq!(l.move_tab(11, 1, Side::Top), None);
+        assert_eq!(l.panes.len(), 2);
+        let Node::Split { axis, children, .. } = &l.root else { panic!() };
+        assert_eq!(*axis, Axis::Column);
+        assert_eq!(children[1], Node::Leaf(1));
+        assert_eq!(l.active_tab(), Some(11));
+    }
+
+    #[test]
+    fn 真ん中へ落とすとその枠のタブに足す() {
+        let mut l = layout_with(&[10]);
+        l.split(Axis::Row, 11);
+        l.move_tab(11, 1, Side::Center);
+        assert_eq!(l.panes.len(), 1);
+        assert_eq!(l.pane(1).unwrap().tabs, vec![10, 11]);
+        assert_eq!(l.active_tab(), Some(11));
+    }
+
+    #[test]
+    fn 一つだけのタブを自分の枠の端へ落とすと空の枠を返す() {
+        let mut l = layout_with(&[10]);
+        assert_eq!(l.move_tab(10, 1, Side::Right), Some(1));
+        assert_eq!(l.panes.len(), 2);
+        assert_eq!(l.visible(), vec![10]);
+    }
+
+    #[test]
+    fn タブの並びを変える() {
+        let mut l = layout_with(&[10, 11, 12]);
+        l.reorder(12, 10);
+        assert_eq!(l.pane(1).unwrap().tabs, vec![12, 10, 11]);
     }
 
     #[test]

@@ -2,13 +2,13 @@
 use crate::agent::{AgentState, clean};
 use crate::appearance::{Appearance, hsla};
 use crate::config::{Config, config_path, home_dir};
-use crate::panes::{Axis, Direction, Layout, Node};
+use crate::panes::{Axis, Direction, Layout, Node, Side, drop_side};
 use crate::projects::{self, Project, Projects, contains_path};
 use crate::ptyhost::SessionSummary;
 use crate::terminal::{GridSize, HostClient, Terminal};
 use crate::terminal_view::{Attention, TerminalEvent, TerminalView};
 use gpui::{
-    AnyElement, App, Bounds, ClickEvent, Context, Entity, FocusHandle, Focusable, FontWeight, Hsla, MouseButton,
+    AnyElement, App, Bounds, ClickEvent, Context, DragMoveEvent, Entity, ExternalPaths, FocusHandle, Focusable, FontWeight, Hsla, MouseButton,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, Render, SharedString, Subscription, SystemNotification,
     Task, Window, WindowBackgroundAppearance, actions, canvas, div, prelude::*, px,
 };
@@ -76,6 +76,30 @@ struct Session {
     _subscriptions: [Subscription; 2],
 }
 
+// ドラッグしているタブ。落とした枠の端なら分割し、真ん中ならその枠のタブにする
+#[derive(Clone)]
+pub struct DraggedTab {
+    id: u64,
+    label: String,
+}
+
+impl Render for DraggedTab {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let p = palette(cx);
+        div()
+            .px_2()
+            .py_1()
+            .rounded_md()
+            .border_1()
+            .border_color(p.accent)
+            .bg(p.accent_fill)
+            .text_sm()
+            .text_color(p.text)
+            .font_family(cx.global::<Appearance>().font.family.clone())
+            .child(self.label.clone())
+    }
+}
+
 struct DividerDrag {
     workspace: String,
     path: Vec<usize>,
@@ -98,6 +122,8 @@ pub struct TerpApp {
     dock_count: usize,
     drag: Option<DividerDrag>,
     split_bounds: Rc<RefCell<HashMap<Vec<usize>, Bounds<Pixels>>>>,
+    pane_bounds: HashMap<u64, Bounds<Pixels>>,
+    drop_hint: Option<(u64, Side)>,
     host: Option<Arc<HostClient>>,
     _poll: Task<()>,
 }
@@ -232,6 +258,8 @@ impl TerpApp {
             dock_count: 0,
             drag: None,
             split_bounds: Rc::default(),
+            pane_bounds: HashMap::new(),
+            drop_hint: None,
             host: None,
             _poll: poll,
         };
@@ -679,8 +707,69 @@ impl TerpApp {
     }
 
     fn on_drag_end(&mut self, _: &MouseUpEvent, _window: &mut Window, cx: &mut Context<Self>) {
-        if self.drag.take().is_some() {
+        if self.drag.take().is_some() || self.drop_hint.take().is_some() {
             cx.notify();
+        }
+    }
+
+    fn drop_position(&self, pane: u64, window: &Window) -> Side {
+        let Some(bounds) = self.pane_bounds.get(&pane) else { return Side::Center };
+        let at = window.mouse_position() - bounds.origin;
+        let (w, h) = (f32::from(bounds.size.width), f32::from(bounds.size.height));
+        if w <= 0.0 || h <= 0.0 {
+            return Side::Center;
+        }
+        drop_side(f32::from(at.x) / w, f32::from(at.y) / h)
+    }
+
+    fn on_tab_drag_move(&mut self, pane: u64, event: &DragMoveEvent<DraggedTab>, window: &mut Window, cx: &mut Context<Self>) {
+        self.pane_bounds.insert(pane, event.bounds);
+        let hint = if event.bounds.contains(&event.event.position) {
+            Some((pane, self.drop_position(pane, window)))
+        } else if self.drop_hint.is_some_and(|(p, _)| p == pane) {
+            None
+        } else {
+            return;
+        };
+        if hint != self.drop_hint {
+            self.drop_hint = hint;
+            cx.notify();
+        }
+    }
+
+    // タブを枠へ落とす。自分の枠の端へ落として元の枠が空いたら、1つ前に見ていた未表示のタブか、新しい端末で埋める
+    fn drop_tab(&mut self, tab: u64, pane: u64, window: &mut Window, cx: &mut Context<Self>) {
+        self.drop_hint = None;
+        let Some(session) = self.session(tab) else { return };
+        if session.workspace != self.workspace() {
+            return;
+        }
+        let cwd = session.view.read(cx).cwd();
+        let side = self.drop_position(pane, window);
+        if let Some(empty) = self.layout_mut().move_tab(tab, pane, side) {
+            let visible = self.layout().map(|l| l.visible()).unwrap_or_default();
+            let ids = self.workspace_ids(&self.workspace());
+            let hidden = self.recent.iter().rev().copied().find(|r| *r != tab && ids.contains(r) && !visible.contains(r));
+            match hidden {
+                Some(other) => {
+                    self.layout_mut().move_tab(other, empty, Side::Center);
+                }
+                None => {
+                    if let Some(id) = self.spawn_session(cwd, window, cx) {
+                        self.layout_mut().move_tab(id, empty, Side::Center);
+                    }
+                }
+            }
+        }
+        self.select(tab, window, cx);
+    }
+
+    fn drop_paths(&mut self, pane: u64, paths: &ExternalPaths, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(id) = self.layout().and_then(|l| l.pane(pane)).and_then(|p| p.active) else { return };
+        self.select(id, window, cx);
+        if let Some(session) = self.session(id) {
+            let paths = paths.paths().to_vec();
+            session.view.update(cx, |view, cx| view.input_paths(&paths, cx));
         }
     }
 
@@ -719,6 +808,13 @@ impl TerpApp {
                                     MouseButton::Left,
                                     cx.listener(move |app, event: &MouseDownEvent, _, cx| {
                                         cx.stop_propagation();
+                                        if event.click_count == 2 {
+                                            if let Some(layout) = app.layouts.get_mut(&workspace) {
+                                                layout.equalize(&path);
+                                            }
+                                            cx.notify();
+                                            return;
+                                        }
                                         app.drag = Some(DividerDrag {
                                             workspace: workspace.clone(),
                                             path: path.clone(),
@@ -756,6 +852,7 @@ impl TerpApp {
         let at_left = rect.is_some_and(|r| r.x < 1e-4);
         let pane_active = layout.active_pane == pane_id && layout.panes.len() > 1;
         let now = Instant::now();
+        let accent = p.accent;
 
         let mut bar = div()
             .id(("tab-bar", pane_id))
@@ -807,6 +904,13 @@ impl TerpApp {
                     .when(!selected, |d| d.hover(|s| s.bg(p.hover)))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_click(cx.listener(move |app, _: &ClickEvent, window, cx| app.select(id, window, cx)))
+                    .on_drag(DraggedTab { id, label: view.display_name() }, |tab, _, _, cx| cx.new(|_| tab.clone()))
+                    .drag_over::<DraggedTab>(move |s, _, _, _| s.border_l_2().border_color(accent))
+                    .on_drop(cx.listener(move |app, dragged: &DraggedTab, window, cx| {
+                        cx.stop_propagation();
+                        app.layout_mut().reorder(dragged.id, id);
+                        app.select(dragged.id, window, cx);
+                    }))
                     .when_some(dot, |d, dot| d.child(dot))
                     .child(div().overflow_hidden().text_ellipsis().whitespace_nowrap().child(label))
                     .when(!tip.is_empty() && state == AgentState::Working, |d| {
@@ -847,8 +951,9 @@ impl TerpApp {
                 .child("＋"),
         );
 
+        let hint = self.drop_hint.filter(|(id, _)| *id == pane_id).map(|(_, side)| side);
         let content: AnyElement = match pane.active.and_then(|id| self.session(id)) {
-            Some(session) => div().flex_1().min_h_0().bg(p.term_bg).child(session.view.clone()).into_any_element(),
+            Some(session) => div().size_full().bg(p.term_bg).child(session.view.clone()).into_any_element(),
             None => div()
                 .flex_1()
                 .flex()
@@ -875,7 +980,31 @@ impl TerpApp {
                 .into_any_element(),
         };
         let _ = window;
-        div().flex().flex_col().size_full().min_w_0().min_h_0().child(bar).child(content).into_any_element()
+        // 落とす位置の予告。端ならその側の半分、真ん中なら全体を薄く塗る
+        let preview = hint.map(|side| {
+            let d = div().absolute().bg(p.accent.opacity(0.22)).border_2().border_color(p.accent).rounded_md();
+            match side {
+                Side::Left => d.left_0().top_0().bottom_0().w(gpui::relative(0.5)),
+                Side::Right => d.right_0().top_0().bottom_0().w(gpui::relative(0.5)),
+                Side::Top => d.left_0().right_0().top_0().h(gpui::relative(0.5)),
+                Side::Bottom => d.left_0().right_0().bottom_0().h(gpui::relative(0.5)),
+                Side::Center => d.inset_0(),
+            }
+        });
+        let body = div()
+            .id(("pane-body", pane_id))
+            .relative()
+            .flex_1()
+            .min_h_0()
+            .child(content)
+            .children(preview)
+            .on_drag_move::<DraggedTab>(cx.listener(move |app, event: &DragMoveEvent<DraggedTab>, window, cx| {
+                app.on_tab_drag_move(pane_id, event, window, cx)
+            }))
+            .on_drop(cx.listener(move |app, dragged: &DraggedTab, window, cx| app.drop_tab(dragged.id, pane_id, window, cx)))
+            .drag_over::<ExternalPaths>(move |s, _, _, _| s.border_2().border_color(accent))
+            .on_drop(cx.listener(move |app, paths: &ExternalPaths, window, cx| app.drop_paths(pane_id, paths, window, cx)));
+        div().flex().flex_col().size_full().min_w_0().min_h_0().child(bar).child(body).into_any_element()
     }
 
     fn render_terminal_row(&self, id: u64, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
@@ -904,6 +1033,7 @@ impl TerpApp {
             .when(!selected && visible, |d| d.bg(p.accent_fill_dim))
             .when(!selected, |d| d.hover(|s| s.bg(p.hover)))
             .on_click(cx.listener(move |app, _: &ClickEvent, window, cx| app.select(id, window, cx)))
+            .on_drag(DraggedTab { id, label: view.display_name() }, |tab, _, _, cx| cx.new(|_| tab.clone()))
             .child(
                 div()
                     .flex()

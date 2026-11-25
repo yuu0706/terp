@@ -2,12 +2,15 @@
 use crate::agent::{self, AgentEvent, AgentState, AgentStatus};
 use crate::appearance::{Appearance, hsla};
 use crate::config::{Rgb, Theme, ensure_contrast};
+use crate::input::{InputEvent, TextInput};
 use crate::keys::{self, Mods};
+use crate::search;
 use crate::terminal::{GridSize, ProcessInfo, TermEvent, Terminal};
 use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::index::{Column, Line, Point as AlacPoint, Side};
 use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::term::TermMode;
+use alacritty_terminal::term::search::Match;
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::color::Colors;
 use alacritty_terminal::vte::ansi::{Color, CursorShape, NamedColor};
@@ -15,7 +18,7 @@ use futures::StreamExt;
 use futures::channel::mpsc::UnboundedReceiver;
 use gpui::{
     App, Bounds, ClipboardItem, Context, Element, ElementId, ElementInputHandler, Entity, EntityInputHandler,
-    EventEmitter, FocusHandle, Focusable, FontStyle, FontWeight, GlobalElementId, InspectorElementId,
+    EventEmitter, FocusHandle, Subscription, Focusable, FontStyle, FontWeight, GlobalElementId, InspectorElementId,
     IntoElement, KeyDownEvent, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad,
     Pixels, Point, Render, ScrollDelta, ScrollEvent, ShapedLine, SharedString, Style, Task, TextAlign, TextRun,
     UTF16Selection, UnderlineStyle, StrikethroughStyle, Window, actions, div, fill, outline, point, prelude::*, px,
@@ -25,7 +28,15 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-actions!(terminal, [Copy, Paste, SelectAll, Clear]);
+actions!(terminal, [Copy, Paste, SelectAll, Clear, Find, FindNext, FindPrev]);
+
+struct Search {
+    input: Entity<TextInput>,
+    matches: Vec<Match>,
+    index: Option<usize>,
+    refreshed: Instant,
+    _subscription: Subscription,
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Attention {
@@ -64,6 +75,7 @@ pub struct TerminalView {
     selecting: bool,
     scroll_remainder: f32,
     replaying: bool,
+    search: Option<Search>,
     _events: Task<()>,
 }
 
@@ -96,6 +108,7 @@ impl TerminalView {
                 selecting: false,
                 scroll_remainder: 0.0,
                 replaying: false,
+                search: None,
                 _events: task,
             }
         })
@@ -120,6 +133,10 @@ impl TerminalView {
                 self.terminal.clear_wakeup();
                 if self.is_agent() && !self.replaying {
                     self.agent.apply(AgentEvent::Output, Instant::now());
+                }
+                // 出力で行がずれるため、探している間は当たりを数え直す（間を空けて）
+                if self.search.as_ref().is_some_and(|s| s.refreshed.elapsed().as_millis() >= 300) {
+                    self.refresh_matches(false, cx);
                 }
                 cx.notify();
             }
@@ -217,6 +234,14 @@ impl TerminalView {
         }
     }
 
+    // Finder などから落としたパスを、打ったのと同じように送る
+    pub fn input_paths(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) {
+        let text = terminal_paths(paths);
+        if !text.is_empty() {
+            self.write_input(text.as_bytes(), cx);
+        }
+    }
+
     fn mode(&self) -> TermMode {
         *self.terminal.term.lock().mode()
     }
@@ -232,7 +257,11 @@ impl TerminalView {
         cx.notify();
     }
 
-    fn on_key_down(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+    fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        // 検索欄など、中の部品に入力があるときはシェルへ送らない
+        if !self.focus.is_focused(window) {
+            return;
+        }
         // 変換中の文字があるときは、確定・取り消しのキーを入力方式に任せる
         if self.marked_text.is_some() {
             return;
@@ -286,6 +315,133 @@ impl TerminalView {
             self.terminal.write(b"\x0c");
         }
         cx.notify();
+    }
+
+    fn open_search(&mut self, _: &Find, window: &mut Window, cx: &mut Context<Self>) {
+        let selected = self.terminal.term.lock().selection_to_string().filter(|t| !t.contains('\n') && !t.is_empty());
+        if self.search.is_none() {
+            let input = cx.new(|cx| TextInput::new("端末の中を探す", cx));
+            let subscription = cx.subscribe_in(&input, window, |view, _, event, window, cx| match event {
+                InputEvent::Changed => view.refresh_matches(true, cx),
+                InputEvent::Submit { shift } => view.step_search(!shift, cx),
+                InputEvent::Cancel => view.close_search(window, cx),
+                _ => {}
+            });
+            self.search = Some(Search { input, matches: Vec::new(), index: None, refreshed: Instant::now(), _subscription: subscription });
+        }
+        let Some(search) = &self.search else { return };
+        let input = search.input.clone();
+        input.update(cx, |input, cx| {
+            if let Some(text) = &selected {
+                input.set_text(text, cx);
+            }
+            input.select_all_text(cx);
+        });
+        window.focus(&input.focus_handle(cx), cx);
+        self.refresh_matches(true, cx);
+    }
+
+    fn find_next(&mut self, _: &FindNext, window: &mut Window, cx: &mut Context<Self>) {
+        if self.search.is_none() {
+            self.open_search(&Find, window, cx);
+        }
+        self.step_search(true, cx);
+    }
+
+    fn find_prev(&mut self, _: &FindPrev, window: &mut Window, cx: &mut Context<Self>) {
+        if self.search.is_none() {
+            self.open_search(&Find, window, cx);
+        }
+        self.step_search(false, cx);
+    }
+
+    // 当たりを数え直す。pick なら表示している範囲の最初の当たりを選び直す
+    fn refresh_matches(&mut self, pick: bool, cx: &mut Context<Self>) {
+        let Some(search) = self.search.as_mut() else { return };
+        let query = search.input.read(cx).text().to_string();
+        let term = self.terminal.term.lock();
+        let previous = search.index.and_then(|i| search.matches.get(i)).map(|m| *m.start());
+        search.matches = search::find_all(&term, &query);
+        search.refreshed = Instant::now();
+        search.index = if pick {
+            search::first_visible(&search.matches, Line(-(term.grid().display_offset() as i32)))
+        } else {
+            previous
+                .and_then(|p| search.matches.iter().position(|m| *m.start() >= p))
+                .or_else(|| search::first_visible(&search.matches, Line(0)))
+        };
+        drop(term);
+        if pick {
+            self.reveal_match();
+        }
+        cx.notify();
+    }
+
+    fn step_search(&mut self, forward: bool, cx: &mut Context<Self>) {
+        let Some(search) = self.search.as_mut() else { return };
+        search.index = search::step(search.index, search.matches.len(), forward);
+        self.reveal_match();
+        cx.notify();
+    }
+
+    fn reveal_match(&mut self) {
+        let Some(search) = &self.search else { return };
+        if let Some(m) = search.index.and_then(|i| search.matches.get(i)) {
+            self.terminal.term.lock().scroll_to_point(*m.start());
+        }
+    }
+
+    fn close_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.search = None;
+        window.focus(&self.focus, cx);
+        cx.notify();
+    }
+
+    fn render_search(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        let search = self.search.as_ref()?;
+        let chrome = cx.global::<Appearance>().chrome.clone();
+        let query = search.input.read(cx).text().to_string();
+        let label = search::count_label(search.index, search.matches.len(), &query);
+        let button = |id: &'static str, text: &'static str, tip: &'static str| {
+            div()
+                .id(id)
+                .px_1()
+                .rounded_sm()
+                .text_color(hsla(chrome.text_muted, 1.0))
+                .hover(|s| s.bg(hsla(chrome.bg_hover, 1.0)).text_color(hsla(chrome.text, 1.0)))
+                .tooltip(move |_, cx| crate::tooltip::text(tip, cx))
+                .child(text)
+        };
+        Some(
+            div()
+                .id("term-search")
+                .absolute()
+                .top(px(6.0))
+                .right(px(14.0))
+                .w(px(320.0))
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_1()
+                .px_2()
+                .py_1()
+                .rounded_md()
+                .border_1()
+                .border_color(hsla(chrome.border, 1.0))
+                .bg(hsla(chrome.bg, 1.0))
+                .text_sm()
+                .text_color(hsla(chrome.text, 1.0))
+                .shadow_md()
+                .cursor_default()
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_scroll(|_, _, cx| cx.stop_propagation())
+                .child(div().flex_1().min_w_0().child(search.input.clone()))
+                .child(div().flex_none().text_xs().text_color(hsla(chrome.text_muted, 1.0)).child(label))
+                .child(button("search-prev", "↑", "前へ（⇧Enter）").on_click(cx.listener(|v, _, _, cx| v.step_search(false, cx))))
+                .child(button("search-next", "↓", "次へ（Enter・⌘G）").on_click(cx.listener(|v, _, _, cx| v.step_search(true, cx))))
+                .child(button("search-close", "×", "閉じる（Esc）").on_click(cx.listener(|v, _, w, cx| v.close_search(w, cx))))
+                .into_any_element(),
+        )
     }
 
     fn grid_point(&self, position: Point<Pixels>, display_offset: usize) -> (AlacPoint, Side) {
@@ -441,6 +597,9 @@ impl Render for TerminalView {
             .on_action(cx.listener(Self::paste))
             .on_action(cx.listener(Self::select_all))
             .on_action(cx.listener(Self::clear))
+            .on_action(cx.listener(Self::open_search))
+            .on_action(cx.listener(Self::find_next))
+            .on_action(cx.listener(Self::find_prev))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
             .on_mouse_down(MouseButton::Middle, cx.listener(Self::on_mouse_down))
             .on_mouse_down(MouseButton::Right, cx.listener(Self::on_mouse_down))
@@ -450,7 +609,9 @@ impl Render for TerminalView {
             .on_mouse_up(MouseButton::Middle, cx.listener(Self::on_mouse_up))
             .on_mouse_up(MouseButton::Right, cx.listener(Self::on_mouse_up))
             .on_scroll(cx.listener(Self::on_scroll))
+            .relative()
             .child(TerminalElement { view: cx.entity() })
+            .children(self.render_search(cx))
     }
 }
 
@@ -609,6 +770,7 @@ impl Element for TerminalElement {
         let appearance = cx.global::<Appearance>();
         let theme = appearance.theme.clone();
         let selection_bg = appearance.chrome.selection;
+        let accent = appearance.chrome.accent;
         let font = appearance.font.clone();
         let font_size = appearance.font_size;
         let padding = point(px(appearance.config.padding_x), px(appearance.config.padding_y));
@@ -746,6 +908,28 @@ impl Element for TerminalElement {
         flush_text(&mut run, &mut texts, Some(cell_width));
         flush_bg(&mut bg_run, &mut quads);
 
+        // 探している文字の当たり。選んでいる当たりは強調色で示す
+        if let Some(search) = &view.search {
+            let match_bg = hsla(selection_bg, 0.85);
+            let active_bg = hsla(accent.mix(theme.background, 0.35), 1.0);
+            for (i, m) in search.matches.iter().enumerate() {
+                let (start, end) = (*m.start(), *m.end());
+                let first = start.line.0 + display_offset;
+                let last = end.line.0 + display_offset;
+                if last < 0 || first >= rows as i32 {
+                    continue;
+                }
+                let color = if Some(i) == search.index { active_bg } else { match_bg };
+                for row in first.max(0)..=last.min(rows as i32 - 1) {
+                    let from = if row == first { start.column.0 } else { 0 };
+                    let to = if row == last { end.column.0 + 1 } else { cols };
+                    if to > from {
+                        quads.push(fill(Bounds::new(cell_origin(row, from), size(cell_width * (to - from) as f32, line_height)), color));
+                    }
+                }
+            }
+        }
+
         // カーソル
         let mut cursor = Vec::new();
         let cursor_point = content.cursor.point;
@@ -839,6 +1023,37 @@ impl Element for TerminalElement {
                 let _ = piece.line.paint(piece.origin, line_height, TextAlign::Left, None, window, cx);
             }
         });
+    }
+}
+
+pub fn escape_path(path: &str) -> String {
+    let mut out = String::with_capacity(path.len());
+    for c in path.chars() {
+        if " \t'\"\\$`!&*()[]{};<>?|#~".contains(c) {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
+pub fn terminal_paths(paths: &[PathBuf]) -> String {
+    if paths.is_empty() {
+        return String::new();
+    }
+    let mut text = paths.iter().map(|p| escape_path(&p.display().to_string())).collect::<Vec<_>>().join(" ");
+    text.push(' ');
+    text
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn 落としたパスは空白と記号を逃がして並べる() {
+        let paths = vec![PathBuf::from("/tmp/a b/(x).txt"), PathBuf::from("/tmp/c")];
+        assert_eq!(terminal_paths(&paths), "/tmp/a\\ b/\\(x\\).txt /tmp/c ");
     }
 }
 
