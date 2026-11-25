@@ -67,10 +67,21 @@ pub struct TerminalView {
     pub process: Option<ProcessInfo>,
     pub start_cwd: PathBuf,
     pub unseen_bell: bool,
+    // 見ていない間に出力があった
+    pub unread: bool,
+    last_output: Option<Instant>,
+    last_input: Option<Instant>,
+    created: Instant,
     pub agent: AgentStatus,
     pub agent_title: Option<String>,
     // ダブルクリックで付けた名前
     pub custom_name: Option<String>,
+    // 一覧でまとめた作業の場所（シェルの作業場所は変えない）
+    pub work_path: Option<PathBuf>,
+    // エージェントを確認なしで起動した
+    pub bypass: bool,
+    // エージェントが今していること（「編集 app.rs」など）
+    pub activity: Option<String>,
     title_working: bool,
     marked_text: Option<String>,
     layout: Layout,
@@ -102,9 +113,16 @@ impl TerminalView {
                 process: None,
                 start_cwd: cwd,
                 unseen_bell: false,
+                unread: false,
+                last_output: None,
+                last_input: None,
+                created: Instant::now(),
                 agent: AgentStatus::default(),
                 agent_title: None,
                 custom_name: None,
+                work_path: None,
+                bypass: false,
+                activity: None,
                 title_working: false,
                 marked_text: None,
                 layout: Layout::default(),
@@ -134,8 +152,15 @@ impl TerminalView {
         match event {
             TermEvent::Wakeup => {
                 self.terminal.clear_wakeup();
-                if self.is_agent() && !self.replaying {
-                    self.agent.apply(AgentEvent::Output, Instant::now());
+                if !self.replaying {
+                    if self.is_agent() {
+                        self.agent.apply(AgentEvent::Output, Instant::now());
+                    }
+                    // 開いた直後のプロンプトは出力に数えない
+                    if self.created.elapsed().as_millis() > 1500 && !self.typed_recently() {
+                        self.last_output = Some(Instant::now());
+                        self.unread = true;
+                    }
                 }
                 // 出力で行がずれるため、探している間は当たりを数え直す（間を空けて）
                 if self.search.as_ref().is_some_and(|s| s.refreshed.elapsed().as_millis() >= 300) {
@@ -219,6 +244,16 @@ impl TerminalView {
     pub fn mark_seen(&mut self) {
         self.agent.apply(AgentEvent::Seen, Instant::now());
         self.unseen_bell = false;
+        self.unread = false;
+    }
+
+    // 直近2秒以内に出力があった
+    pub fn outputting(&self) -> bool {
+        self.last_output.is_some_and(|t| t.elapsed().as_millis() < 2000)
+    }
+
+    fn typed_recently(&self) -> bool {
+        self.last_input.is_some_and(|t| t.elapsed().as_millis() < 500)
     }
 
     // 一覧とタブに出す名前。付けた名前 > エージェントなどが出した題名 > 作業場所のフォルダ名の順。
@@ -238,6 +273,21 @@ impl TerminalView {
         folder_name(&self.cwd())
     }
 
+    // 開き直したときに戻す情報を、常駐のプロセスに預ける
+    pub fn save_meta(&self, workspace: &str) {
+        let mut meta = serde_json::json!({ "workspace": workspace });
+        if let Some(name) = &self.custom_name {
+            meta["name"] = serde_json::Value::String(name.clone());
+        }
+        if let Some(path) = &self.work_path {
+            meta["workPath"] = serde_json::Value::String(path.display().to_string());
+        }
+        if self.bypass {
+            meta["bypass"] = serde_json::Value::Bool(true);
+        }
+        self.terminal.set_meta(&meta);
+    }
+
     // Finder などから落としたパスを、打ったのと同じように送る
     pub fn input_paths(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) {
         let text = terminal_paths(paths);
@@ -252,6 +302,7 @@ impl TerminalView {
 
     fn write_input(&mut self, bytes: &[u8], cx: &mut Context<Self>) {
         self.agent.apply(AgentEvent::Input, Instant::now());
+        self.last_input = Some(Instant::now());
         {
             let mut term = self.terminal.term.lock();
             term.scroll_display(Scroll::Bottom);

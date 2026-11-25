@@ -71,10 +71,10 @@ const DIVIDER: f32 = 4.0;
 const TRAFFIC_LIGHT_SPACE: f32 = 78.0;
 const NOTIFY_INTERVAL: Duration = Duration::from_secs(3);
 
-struct Session {
-    id: u64,
-    view: Entity<TerminalView>,
-    workspace: String,
+pub(crate) struct Session {
+    pub(crate) id: u64,
+    pub(crate) view: Entity<TerminalView>,
+    pub(crate) workspace: String,
     last_notify: Option<Instant>,
     _subscriptions: [Subscription; 2],
 }
@@ -82,8 +82,14 @@ struct Session {
 // ドラッグしているタブ。落とした枠の端なら分割し、真ん中ならその枠のタブにする
 #[derive(Clone)]
 pub struct DraggedTab {
-    id: u64,
+    pub(crate) id: u64,
     label: String,
+}
+
+impl DraggedTab {
+    pub(crate) fn new(id: u64, label: String) -> Self {
+        DraggedTab { id, label }
+    }
 }
 
 impl Render for DraggedTab {
@@ -118,28 +124,35 @@ struct DividerDrag {
 }
 
 pub struct TerpApp {
-    focus: FocusHandle,
-    sessions: Vec<Session>,
-    next_id: u64,
-    layouts: HashMap<String, Layout>,
-    recent: Vec<u64>,
-    projects: Projects,
-    sidebar: bool,
-    sidebar_width: f32,
-    sidebar_drag: Option<(f32, f32)>,
-    font_delta: f32,
-    ui: UiState,
-    saved_ui: Option<UiState>,
-    rename: Option<Rename>,
-    config_mtime: Option<SystemTime>,
-    notice: Option<String>,
-    dock_count: usize,
-    drag: Option<DividerDrag>,
-    split_bounds: Rc<RefCell<HashMap<Vec<usize>, Bounds<Pixels>>>>,
-    pane_bounds: HashMap<u64, Bounds<Pixels>>,
-    drop_hint: Option<(u64, Side)>,
-    host: Option<Arc<HostClient>>,
-    _poll: Task<()>,
+    pub(crate) focus: FocusHandle,
+    pub(crate) sessions: Vec<Session>,
+    pub(crate) next_id: u64,
+    pub(crate) layouts: HashMap<String, Layout>,
+    pub(crate) recent: Vec<u64>,
+    pub(crate) projects: Projects,
+    pub(crate) sidebar: bool,
+    pub(crate) sidebar_width: f32,
+    pub(crate) sidebar_drag: Option<(f32, f32)>,
+    pub(crate) font_delta: f32,
+    pub(crate) ui: UiState,
+    pub(crate) saved_ui: Option<UiState>,
+    pub(crate) rename: Option<Rename>,
+    pub(crate) config_mtime: Option<SystemTime>,
+    pub(crate) notice: Option<String>,
+    pub(crate) dock_count: usize,
+    pub(crate) drag: Option<DividerDrag>,
+    pub(crate) split_bounds: Rc<RefCell<HashMap<Vec<usize>, Bounds<Pixels>>>>,
+    pub(crate) pane_bounds: HashMap<u64, Bounds<Pixels>>,
+    pub(crate) drop_hint: Option<(u64, Side)>,
+    pub(crate) host: Option<Arc<HostClient>>,
+    pub(crate) menu: Option<crate::overlay::Menu>,
+    pub(crate) repos: HashMap<String, Vec<crate::git::Worktree>>,
+    pub(crate) repos_loading: bool,
+    pub(crate) agents: Vec<crate::agents::Agent>,
+    pub(crate) overview: Option<crate::overview::Overview>,
+    pub(crate) poll_count: u64,
+    pub(crate) dialog: Option<crate::overlay::Dialog>,
+    pub(crate) _poll: Task<()>,
 }
 
 pub fn load_appearance(font_delta: f32, cx: &mut App) {
@@ -175,22 +188,29 @@ pub fn short_path(path: &Path) -> String {
 }
 
 #[derive(Clone)]
-struct Palette {
-    bg: Hsla,
-    term_bg: Hsla,
-    hover: Hsla,
-    active: Hsla,
-    border: Hsla,
-    text: Hsla,
-    muted: Hsla,
-    accent: Hsla,
-    accent_fill: Hsla,
-    accent_fill_dim: Hsla,
-    busy: Hsla,
-    warning: Hsla,
+pub(crate) struct Palette {
+    pub(crate) bg: Hsla,
+    pub(crate) term_bg: Hsla,
+    pub(crate) hover: Hsla,
+    pub(crate) active: Hsla,
+    pub(crate) border: Hsla,
+    pub(crate) text: Hsla,
+    pub(crate) muted: Hsla,
+    pub(crate) accent: Hsla,
+    pub(crate) accent_fill: Hsla,
+    pub(crate) accent_fill_dim: Hsla,
+    pub(crate) accent_fill_work: Hsla,
+    pub(crate) card: Hsla,
+    pub(crate) busy: Hsla,
+    pub(crate) warning: Hsla,
+    pub(crate) success: Hsla,
+    pub(crate) info: Hsla,
+    pub(crate) danger: Hsla,
+    pub(crate) solid_bg: Hsla,
+    pub(crate) on_accent: Hsla,
 }
 
-fn palette(cx: &App) -> Palette {
+pub(crate) fn palette(cx: &App) -> Palette {
     let a = cx.global::<Appearance>();
     let c = &a.chrome;
     let opacity = a.opacity();
@@ -205,20 +225,63 @@ fn palette(cx: &App) -> Palette {
         accent: hsla(c.accent, 1.0),
         accent_fill: hsla(c.bg.mix(c.accent, c.accent_fill), 1.0),
         accent_fill_dim: hsla(c.bg.mix(c.accent, c.accent_fill * 12.0 / 22.0), 1.0),
-        busy: hsla(a.theme.palette[2], 1.0),
+        accent_fill_work: hsla(c.bg.mix(c.accent, c.accent_fill * 12.0 / 22.0), 1.0),
+        card: hsla(c.bg_hover, 0.45),
+        busy: hsla(c.accent, 1.0),
         warning: hsla(a.theme.palette[3], 1.0),
+        success: hsla(a.theme.palette[2], 1.0),
+        info: hsla(a.theme.palette[4], 1.0),
+        danger: hsla(a.theme.palette[1], 1.0),
+        solid_bg: hsla(c.bg, 1.0),
+        on_accent: hsla(crate::config::readable_on(c.accent, &[crate::config::BLACK, crate::config::WHITE]), 1.0),
     }
 }
 
-// 状態の印。考え中は緑、許可待ちは黄の「!」、終わったは強調色、ベルは黄
-fn status_dot(state: AgentState, bell: bool, p: &Palette) -> Option<AnyElement> {
-    let (color, mark) = match state {
-        AgentState::Working => (p.busy, ""),
-        AgentState::Waiting => (p.warning, "!"),
-        AgentState::Done => (p.accent, ""),
-        AgentState::Idle if bell => (p.warning, ""),
-        AgentState::Idle => return None,
+// 端末の印。エージェントは 考え中（強調色の輪）・許可待ち（黄の「!」）・終わった（緑）、
+// シェルは 出力中（緑）・裏で出力があった（青）・通知あり（黄）
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Mark {
+    Agent(AgentState),
+    Output,
+    Unread,
+    Bell,
+    None,
+}
+
+pub(crate) fn mark_of(view: &TerminalView) -> Mark {
+    if view.is_agent() {
+        return match view.agent_state() {
+            AgentState::Idle if view.unseen_bell => Mark::Bell,
+            state => Mark::Agent(state),
+        };
+    }
+    if view.unseen_bell {
+        Mark::Bell
+    } else if view.outputting() {
+        Mark::Output
+    } else if view.unread {
+        Mark::Unread
+    } else {
+        Mark::None
+    }
+}
+
+pub(crate) fn mark_dot(mark: Mark, p: &Palette) -> Option<AnyElement> {
+    let (color, text) = match mark {
+        Mark::Agent(AgentState::Working) => {
+            return Some(div().flex_none().size(px(9.0)).rounded_full().border_2().border_color(p.accent).into_any_element());
+        }
+        Mark::Agent(AgentState::Waiting) => (p.warning, "!"),
+        Mark::Agent(AgentState::Done) => (p.success, ""),
+        Mark::Agent(AgentState::Idle) => {
+            return Some(div().flex_none().size(px(7.0)).rounded_full().border_1().border_color(p.muted).into_any_element());
+        }
+        Mark::Output => (p.success, ""),
+        Mark::Unread => (p.info, ""),
+        Mark::Bell => (p.warning, ""),
+        Mark::None => return None,
     };
+    let mark = text;
     Some(
         div()
             .flex()
@@ -282,6 +345,13 @@ impl TerpApp {
             pane_bounds: HashMap::new(),
             drop_hint: None,
             host: None,
+            menu: None,
+            dialog: None,
+            repos: HashMap::new(),
+            repos_loading: false,
+            agents: Vec::new(),
+            overview: None,
+            poll_count: 0,
             _poll: poll,
         };
         match HostClient::connect() {
@@ -297,35 +367,45 @@ impl TerpApp {
             Some(id) => app.select(id, window, cx),
             None => app.open_terminal(home_dir(), window, cx),
         }
+        app.refresh_repos(cx);
+        app.refresh_agents(cx);
+        // 窓に戻ったら、リポジトリとエージェントを探し直す
+        cx.observe_window_activation(window, |app, window, cx| {
+            if window.is_window_active() {
+                app.refresh_repos(cx);
+                app.refresh_agents(cx);
+            }
+        })
+        .detach();
         app
     }
 
-    fn workspace(&self) -> String {
+    pub(crate) fn workspace(&self) -> String {
         self.projects.active_workspace.clone()
     }
 
-    fn layout(&self) -> Option<&Layout> {
+    pub(crate) fn layout(&self) -> Option<&Layout> {
         self.layouts.get(&self.workspace())
     }
 
-    fn layout_mut(&mut self) -> &mut Layout {
+    pub(crate) fn layout_mut(&mut self) -> &mut Layout {
         let ws = self.workspace();
         self.layouts.entry(ws).or_default()
     }
 
-    fn session(&self, id: u64) -> Option<&Session> {
+    pub(crate) fn session(&self, id: u64) -> Option<&Session> {
         self.sessions.iter().find(|s| s.id == id)
     }
 
-    fn active_id(&self) -> Option<u64> {
+    pub(crate) fn active_id(&self) -> Option<u64> {
         self.layout().and_then(|l| l.active_tab()).filter(|id| self.session(*id).is_some())
     }
 
-    fn workspace_ids(&self, workspace: &str) -> Vec<u64> {
+    pub(crate) fn workspace_ids(&self, workspace: &str) -> Vec<u64> {
         self.sessions.iter().filter(|s| s.workspace == workspace).map(|s| s.id).collect()
     }
 
-    fn is_visible(&self, id: u64) -> bool {
+    pub(crate) fn is_visible(&self, id: u64) -> bool {
         self.session(id).is_some_and(|s| s.workspace == self.workspace())
             && self.layout().is_some_and(|l| l.visible().contains(&id))
     }
@@ -359,6 +439,10 @@ impl TerpApp {
         }
         self.update_dock(cx);
         self.persist(cx);
+        self.poll_count += 1;
+        if self.poll_count % 5 == 0 {
+            self.refresh_repos(cx);
+        }
         // 経過の表示（考え中 1:23 など）を進める
         cx.notify();
     }
@@ -387,7 +471,7 @@ impl TerpApp {
         cx.refresh_windows();
     }
 
-    fn spawn_session(&mut self, cwd: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Option<u64> {
+    pub(crate) fn spawn_session(&mut self, cwd: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Option<u64> {
         let cwd = if cwd.is_dir() { cwd } else { home_dir() };
         let size = GridSize { cols: 80, rows: 24 };
         let meta = serde_json::json!({ "workspace": self.workspace() });
@@ -438,7 +522,13 @@ impl TerpApp {
             let (terminal, events) = Terminal::attach_remote(&host, summary.id, summary.size);
             let view = TerminalView::new(terminal, events, &summary.cwd, cx);
             let name = summary.meta.get("name").and_then(|n| n.as_str()).map(String::from);
-            view.update(cx, |view, _| view.custom_name = name);
+            let work_path = summary.meta.get("workPath").and_then(|n| n.as_str()).map(PathBuf::from);
+            let bypass = summary.meta.get("bypass").and_then(|n| n.as_bool()).unwrap_or(false);
+            view.update(cx, |view, _| {
+                view.custom_name = name;
+                view.work_path = work_path;
+                view.bypass = bypass;
+            });
             let id = self.add_session(view, workspace.clone(), window, cx);
             restored.push((summary.id, id, workspace));
         }
@@ -462,7 +552,7 @@ impl TerpApp {
     }
 
     // 画面の控えを今の状態にし、変わっていれば書く
-    fn persist(&mut self, cx: &App) {
+    pub(crate) fn persist(&mut self, cx: &App) {
         let to_host: HashMap<u64, u64> =
             self.sessions.iter().filter_map(|s| s.view.read(cx).terminal.remote_id().map(|h| (s.id, h))).collect();
         self.ui.font_delta = self.font_delta as i32;
@@ -499,23 +589,19 @@ impl TerpApp {
         }
     }
 
-    fn set_name(&mut self, id: u64, name: Option<String>, cx: &mut Context<Self>) {
+    pub(crate) fn set_name(&mut self, id: u64, name: Option<String>, cx: &mut Context<Self>) {
         let Some(session) = self.session(id) else { return };
         let workspace = session.workspace.clone();
         let name = name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty());
         session.view.update(cx, |view, cx| {
             view.custom_name = name.clone();
-            let mut meta = serde_json::json!({ "workspace": workspace });
-            if let Some(name) = &name {
-                meta["name"] = serde_json::Value::String(name.clone());
-            }
-            view.terminal.set_meta(&meta);
+            view.save_meta(&workspace);
             cx.notify();
         });
         cx.notify();
     }
 
-    fn start_rename(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn start_rename(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
         let Some(session) = self.session(id) else { return };
         let current = session.view.read(cx).custom_name.clone().unwrap_or_else(|| session.view.read(cx).display_name());
         let input = cx.new(|cx| {
@@ -549,7 +635,7 @@ impl TerpApp {
     }
 
     // 名前の欄。名前を変えている端末なら入力欄を、そうでなければ名前を出す
-    fn name_label(&self, id: u64, name: String) -> AnyElement {
+    pub(crate) fn name_label(&self, id: u64, name: String) -> AnyElement {
         match self.rename.as_ref().filter(|r| r.id == id) {
             Some(r) => div().flex_1().min_w(px(80.0)).child(r.input.clone()).into_any_element(),
             None => div().flex_1().overflow_hidden().text_ellipsis().whitespace_nowrap().child(name).into_any_element(),
@@ -580,7 +666,7 @@ impl TerpApp {
         }
     }
 
-    fn select(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn select(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
         let Some(session) = self.session(id) else { return };
         let workspace = session.workspace.clone();
         let view = session.view.clone();
@@ -588,7 +674,10 @@ impl TerpApp {
             self.set_workspace(&workspace, window, cx);
         }
         let previous = self.active_id();
-        self.layout_mut().select(id);
+        // 枠のタブに無い端末は、操作中の枠のタブに足して出す
+        if !self.layout_mut().select(id) {
+            self.layout_mut().add_tab(id);
+        }
         if let Some(previous) = previous
             && previous != id
         {
@@ -605,8 +694,25 @@ impl TerpApp {
         cx.notify();
     }
 
+    // 枠のタブから外すだけ。端末は左の一覧に残る（終わらせるのは一覧の行の ×）
+    pub(crate) fn hide_tab(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(workspace) = self.session(id).map(|s| s.workspace.clone()) else { return };
+        let was_active = self.active_id() == Some(id);
+        let recent = self.recent.clone();
+        if let Some(layout) = self.layouts.get_mut(&workspace) {
+            layout.remove_tab(id, &recent);
+        }
+        if was_active {
+            match self.active_id() {
+                Some(next) => self.select(next, window, cx),
+                None => window.focus(&self.focus, cx),
+            }
+        }
+        cx.notify();
+    }
+
     // remember なら ⇧⌘T で開き直せるよう覚える（シェルの exit で終わった端末は覚えない）
-    fn close(&mut self, id: u64, remember: bool, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn close(&mut self, id: u64, remember: bool, window: &mut Window, cx: &mut Context<Self>) {
         let Some(workspace) = self.session(id).map(|s| s.workspace.clone()) else { return };
         if remember && let Some(session) = self.session(id) {
             let view = session.view.read(cx);
@@ -686,7 +792,121 @@ impl TerpApp {
         cx.notify();
     }
 
-    fn set_workspace(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn refresh_agents(&mut self, cx: &mut Context<Self>) {
+        let configured = cx.global::<Appearance>().config.agents.clone();
+        cx.spawn(async move |this, cx| {
+            let found = cx
+                .background_executor()
+                .spawn(async move {
+                    let path = crate::git::login_env().get("PATH").cloned().unwrap_or_default();
+                    crate::agents::detect(&configured, &path)
+                })
+                .await;
+            let _ = this.update(cx, |app, cx| {
+                if app.agents != found {
+                    app.agents = found;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    // 見つかって、隠していないエージェント
+    pub(crate) fn found_agents(&self) -> Vec<crate::agents::Agent> {
+        self.agents.iter().filter(|a| a.found() && !a.hidden).cloned().collect()
+    }
+
+    pub(crate) fn skip_approvals(&self, cx: &App) -> bool {
+        cx.global::<Appearance>().config.skip_approvals
+    }
+
+    // 新しい端末を開き、エージェントを起動する1行を打つ。シェルは起動前の入力をためておくため、すぐ送ってよい
+    pub(crate) fn launch_agent_at(&mut self, agent: &crate::agents::Agent, bypass: bool, cwd: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        let bypass = bypass && !agent.bypass_args.is_empty();
+        let line = crate::agents::command_line(agent, bypass);
+        self.run_in_new_terminal(cwd, line, bypass, window, cx);
+    }
+
+    pub(crate) fn run_in_new_terminal(&mut self, cwd: PathBuf, line: String, bypass: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(id) = self.spawn_session(cwd, window, cx) else { return };
+        self.layout_mut().add_tab(id);
+        self.select(id, window, cx);
+        if let Some(session) = self.session(id) {
+            let workspace = session.workspace.clone();
+            session.view.update(cx, |view, cx| {
+                view.bypass = bypass;
+                view.save_meta(&workspace);
+                view.terminal.write(format!("{line}\r").as_bytes());
+                cx.notify();
+            });
+        }
+    }
+
+    // メインのエージェント。設定の mainAgent、無ければ見つかった最初のもの
+    pub(crate) fn main_agent(&self, cx: &App) -> Option<crate::agents::Agent> {
+        let found = self.found_agents();
+        let main = cx.global::<Appearance>().config.main_agent.clone();
+        main.and_then(|m| found.iter().find(|a| a.command == m).cloned()).or_else(|| found.first().cloned())
+    }
+
+    // 新しいタブのプルダウン: ターミナル / 見つかったエージェント / 利用者のコマンド
+    fn new_tab_menu(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
+        use crate::overlay::{MenuItem, action};
+        let mut items = vec![MenuItem::new("ターミナル", action(|app, window, cx| app.new_terminal(&NewTerminal, window, cx))).hint("⌘T")];
+        let agents = self.found_agents();
+        if !agents.is_empty() {
+            items.push(MenuItem::separator());
+            let skip = self.skip_approvals(cx);
+            for agent in agents {
+                let a = agent.clone();
+                let hint = if agent.bypass_args.is_empty() { String::new() } else if skip { "確認なし".into() } else { String::new() };
+                let mut item = MenuItem::new(
+                    agent.label.clone(),
+                    action(move |app, window, cx| {
+                        let bypass = app.skip_approvals(cx) != window.modifiers().alt;
+                        let place = app.new_terminal_place(cx);
+                        app.launch_agent_at(&a, bypass, place, window, cx);
+                    }),
+                );
+                if !hint.is_empty() {
+                    item = item.hint(hint);
+                }
+                items.push(item);
+            }
+        }
+        items.push(MenuItem::separator());
+        let commands = crate::agents::user_commands(&cx.global::<Appearance>().config.commands);
+        for command in &commands {
+            let line = command.command.clone();
+            items.push(MenuItem::new(
+                command.label.clone(),
+                action(move |app, window, cx| {
+                    let place = app.new_terminal_place(cx);
+                    app.run_in_new_terminal(place, line.clone(), false, window, cx);
+                }),
+            ));
+        }
+        items.push(MenuItem::new(
+            if commands.is_empty() { "コマンドを登録" } else { "コマンドを編集" },
+            action(|app, window, cx| app.open_settings(window, cx)),
+        ));
+        self.open_menu(position, items, cx);
+    }
+
+    pub(crate) fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_config(&OpenConfig, window, cx);
+    }
+
+    // 操作中の端末へ入力を戻す
+    pub(crate) fn refocus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match self.active_id().and_then(|a| self.session(a)).map(|s| s.view.clone()) {
+            Some(view) => view.update(cx, |view, cx| view.focus(window, cx)),
+            None => window.focus(&self.focus, cx),
+        }
+    }
+
+    pub(crate) fn set_workspace(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
         if self.projects.active_workspace == id || !self.projects.workspaces.iter().any(|w| w.id == id) {
             return;
         }
@@ -747,15 +967,15 @@ impl TerpApp {
         self.set_workspace(&id, window, cx);
     }
 
-    fn new_terminal(&mut self, _: &NewTerminal, window: &mut Window, cx: &mut Context<Self>) {
-        // 表示中と同じ作業場所で開く
-        let cwd = self.active_cwd(cx);
+    pub(crate) fn new_terminal(&mut self, _: &NewTerminal, window: &mut Window, cx: &mut Context<Self>) {
+        // 表示中のタブの作業の一番上、作業の外ならホームで開く
+        let cwd = self.new_terminal_place(cx);
         self.open_terminal(cwd, window, cx);
     }
 
     fn close_tab(&mut self, _: &CloseTab, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(id) = self.active_id() {
-            self.close(id, true, window, cx);
+            self.hide_tab(id, window, cx);
         } else {
             window.remove_window();
         }
@@ -787,35 +1007,6 @@ impl TerpApp {
         self.select(next, window, cx);
     }
 
-    // 左の一覧の並び（ワークスペースの順に、リポジトリごと、残りは最後）
-    fn list_order(&self, cx: &App) -> Vec<u64> {
-        let mut order = Vec::new();
-        for w in &self.projects.workspaces {
-            for group in self.groups(&w.id, cx) {
-                order.extend(group.1);
-            }
-        }
-        order
-    }
-
-    // ドラフトのリポジトリごとに、その中で動いている端末をまとめる。どれにも入らない端末は最後の None に入れる
-    fn groups(&self, workspace: &str, cx: &App) -> Vec<(Option<Project>, Vec<u64>)> {
-        let ids = self.workspace_ids(workspace);
-        let drafts: Vec<Project> = self.projects.projects.iter().filter(|p| p.workspace == workspace && p.draft).cloned().collect();
-        let owner = |id: u64| -> Option<String> {
-            let cwd = self.session(id)?.view.read(cx).cwd().display().to_string();
-            drafts.iter().filter(|p| contains_path(&p.path, &cwd)).max_by_key(|p| p.path.len()).map(|p| p.path.clone())
-        };
-        let owners: HashMap<u64, Option<String>> = ids.iter().map(|id| (*id, owner(*id))).collect();
-        let mut groups: Vec<(Option<Project>, Vec<u64>)> = drafts
-            .iter()
-            .map(|p| (Some(p.clone()), ids.iter().copied().filter(|id| owners[id].as_deref() == Some(p.path.as_str())).collect()))
-            .collect();
-        groups.push((None, ids.iter().copied().filter(|id| owners[id].is_none()).collect()));
-        groups
-    }
-
-    // 設定の大きさからの差。文字は 6〜40pt に収める
     fn set_font_delta(&mut self, delta: f32, window: &mut Window, cx: &mut Context<Self>) {
         let base = cx.global::<Appearance>().config.font_size;
         self.font_delta = delta.clamp(6.0 - base, 40.0 - base).round();
@@ -1033,7 +1224,14 @@ impl TerpApp {
                 })
             });
         if !self.sidebar && at_top && at_left {
-            bar = bar.pl(px(TRAFFIC_LIGHT_SPACE));
+            bar = bar.pl(px(TRAFFIC_LIGHT_SPACE)).child(
+                crate::ui::icon_button("sidebar-show", "sidebar", "左の一覧を出す（⌘B）", p.muted, p.hover, p.text)
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_click(cx.listener(|app, _: &ClickEvent, _, cx| {
+                        app.sidebar = true;
+                        cx.notify();
+                    })),
+            );
         }
         for (index, id) in pane.tabs.iter().copied().enumerate() {
             let Some(session) = self.session(id) else { continue };
@@ -1042,7 +1240,7 @@ impl TerpApp {
             let label = format!("{}  {}", index + 1, view.display_name());
             let name = self.name_label(id, label);
             let state = view.agent_state();
-            let dot = status_dot(state, view.unseen_bell, p);
+            let dot = mark_dot(mark_of(view), p);
             let tip = view.agent.text(now);
             bar = bar.child(
                 div()
@@ -1060,6 +1258,10 @@ impl TerpApp {
                     .when(selected, |d| d.bg(if layout.active_pane == pane_id { p.accent_fill } else { p.accent_fill_dim }))
                     .when(!selected, |d| d.hover(|s| s.bg(p.hover)))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_mouse_down(MouseButton::Middle, cx.listener(move |app, _: &MouseDownEvent, window, cx| {
+                        cx.stop_propagation();
+                        app.hide_tab(id, window, cx);
+                    }))
                     .on_click(cx.listener(move |app, event: &ClickEvent, window, cx| {
                         if event.click_count() == 2 {
                             app.start_rename(id, window, cx);
@@ -1088,31 +1290,47 @@ impl TerpApp {
                             .hover(|s| s.bg(p.active).text_color(p.text))
                             .on_click(cx.listener(move |app, _: &ClickEvent, window, cx| {
                                 cx.stop_propagation();
-                                app.close(id, true, window, cx);
+                                app.hide_tab(id, window, cx);
                             }))
+                            .tooltip(|_, cx| crate::tooltip::text("タブを閉じる（⌘W）", cx))
                             .child("×"),
                     ),
             );
         }
-        let bar = bar.child(
-            div()
-                .id(("new-tab", pane_id))
-                .px_2()
-                .h(px(26.0))
-                .flex()
-                .items_center()
-                .rounded_md()
-                .text_color(p.muted)
-                .hover(|s| s.bg(p.hover).text_color(p.text))
-                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .on_click(cx.listener(move |app, _: &ClickEvent, window, cx| {
-                    if let Some(layout) = app.layouts.get_mut(&app.projects.active_workspace) {
-                        layout.focus_pane(pane_id);
-                    }
-                    app.new_terminal(&NewTerminal, window, cx);
-                }))
-                .child("＋"),
-        );
+        // 操作中の枠にだけ、新しいタブのプルダウンとメインのエージェントのボタンを出す
+        let main_agent = self.main_agent(cx);
+        let bar = bar
+            .when(layout.active_pane == pane_id, |bar| {
+                bar.child(
+                    crate::ui::icon_button(("new-tab", pane_id), "plus", "新しいタブ", p.muted, p.hover, p.text)
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .on_click(cx.listener(move |app, event: &ClickEvent, _, cx| {
+                            app.new_tab_menu(event.position(), cx);
+                        })),
+                )
+                .when_some(main_agent, |bar, agent| {
+                    let tip = format!("{} を起動（⌥ で{}）", agent.label, if self.skip_approvals(cx) { "確認あり" } else { "確認なし" });
+                    let icon_name = agent.icon.clone();
+                    bar.child(
+                        div()
+                            .id(("main-agent", pane_id))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .size(px(24.0))
+                            .rounded_md()
+                            .hover(|s| s.bg(p.hover))
+                            .tooltip(move |_, cx| crate::tooltip::text(tip.clone(), cx))
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                            .on_click(cx.listener(move |app, event: &ClickEvent, window, cx| {
+                                let bypass = app.skip_approvals(cx) != event.modifiers().alt;
+                                let place = app.new_terminal_place(cx);
+                                app.launch_agent_at(&agent, bypass, place, window, cx);
+                            }))
+                            .child(crate::ui::agent_icon(&icon_name, 15.0, p.muted)),
+                    )
+                })
+            });
 
         let hint = self.drop_hint.filter(|(id, _)| *id == pane_id).map(|(_, side)| side);
         let content: AnyElement = match pane.active.and_then(|id| self.session(id)) {
@@ -1168,179 +1386,6 @@ impl TerpApp {
             .drag_over::<ExternalPaths>(move |s, _, _, _| s.border_2().border_color(accent))
             .on_drop(cx.listener(move |app, paths: &ExternalPaths, window, cx| app.drop_paths(pane_id, paths, window, cx)));
         div().flex().flex_col().size_full().min_w_0().min_h_0().child(bar).child(body).into_any_element()
-    }
-
-    fn render_terminal_row(&self, id: u64, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
-        let session = self.session(id).expect("一覧の端末は開いている");
-        let view = session.view.read(cx);
-        let selected = self.active_id() == Some(id);
-        let visible = self.is_visible(id);
-        let state = view.agent_state();
-        let program = view.process.as_ref().map(|p| p.name.clone()).unwrap_or_default();
-        let status = view.agent.text(Instant::now());
-        let detail = if view.is_agent() && !status.is_empty() {
-            format!("{status} · {}", short_path(&view.cwd()))
-        } else {
-            format!("{program} · {}", short_path(&view.cwd()))
-        };
-        let dot = status_dot(state, view.unseen_bell, p);
-        div()
-            .id(("row", id))
-            .flex()
-            .flex_col()
-            .mx_2()
-            .px_2()
-            .py_1()
-            .rounded_md()
-            .when(selected, |d| d.bg(p.accent_fill))
-            .when(!selected && visible, |d| d.bg(p.accent_fill_dim))
-            .when(!selected, |d| d.hover(|s| s.bg(p.hover)))
-            .on_click(cx.listener(move |app, event: &ClickEvent, window, cx| {
-                if event.click_count() == 2 {
-                    app.start_rename(id, window, cx);
-                } else {
-                    app.select(id, window, cx);
-                }
-            }))
-            .on_drag(DraggedTab { id, label: view.display_name() }, |tab, _, _, cx| cx.new(|_| tab.clone()))
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_1()
-                    .text_sm()
-                    .text_color(p.text)
-                    .child(self.name_label(id, view.display_name()))
-                    .when_some(dot, |d, dot| d.child(dot)),
-            )
-            .child(div().text_xs().text_color(p.muted).overflow_hidden().text_ellipsis().whitespace_nowrap().child(detail))
-            .into_any_element()
-    }
-
-    fn render_sidebar(&self, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
-        let ws = self.workspace();
-        let mut workspaces = div().flex().flex_row().flex_wrap().gap_1().px_2().pb_2();
-        for (index, w) in self.projects.workspaces.iter().enumerate() {
-            let selected = w.id == ws;
-            let id = w.id.clone();
-            let ids = self.workspace_ids(&w.id);
-            let attention = ids.iter().any(|i| {
-                self.session(*i).is_some_and(|s| matches!(s.view.read(cx).agent_state(), AgentState::Waiting | AgentState::Done))
-            });
-            let label = if ids.is_empty() { w.name.clone() } else { format!("{} {}", w.name, ids.len()) };
-            workspaces = workspaces.child(
-                div()
-                    .id(("workspace", index))
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_1()
-                    .px_2()
-                    .py(px(2.0))
-                    .rounded_md()
-                    .text_xs()
-                    .border_1()
-                    .border_color(if selected { p.accent } else { p.border })
-                    .text_color(if selected { p.text } else { p.muted })
-                    .when(selected, |d| d.bg(p.accent_fill))
-                    .hover(|s| s.bg(p.hover))
-                    .on_click(cx.listener(move |app, _: &ClickEvent, window, cx| app.set_workspace(&id, window, cx)))
-                    .child(label)
-                    .when(attention && !selected, |d| d.child(div().size(px(6.0)).rounded_full().bg(p.accent))),
-            );
-        }
-
-        let mut list = div().id("sidebar-list").flex().flex_col().flex_1().overflow_y_scroll().gap(px(2.0)).pb_2();
-        let groups = self.groups(&ws, cx);
-        let has_projects = groups.iter().any(|(p, _)| p.is_some());
-        for (project, members) in groups {
-            match project {
-                Some(project) => {
-                    let path = PathBuf::from(&project.path);
-                    list = list.child(
-                        div()
-                            .id(SharedString::from(format!("project-{}", project.path)))
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .mt_2()
-                            .mx_2()
-                            .px_2()
-                            .text_xs()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(p.muted)
-                            .child(div().flex_1().overflow_hidden().text_ellipsis().whitespace_nowrap().child(project.name().to_string()))
-                            .child(
-                                div()
-                                    .id(SharedString::from(format!("open-{}", project.path)))
-                                    .px_1()
-                                    .rounded_sm()
-                                    .hover(|s| s.bg(p.hover).text_color(p.text))
-                                    .on_click(cx.listener(move |app, _: &ClickEvent, window, cx| app.open_terminal(path.clone(), window, cx)))
-                                    .child("＋"),
-                            ),
-                    );
-                }
-                None if members.is_empty() => continue,
-                None if has_projects => {
-                    list = list.child(div().mt_2().mx_2().px_2().text_xs().font_weight(FontWeight::SEMIBOLD).text_color(p.muted).child("その他"));
-                }
-                None => {}
-            }
-            for id in members {
-                list = list.child(self.render_terminal_row(id, p, cx));
-            }
-        }
-
-        let handle = div()
-            .id("sidebar-resize")
-            .absolute()
-            .top_0()
-            .bottom_0()
-            .right(px(-3.0))
-            .w(px(6.0))
-            .cursor_col_resize()
-            .when(self.sidebar_drag.is_some(), |d| d.bg(p.accent.opacity(0.6)))
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|app, event: &MouseDownEvent, _, cx| {
-                    cx.stop_propagation();
-                    if event.click_count == 2 {
-                        app.sidebar_width = SIDEBAR_DEFAULT;
-                    } else {
-                        app.sidebar_drag = Some((f32::from(event.position.x), app.sidebar_width));
-                    }
-                    cx.notify();
-                }),
-            );
-        div()
-            .relative()
-            .flex()
-            .flex_col()
-            .w(px(self.sidebar_width))
-            .flex_none()
-            .h_full()
-            .child(handle)
-            .bg(p.bg)
-            .border_r_1()
-            .border_color(p.border)
-            .child(
-                div()
-                    .id("sidebar-titlebar")
-                    .h(px(TAB_BAR_HEIGHT))
-                    .flex_none()
-                    .on_mouse_down(MouseButton::Left, |event: &MouseDownEvent, window, _| {
-                        if event.click_count == 2 {
-                            window.titlebar_double_click();
-                        } else {
-                            window.start_window_move();
-                        }
-                    }),
-            )
-            .child(workspaces)
-            .child(list)
-            .into_any_element()
     }
 }
 
@@ -1412,7 +1457,7 @@ impl Render for TerpApp {
             .on_action(cx.listener(|app, _: &FontBigger, w, cx| app.set_font_delta(app.font_delta + 1.0, w, cx)))
             .on_action(cx.listener(|app, _: &FontSmaller, w, cx| app.set_font_delta(app.font_delta - 1.0, w, cx)))
             .on_action(cx.listener(|app, _: &FontReset, w, cx| app.set_font_delta(0.0, w, cx)))
-            .when(self.sidebar, |d| d.child(self.render_sidebar(&p, cx)))
+            .when(self.sidebar, |d| d.child(self.render_sidebar_frame(&p, cx)))
             .child(
                 div()
                     .flex()
@@ -1425,5 +1470,8 @@ impl Render for TerpApp {
                         d.child(div().flex_none().px_3().py_1().text_xs().bg(p.active).text_color(p.warning).child(error))
                     }),
             )
+            .children(self.render_overview(&p, window, cx))
+            .children(self.render_menu(&p, cx))
+            .children(self.render_dialog(&p, cx))
     }
 }

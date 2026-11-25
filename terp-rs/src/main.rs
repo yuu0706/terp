@@ -1,18 +1,25 @@
 mod agent;
+mod agents;
 mod app;
+mod assets;
 mod appearance;
 mod config;
 mod dock;
+mod git;
 mod input;
 mod keys;
+mod overlay;
+mod overview;
 mod panes;
 mod projects;
 mod ptyhost;
 mod search;
+mod sidebar;
 mod state;
 mod terminal;
 mod terminal_view;
 mod tooltip;
+mod ui;
 
 use app::*;
 use appearance::Appearance;
@@ -194,7 +201,7 @@ fn main() {
         }
         return;
     }
-    let app = application();
+    let app = application().with_assets(assets::Assets);
     app.on_reopen(|cx| {
         if cx.windows().is_empty() {
             open_window(cx);

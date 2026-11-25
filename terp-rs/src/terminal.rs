@@ -104,9 +104,17 @@ pub enum Incoming {
 fn shell_env() -> Vec<(String, String)> {
     let mut env: Vec<(String, String)> = std::env::vars()
         .filter(|(key, _)| {
-            !(key.starts_with("CARGO") || key.starts_with("RUST") || key == "CLAUDECODE" || key.starts_with("CLAUDE_CODE_"))
+            !(key.starts_with("CARGO")
+                || key.starts_with("RUST")
+                || key.starts_with("ELECTRON_")
+                || key.starts_with("npm_")
+                || key == "NODE_OPTIONS"
+                || key == "CLAUDECODE"
+                || key.starts_with("CLAUDE_CODE_"))
         })
         .collect();
+    // npm から起動したときに npm が足す EDITOR=vi を渡すと、zsh が vi の打ち方で始まる
+    env.retain(|(k, v)| !(k == "EDITOR" && v == "vi"));
     let lang = env.iter().find(|(k, _)| k == "LANG").map(|(_, v)| v.clone());
     env.retain(|(k, _)| !matches!(k.as_str(), "TERM" | "COLORTERM" | "TERM_PROGRAM" | "TERM_PROGRAM_VERSION" | "LANG"));
     env.push(("TERM".into(), "xterm-256color".into()));
@@ -140,7 +148,16 @@ pub fn spawn_pty(cwd: &Path, size: GridSize) -> anyhow::Result<PtyParts> {
 // 端末の前面で動いているプロセス（シェルか、シェルから起動したプログラム）
 pub fn foreground_of(master: &dyn MasterPty, shell_pid: Option<i32>) -> Option<ProcessInfo> {
     let pid = master.process_group_leader().or(shell_pid)?;
-    Some(ProcessInfo { name: process_name(pid)?, cwd: process_cwd(pid) })
+    Some(ProcessInfo { name: program_name(process_name(pid)?), cwd: process_cwd(pid) })
+}
+
+// claude の実行ファイルは版番号（例 2.1.309）の名前で動くため、claude と読み替える
+pub fn program_name(name: String) -> String {
+    let parts: Vec<&str> = name.split('.').collect();
+    if parts.len() == 3 && parts.iter().all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit())) {
+        return "claude".into();
+    }
+    name
 }
 
 enum Backend {
@@ -464,7 +481,7 @@ impl HostClient {
             Kind::ReplayEnd => route(Incoming::ReplayEnd),
             Kind::InfoReply => {
                 if let Ok(info) = serde_json::from_slice::<InfoPayload>(&frame.payload) {
-                    route(Incoming::Info(ProcessInfo { name: info.name, cwd: info.cwd }));
+                    route(Incoming::Info(ProcessInfo { name: program_name(info.name), cwd: info.cwd }));
                 }
             }
             Kind::Exit => {
@@ -583,6 +600,13 @@ mod tests {
             assert!(std::time::Instant::now() < deadline, "出力が届かない:\n{text}");
             std::thread::sleep(Duration::from_millis(50));
         }
+    }
+
+    #[test]
+    fn 版番号の名前は_claude_と読む() {
+        assert_eq!(program_name("2.1.309".into()), "claude");
+        assert_eq!(program_name("zsh".into()), "zsh");
+        assert_eq!(program_name("node.js".into()), "node.js");
     }
 
     #[test]

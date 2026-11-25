@@ -60,7 +60,32 @@ pub struct Config {
     pub notify_agent_done: bool,
     pub notify_bell: bool,
     pub notify_when_visible: bool,
+    pub notify_sound: bool,
+    pub notify_message: bool,
     pub dock_badge: bool,
+    pub permission_card: bool,
+    pub confirm_draft_remove: bool,
+    pub cursor_blink: bool,
+    // 起動のボタンに足す・上書きする AI エージェント（項目ごとに読み、誤った項目は飛ばす）
+    pub agents: Vec<serde_json::Value>,
+    pub skip_approvals: bool,
+    pub main_agent: Option<String>,
+    pub agent_input_select: bool,
+    pub agent_rename: bool,
+    pub commands: Vec<serde_json::Value>,
+    pub frequent_tabs: bool,
+    pub pets: bool,
+    pub pet_kind: String,
+    pub pet_scene: String,
+    pub themed_icon: bool,
+    pub ai_assist: bool,
+    pub ai_model: String,
+    pub ai_commit_message: bool,
+    pub ai_name_terminal: bool,
+    pub ai_auto_title: bool,
+    pub ai_daily_limit: u32,
+    // 外部のエディタで開くコマンド。{file}・{line}・{col} を置き換える。空なら macOS の既定のアプリで開く
+    pub editor: String,
 }
 
 impl Default for Config {
@@ -86,7 +111,30 @@ impl Default for Config {
             notify_agent_done: true,
             notify_bell: true,
             notify_when_visible: false,
+            notify_sound: true,
+            notify_message: true,
             dock_badge: true,
+            permission_card: true,
+            confirm_draft_remove: true,
+            cursor_blink: false,
+            agents: Vec::new(),
+            skip_approvals: false,
+            main_agent: None,
+            agent_input_select: true,
+            agent_rename: true,
+            commands: Vec::new(),
+            frequent_tabs: true,
+            pets: true,
+            pet_kind: "cat".into(),
+            pet_scene: "grass".into(),
+            themed_icon: true,
+            ai_assist: true,
+            ai_model: "haiku".into(),
+            ai_commit_message: true,
+            ai_name_terminal: true,
+            ai_auto_title: false,
+            ai_daily_limit: 30,
+            editor: String::new(),
         }
     }
 }
@@ -151,6 +199,29 @@ impl Config {
             "notifyBell" => self.notify_bell = parsed.notify_bell,
             "notifyWhenVisible" => self.notify_when_visible = parsed.notify_when_visible,
             "dockBadge" => self.dock_badge = parsed.dock_badge,
+            "notifySound" => self.notify_sound = parsed.notify_sound,
+            "notifyMessage" => self.notify_message = parsed.notify_message,
+            "permissionCard" => self.permission_card = parsed.permission_card,
+            "confirmDraftRemove" => self.confirm_draft_remove = parsed.confirm_draft_remove,
+            "cursorBlink" => self.cursor_blink = parsed.cursor_blink,
+            "agents" => self.agents = parsed.agents,
+            "skipApprovals" => self.skip_approvals = parsed.skip_approvals,
+            "mainAgent" => self.main_agent = parsed.main_agent,
+            "agentInputSelect" => self.agent_input_select = parsed.agent_input_select,
+            "agentRename" => self.agent_rename = parsed.agent_rename,
+            "commands" => self.commands = parsed.commands,
+            "frequentTabs" => self.frequent_tabs = parsed.frequent_tabs,
+            "pets" => self.pets = parsed.pets,
+            "petKind" => self.pet_kind = parsed.pet_kind,
+            "petScene" => self.pet_scene = parsed.pet_scene,
+            "themedIcon" => self.themed_icon = parsed.themed_icon,
+            "aiAssist" => self.ai_assist = parsed.ai_assist,
+            "aiModel" => self.ai_model = parsed.ai_model,
+            "aiCommitMessage" => self.ai_commit_message = parsed.ai_commit_message,
+            "aiNameTerminal" => self.ai_name_terminal = parsed.ai_name_terminal,
+            "aiAutoTitle" => self.ai_auto_title = parsed.ai_auto_title,
+            "aiDailyLimit" => self.ai_daily_limit = parsed.ai_daily_limit,
+            "editor" => self.editor = parsed.editor,
             _ => {}
         }
     }
@@ -364,7 +435,7 @@ pub fn ensure_contrast(fg: Rgb, bg: Rgb, ratio: f32) -> Rgb {
     best
 }
 
-fn readable_on(base: Rgb, candidates: &[Rgb]) -> Rgb {
+pub fn readable_on(base: Rgb, candidates: &[Rgb]) -> Rgb {
     candidates
         .iter()
         .copied()
