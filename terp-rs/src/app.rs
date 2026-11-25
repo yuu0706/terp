@@ -156,6 +156,10 @@ pub struct TerpApp {
     pub(crate) overview: Option<crate::overview::Overview>,
     pub(crate) overview_tab_memory: Option<String>,
     pub(crate) poll_count: u64,
+    pub(crate) intel_running: bool,
+    pub(crate) expanded_subagents: std::collections::HashSet<u64>,
+    // シェルの pid ごとの claude の会話（15秒使い回す）
+    pub(crate) claude_cache: Option<(Instant, HashMap<i32, (String, Option<PathBuf>)>)>,
     pub(crate) dialog: Option<crate::overlay::Dialog>,
     pub(crate) _poll: Task<()>,
 }
@@ -213,6 +217,17 @@ pub(crate) struct Palette {
     pub(crate) danger: Hsla,
     pub(crate) solid_bg: Hsla,
     pub(crate) on_accent: Hsla,
+}
+
+fn text_hash(text: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    text.hash(&mut h);
+    h.finish()
+}
+
+fn show_notification(id: u64, title: String, body: String, cx: &mut App) {
+    cx.show_system_notification(SystemNotification { tag: format!("terp-{id}").into(), title: title.into(), body: body.into(), actions: Vec::new() });
 }
 
 pub(crate) fn palette(cx: &App) -> Palette {
@@ -358,6 +373,9 @@ impl TerpApp {
             overview: None,
             overview_tab_memory: None,
             poll_count: 0,
+            intel_running: false,
+            expanded_subagents: Default::default(),
+            claude_cache: None,
             _poll: poll,
         };
         match HostClient::connect() {
@@ -448,6 +466,9 @@ impl TerpApp {
         self.poll_count += 1;
         if self.poll_count % 5 == 0 {
             self.refresh_repos(cx);
+        }
+        if self.poll_count % 3 == 0 {
+            self.refresh_intel(cx);
         }
         // 経過の表示（考え中 1:23 など）を進める
         cx.notify();
@@ -766,16 +787,20 @@ impl TerpApp {
             && (config.notify_when_visible || !(focused && visible))
             && session.last_notify.is_none_or(|t| t.elapsed() >= NOTIFY_INTERVAL);
         if allowed {
-            let (title, body) = {
+            let (title, body, record) = {
                 let view = view.read(cx);
-                let place = self
-                    .projects
-                    .projects
-                    .iter()
-                    .filter(|p| contains_path(&p.path, &view.cwd().display().to_string()))
-                    .max_by_key(|p| p.path.len())
-                    .map(|p| p.name().to_string())
-                    .unwrap_or_else(|| short_path(&view.cwd()));
+                // 題の場所は「リポジトリ / ブランチ」、作業の外は ~ 起点の場所
+                let place = match self.placement(id, cx) {
+                    Some((repo, work)) => {
+                        let name = Path::new(&repo).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or(repo.clone());
+                        let branch = self.repos.get(&repo).and_then(|l| l.iter().find(|w| w.path == work)).map(|w| w.label());
+                        match branch {
+                            Some(b) => format!("{name} / {b}"),
+                            None => name,
+                        }
+                    }
+                    None => short_path(&view.cwd()),
+                };
                 let text = Some(clean(&message)).filter(|m| !m.is_empty()).unwrap_or_else(|| {
                     match kind {
                         Attention::Done => "応答が終わった",
@@ -783,20 +808,139 @@ impl TerpApp {
                     }
                     .to_string()
                 });
-                (format!("{} · {place}", clean(&view.display_name())), text.chars().take(200).collect::<String>())
+                let record = (kind == Attention::Done && config.notify_message)
+                    .then(|| view.agent_session.as_ref().and_then(|s| s.file.clone().map(|f| (f, s.kind))))
+                    .flatten();
+                (format!("{} · {place}", clean(&view.display_name())), text.chars().take(200).collect::<String>(), record)
             };
-            cx.show_system_notification(SystemNotification {
-                tag: format!("terp-{id}").into(),
-                title: title.into(),
-                body: body.into(),
-                actions: Vec::new(),
-            });
             if let Some(session) = self.sessions.iter_mut().find(|s| s.id == id) {
                 session.last_notify = Some(Instant::now());
+            }
+            match record {
+                // 返答の文を本文にする。記録に書き終わるのを最大2秒待つ
+                Some((file, kind)) => {
+                    let previous = view.read(cx).last_reply;
+                    cx.spawn(async move |this, cx| {
+                        let mut reply = String::new();
+                        for _ in 0..8 {
+                            let (f, k) = (file.clone(), kind);
+                            let text = cx.background_executor().spawn(async move { crate::transcript::read_reply(&f, k) }).await;
+                            let hash = text_hash(&text);
+                            if !text.trim().is_empty() && Some(hash) != previous {
+                                reply = text;
+                                break;
+                            }
+                            cx.background_executor().timer(Duration::from_millis(250)).await;
+                        }
+                        let _ = this.update(cx, |app, cx| {
+                            let body = if reply.is_empty() { body } else { crate::transcript::format_reply(&reply) };
+                            if !reply.is_empty()
+                                && let Some(s) = app.session(id)
+                            {
+                                s.view.update(cx, |v, _| v.last_reply = Some(text_hash(&reply)));
+                            }
+                            show_notification(id, title, body, cx);
+                        });
+                    })
+                    .detach();
+                }
+                None => show_notification(id, title, body, cx),
             }
         }
         self.update_dock(cx);
         cx.notify();
+    }
+
+    // エージェントの会話の記録から、今していること・編集したファイル・サブエージェントを読み直す
+    fn refresh_intel(&mut self, cx: &mut Context<Self>) {
+        if self.intel_running {
+            return;
+        }
+        let targets: Vec<(u64, i32, String)> = self
+            .sessions
+            .iter()
+            .filter_map(|s| {
+                let v = s.view.read(cx);
+                let p = v.process.as_ref()?;
+                let shell = p.shell_pid?;
+                (v.is_agent() && (p.name == "claude" || p.name == "codex")).then(|| (s.id, shell, p.name.clone()))
+            })
+            .collect();
+        if targets.is_empty() {
+            return;
+        }
+        let cached = self.claude_cache.clone().filter(|(at, _)| at.elapsed() < Duration::from_secs(15)).map(|(_, m)| m);
+        self.intel_running = true;
+        cx.spawn(async move |this, cx| {
+            let (found, sessions) = cx
+                .background_executor()
+                .spawn(async move {
+                    use crate::transcript::{self as t, Kind};
+                    let procs = t::procs();
+                    let shells: std::collections::HashSet<i32> = targets.iter().filter(|x| x.2 == "claude").map(|x| x.1).collect();
+                    let sessions = cached.unwrap_or_else(|| t::claude_sessions(&shells, &procs));
+                    let mut found = Vec::new();
+                    for (id, shell, name) in targets {
+                        let session = if name == "claude" {
+                            sessions.get(&shell).map(|(sid, dir)| t::Session {
+                                kind: Kind::Claude,
+                                id: Some(sid.clone()),
+                                config_dir: dir.clone(),
+                                file: t::claude_file(sid, dir.as_deref()),
+                            })
+                        } else {
+                            t::codex_file(shell, &procs).map(|f| t::Session { kind: Kind::Codex, id: None, config_dir: None, file: Some(f) })
+                        };
+                        let activity = session.as_ref().and_then(|s| s.file.as_ref()).map(|f| t::activity_of(&t::tail_rows(f, t::TAIL_BYTES).0, session.as_ref().unwrap().kind));
+                        let subagents = session
+                            .as_ref()
+                            .filter(|s| s.kind == Kind::Claude)
+                            .and_then(|s| s.id.as_ref().map(|id| t::subagents(id, s.config_dir.as_deref())))
+                            .unwrap_or_default();
+                        found.push((id, session, activity, subagents));
+                    }
+                    (found, sessions)
+                })
+                .await;
+            let _ = this.update(cx, |app, cx| {
+                app.intel_running = false;
+                if app.claude_cache.as_ref().is_none_or(|(at, _)| at.elapsed() >= Duration::from_secs(15)) {
+                    app.claude_cache = Some((Instant::now(), sessions));
+                }
+                for (id, session, activity, subagents) in found {
+                    if let Some(s) = app.session(id) {
+                        s.view.update(cx, |v, _| {
+                            v.agent_session = session;
+                            v.activity = activity.as_ref().map(|a| a.text.clone()).filter(|t| !t.is_empty());
+                            v.edits = activity.map(|a| a.edits).unwrap_or_default();
+                            v.subagents = subagents;
+                        });
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    // 30分以内に、別の端末のエージェントも同じファイルを書き換えたか。（ファイル名, 相手の名前）
+    pub(crate) fn clash(&self, id: u64, cx: &App) -> Option<(String, Vec<String>)> {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
+        let recent = |edits: &Vec<(PathBuf, i64)>| -> Vec<PathBuf> { edits.iter().filter(|(_, at)| now - at < 1800).map(|(p, _)| p.clone()).collect() };
+        let mine = recent(&self.session(id)?.view.read(cx).edits);
+        for file in &mine {
+            let others: Vec<String> = self
+                .sessions
+                .iter()
+                .filter(|s| s.id != id)
+                .filter(|s| recent(&s.view.read(cx).edits).contains(file))
+                .map(|s| s.view.read(cx).display_name())
+                .collect();
+            if !others.is_empty() {
+                return Some((file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(), others));
+            }
+        }
+        None
     }
 
     pub(crate) fn refresh_agents(&mut self, cx: &mut Context<Self>) {

@@ -89,6 +89,8 @@ impl Dimensions for GridSize {
 pub struct ProcessInfo {
     pub name: String,
     pub cwd: Option<PathBuf>,
+    // シェルの pid。エージェントの会話の記録を探すのに使う
+    pub shell_pid: Option<i32>,
 }
 
 // 画面の状態を作る側へ渡すもの
@@ -148,7 +150,7 @@ pub fn spawn_pty(cwd: &Path, size: GridSize) -> anyhow::Result<PtyParts> {
 // 端末の前面で動いているプロセス（シェルか、シェルから起動したプログラム）
 pub fn foreground_of(master: &dyn MasterPty, shell_pid: Option<i32>) -> Option<ProcessInfo> {
     let pid = master.process_group_leader().or(shell_pid)?;
-    Some(ProcessInfo { name: program_name(process_name(pid)?), cwd: process_cwd(pid) })
+    Some(ProcessInfo { name: program_name(process_name(pid)?), cwd: process_cwd(pid), shell_pid })
 }
 
 // claude の実行ファイルは版番号（例 2.1.309）の名前で動くため、claude と読み替える
@@ -481,7 +483,7 @@ impl HostClient {
             Kind::ReplayEnd => route(Incoming::ReplayEnd),
             Kind::InfoReply => {
                 if let Ok(info) = serde_json::from_slice::<InfoPayload>(&frame.payload) {
-                    route(Incoming::Info(ProcessInfo { name: program_name(info.name), cwd: info.cwd }));
+                    route(Incoming::Info(ProcessInfo { name: program_name(info.name), cwd: info.cwd, shell_pid: info.shell_pid }));
                 }
             }
             Kind::Exit => {

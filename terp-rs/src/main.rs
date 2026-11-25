@@ -20,6 +20,7 @@ mod state;
 mod terminal;
 mod terminal_view;
 mod tooltip;
+mod transcript;
 mod ui;
 
 use app::*;

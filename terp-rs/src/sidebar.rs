@@ -1041,7 +1041,9 @@ impl TerpApp {
         let lead: AnyElement = if view.is_agent() { agent_icon(&program, 13.0, p.muted) } else { icon("terminal", 13.0, p.muted).into_any_element() };
         let tip = format!("{}\n{}", name, cwd.display());
         let group = SharedString::from(format!("row-{id}"));
-        div()
+        let clash = self.clash(id, cx);
+        let subagents = view.subagents.clone();
+        let row = div()
             .id(("row", id))
             .group(group.clone())
             .flex()
@@ -1082,6 +1084,22 @@ impl TerpApp {
                     .children(mark_dot(mark, p))
                     .child(lead)
                     .child(self.name_label(id, name))
+                    .when_some(clash, |d, (file, others)| {
+                        let tip = format!("{file} を {} も書き換えた\n（30分以内。同じ場所で動いているエージェント同士）", others.join("・"));
+                        d.child(
+                            div()
+                                .id(("clash", id))
+                                .flex_none()
+                                .px_1()
+                                .rounded_sm()
+                                .border_1()
+                                .border_color(p.warning)
+                                .text_xs()
+                                .text_color(p.warning)
+                                .tooltip(move |_, cx| crate::tooltip::text(tip.clone(), cx))
+                                .child("同じファイル"),
+                        )
+                    })
                     .child(
                         icon_button(("kill", id), "close", "ターミナルを閉じる", p.muted, p.active, p.text)
                             .invisible()
@@ -1094,8 +1112,73 @@ impl TerpApp {
             )
             .when(!detail.is_empty(), |d| {
                 d.child(div().pl(px(18.0)).text_xs().text_color(p.muted).overflow_hidden().text_ellipsis().whitespace_nowrap().child(detail))
-            })
-            .into_any_element()
+            });
+        if subagents.is_empty() {
+            return row.into_any_element();
+        }
+        // サブエージェント。終わったものは会話ごとに新しい20件まで、畳んで出す
+        let running: Vec<_> = subagents.iter().filter(|s| s.running).cloned().collect();
+        let finished: Vec<_> = subagents.iter().filter(|s| !s.running).take(20).cloned().collect();
+        let open = self.expanded_subagents.contains(&id);
+        let indent = if work.is_some() { 30.0 } else { 20.0 };
+        let sub_row = |i: usize, s: &crate::transcript::Subagent| {
+            let label = if !s.description.is_empty() {
+                s.description.clone()
+            } else if !s.agent_type.is_empty() {
+                s.agent_type.clone()
+            } else {
+                "サブエージェント".into()
+            };
+            let since = s.started.unwrap_or(s.modified);
+            div()
+                .id(SharedString::from(format!("sub-{id}-{i}")))
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_1()
+                .pl(px(indent))
+                .pr_1()
+                .h(px(22.0))
+                .text_xs()
+                .text_color(p.muted)
+                .child(if s.running {
+                    div().flex_none().size(px(7.0)).rounded_full().border_1().border_color(p.accent).into_any_element()
+                } else {
+                    div().flex_none().size(px(7.0)).rounded_full().bg(p.muted).opacity(0.5).into_any_element()
+                })
+                .child(div().flex_1().overflow_hidden().text_ellipsis().whitespace_nowrap().child(label))
+                .child(div().flex_none().child(crate::transcript::elapsed_label(since)))
+        };
+        let mut column = div().flex().flex_col().child(row);
+        for (i, s) in running.iter().enumerate() {
+            column = column.child(sub_row(i, s));
+        }
+        if !finished.is_empty() {
+            column = column.child(
+                div()
+                    .id(("sub-toggle", id))
+                    .pl(px(indent))
+                    .h(px(20.0))
+                    .flex()
+                    .items_center()
+                    .text_xs()
+                    .text_color(p.muted)
+                    .hover(|s| s.text_color(p.text))
+                    .on_click(cx.listener(move |app, _: &ClickEvent, _, cx| {
+                        if !app.expanded_subagents.remove(&id) {
+                            app.expanded_subagents.insert(id);
+                        }
+                        cx.notify();
+                    }))
+                    .child(format!("{} 終わったもの {} 件", if open { "▾" } else { "▸" }, finished.len())),
+            );
+            if open {
+                for (i, s) in finished.iter().enumerate() {
+                    column = column.child(sub_row(1000 + i, s));
+                }
+            }
+        }
+        column.into_any_element()
     }
 
     fn render_foot(&self, p: &Palette, cx: &mut Context<Self>) -> AnyElement {

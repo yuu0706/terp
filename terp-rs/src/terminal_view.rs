@@ -92,6 +92,13 @@ pub struct TerminalView {
     pub bypass: bool,
     // エージェントが今していること（「編集 app.rs」など）
     pub activity: Option<String>,
+    // 動いているエージェントの会話（記録の場所）
+    pub agent_session: Option<crate::transcript::Session>,
+    // エージェントが編集したファイルと時刻（秒）
+    pub edits: Vec<(PathBuf, i64)>,
+    pub subagents: Vec<crate::transcript::Subagent>,
+    // 前に通知へ使った返答（同じ返答を2回使わない）
+    pub last_reply: Option<u64>,
     title_working: bool,
     marked_text: Option<String>,
     layout: Layout,
@@ -134,6 +141,10 @@ impl TerminalView {
                 work_path: None,
                 bypass: false,
                 activity: None,
+                agent_session: None,
+                edits: Vec::new(),
+                subagents: Vec::new(),
+                last_reply: None,
                 title_working: false,
                 marked_text: None,
                 layout: Layout::default(),
@@ -229,6 +240,9 @@ impl TerminalView {
                 self.agent.apply(AgentEvent::Reset, Instant::now());
                 self.agent_title = None;
                 self.title_working = false;
+                self.activity = None;
+                self.agent_session = None;
+                self.subagents.clear();
             }
             self.process = process;
             cx.emit(TerminalEvent::Changed);

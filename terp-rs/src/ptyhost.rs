@@ -105,6 +105,9 @@ pub struct SessionSummary {
 pub struct InfoPayload {
     pub name: String,
     pub cwd: Option<PathBuf>,
+    // 古い常駐のプロセスは送らない
+    #[serde(default)]
+    pub shell_pid: Option<i32>,
 }
 
 // ---- 流し直しの前に戻すモード ----
@@ -352,8 +355,8 @@ fn handle(state: &Arc<Mutex<HostState>>, client: u64, writer: &Arc<Mutex<UnixStr
                 let s = state.lock().unwrap();
                 s.sessions.get(&frame.id).and_then(|h| foreground_of(h.master.as_ref(), h.child.process_id().map(|p| p as i32)))
             };
-            if let Some(ProcessInfo { name, cwd }) = info {
-                reply(writer, Kind::InfoReply, frame.id, &serde_json::to_vec(&InfoPayload { name, cwd }).unwrap_or_default());
+            if let Some(ProcessInfo { name, cwd, shell_pid }) = info {
+                reply(writer, Kind::InfoReply, frame.id, &serde_json::to_vec(&InfoPayload { name, cwd, shell_pid }).unwrap_or_default());
             }
         }
         _ => {}
