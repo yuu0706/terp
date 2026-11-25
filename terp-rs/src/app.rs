@@ -76,8 +76,9 @@ actions!(
     ]
 );
 
-const TAB_BAR_HEIGHT: f32 = 38.0;
-const DIVIDER: f32 = 4.0;
+const TOPBAR_HEIGHT: f32 = 40.0;
+const PANE_TITLE_HEIGHT: f32 = 32.0;
+const DIVIDER: f32 = 6.0;
 // 信号機のボタン（閉じる・しまう・広げる）を避ける幅
 const TRAFFIC_LIGHT_SPACE: f32 = 78.0;
 const NOTIFY_INTERVAL: Duration = Duration::from_secs(3);
@@ -1850,6 +1851,109 @@ impl TerpApp {
         }
     }
 
+    // 窓の上の帯。左に新しいタブとメインのエージェント、真ん中にペット、右に右の面の切り替え。空いた所をつかむと窓が動く
+    fn render_topbar(&self, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
+        let main_agent = self.main_agent(cx);
+        let pane_id = self.layout().map(|l| l.active_pane).unwrap_or(0);
+        let open = self.panel.as_ref().map(|panel| panel.kind);
+        let changes = self.active_change_count(cx);
+        let toggle = |id: &'static str, icon: &'static str, label: &'static str, kind: crate::rightpanel::PanelKind, badge: Option<usize>| {
+            let pressed = open == Some(kind);
+            div()
+                .id(id)
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_1()
+                .h(px(28.0))
+                .px_2()
+                .rounded_md()
+                .border_1()
+                .border_color(p.border)
+                .text_sm()
+                .when(pressed, |d| d.bg(p.active))
+                .when(!pressed, |d| d.hover(|s| s.bg(p.hover)))
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_click(cx.listener(move |app, _: &ClickEvent, w, cx| app.toggle_panel(kind, w, cx)))
+                .child(crate::ui::icon(icon, 14.0, p.muted))
+                .child(label)
+                .when_some(badge.filter(|n| *n > 0), |d, n| {
+                    d.child(div().px(px(5.0)).rounded_full().bg(p.active).text_xs().text_color(p.muted).child(n.to_string()))
+                })
+        };
+        let toggles = [
+            toggle("files-toggle", "folder", "ファイル", crate::rightpanel::PanelKind::Files, None),
+            toggle("git-toggle", "git", "変更", crate::rightpanel::PanelKind::Changes, Some(changes)),
+            toggle("history-toggle", "history", "履歴", crate::rightpanel::PanelKind::History, None),
+        ];
+        let pets = self.render_pets(p, cx);
+        div()
+            .id("topbar")
+            .flex()
+            .flex_row()
+            .items_center()
+            .flex_none()
+            .h(px(TOPBAR_HEIGHT))
+            .gap_2()
+            .px_2()
+            .on_mouse_down(MouseButton::Left, |event: &MouseDownEvent, window, _| {
+                if event.click_count == 2 {
+                    window.titlebar_double_click();
+                } else {
+                    window.start_window_move();
+                }
+            })
+            .when(!self.sidebar, |d| {
+                d.pl(px(TRAFFIC_LIGHT_SPACE)).child(
+                    crate::ui::icon_button("sidebar-show", "sidebar", "左の一覧を出す（⌘B）", p.muted, p.hover, p.text)
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .on_click(cx.listener(|app, _: &ClickEvent, _, cx| {
+                            app.sidebar = true;
+                            cx.notify();
+                        })),
+                )
+            })
+            .child(
+                crate::ui::icon_button(("new-tab", pane_id), "plus", "新しいタブ", p.muted, p.hover, p.text)
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_click(cx.listener(move |app, event: &ClickEvent, _, cx| {
+                        app.new_tab_menu(event.position(), cx);
+                    })),
+            )
+            .when_some(main_agent, |bar, agent| {
+                let tip = format!("{} を起動（⌥ で{}）", agent.label, if self.skip_approvals(cx) { "確認あり" } else { "確認なし" });
+                let icon_name = agent.icon.clone();
+                bar.child(
+                    div()
+                        .id("main-agent")
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .size(px(24.0))
+                        .rounded_md()
+                        .hover(|s| s.bg(p.hover))
+                        .tooltip(move |_, cx| crate::tooltip::text(tip.clone(), cx))
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .on_click(cx.listener(move |app, event: &ClickEvent, window, cx| {
+                            let bypass = app.skip_approvals(cx) != event.modifiers().alt;
+                            let place = app.new_terminal_place(cx);
+                            app.launch_agent_at(&agent, bypass, place, window, cx);
+                        }))
+                        .child(crate::ui::agent_icon(&icon_name, 15.0, p.muted)),
+                )
+            })
+            .child(div().flex_1().min_w_0().h_full().flex().children(pets))
+            .children(toggles)
+            .into_any_element()
+    }
+
+    // 操作中のタブがいる作業（worktree）の、変更のあるファイルの数
+    fn active_change_count(&self, cx: &App) -> usize {
+        let Some(id) = self.active_id() else { return 0 };
+        let Some((repo, work)) = self.placement(id, cx) else { return 0 };
+        self.repos.get(&repo).and_then(|list| list.iter().find(|w| w.path == work)).map(|w| w.changes).unwrap_or(0)
+    }
+
     fn render_node(&self, node: &Node, path: Vec<usize>, p: &Palette, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         match node {
             Node::Leaf(pane) => self.render_pane(*pane, p, window, cx),
@@ -1878,7 +1982,7 @@ impl TerpApp {
                             div()
                                 .id(SharedString::from(format!("divider-{path:?}-{i}")))
                                 .flex_none()
-                                .bg(p.border)
+                                .hover(|s| s.bg(p.accent.opacity(0.5)))
                                 .when(axis == Axis::Row, |d| d.w(px(DIVIDER)).h_full().cursor_col_resize())
                                 .when(axis == Axis::Column, |d| d.h(px(DIVIDER)).w_full().cursor_row_resize())
                                 .on_mouse_down(
@@ -1924,10 +2028,6 @@ impl TerpApp {
     fn render_pane(&self, pane_id: u64, p: &Palette, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let Some(layout) = self.layout() else { return div().into_any_element() };
         let Some(pane) = layout.pane(pane_id) else { return div().into_any_element() };
-        let rect = layout.rects().into_iter().find(|(id, _)| *id == pane_id).map(|(_, r)| r);
-        let at_top = rect.is_some_and(|r| r.y < 1e-4);
-        let at_left = rect.is_some_and(|r| r.x < 1e-4);
-        let at_right = rect.is_some_and(|r| r.x + r.w > 1.0 - 1e-4);
         let pane_active = layout.active_pane == pane_id && layout.panes.len() > 1;
         let now = Instant::now();
         let accent = p.accent;
@@ -1937,33 +2037,13 @@ impl TerpApp {
             .flex()
             .flex_row()
             .items_center()
-            .h(px(TAB_BAR_HEIGHT))
+            .h(px(PANE_TITLE_HEIGHT))
             .flex_none()
-            .gap_1()
-            .px_2()
+            .gap(px(2.0))
+            .px_1()
             .border_b_1()
             .border_color(if pane_active { p.accent } else { p.border })
-            .bg(p.bg)
-            .overflow_x_hidden()
-            .when(at_top, |d| {
-                d.on_mouse_down(MouseButton::Left, |event: &MouseDownEvent, window, _| {
-                    if event.click_count == 2 {
-                        window.titlebar_double_click();
-                    } else {
-                        window.start_window_move();
-                    }
-                })
-            });
-        if !self.sidebar && at_top && at_left {
-            bar = bar.pl(px(TRAFFIC_LIGHT_SPACE)).child(
-                crate::ui::icon_button("sidebar-show", "sidebar", "左の一覧を出す（⌘B）", p.muted, p.hover, p.text)
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .on_click(cx.listener(|app, _: &ClickEvent, _, cx| {
-                        app.sidebar = true;
-                        cx.notify();
-                    })),
-            );
-        }
+            .overflow_x_hidden();
         for (index, id) in pane.tabs.iter().copied().enumerate() {
             let Some(session) = self.session(id) else { continue };
             let view = session.view.read(cx);
@@ -2030,42 +2110,6 @@ impl TerpApp {
                     ),
             );
         }
-        // 操作中の枠にだけ、新しいタブのプルダウンとメインのエージェントのボタンを出す
-        let main_agent = self.main_agent(cx);
-        let pets = if at_top && at_right { self.render_pets(p, cx) } else { None };
-        let bar = bar
-            .when(layout.active_pane == pane_id, |bar| {
-                bar.child(
-                    crate::ui::icon_button(("new-tab", pane_id), "plus", "新しいタブ", p.muted, p.hover, p.text)
-                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                        .on_click(cx.listener(move |app, event: &ClickEvent, _, cx| {
-                            app.new_tab_menu(event.position(), cx);
-                        })),
-                )
-                .when_some(main_agent, |bar, agent| {
-                    let tip = format!("{} を起動（⌥ で{}）", agent.label, if self.skip_approvals(cx) { "確認あり" } else { "確認なし" });
-                    let icon_name = agent.icon.clone();
-                    bar.child(
-                        div()
-                            .id(("main-agent", pane_id))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .size(px(24.0))
-                            .rounded_md()
-                            .hover(|s| s.bg(p.hover))
-                            .tooltip(move |_, cx| crate::tooltip::text(tip.clone(), cx))
-                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                            .on_click(cx.listener(move |app, event: &ClickEvent, window, cx| {
-                                let bypass = app.skip_approvals(cx) != event.modifiers().alt;
-                                let place = app.new_terminal_place(cx);
-                                app.launch_agent_at(&agent, bypass, place, window, cx);
-                            }))
-                            .child(crate::ui::agent_icon(&icon_name, 15.0, p.muted)),
-                    )
-                })
-            });
-
         // 出しているタブの「プログラム名 · リポジトリ / ブランチ」と、枠の錠
         let info = pane.active.and_then(|id| self.session(id)).map(|s| {
             let v = s.view.read(cx);
@@ -2084,13 +2128,7 @@ impl TerpApp {
         let lock_group = SharedString::from(format!("bar-{pane_id}"));
         let bar = bar
             .group(lock_group.clone())
-            .when_some(info.filter(|_| pets.is_none()), |d, info| {
-                d.child(div().flex_1().min_w_0().px_2().text_xs().text_color(p.muted).overflow_hidden().text_ellipsis().whitespace_nowrap().child(info))
-            });
-        let bar = match pets {
-            Some(pets) => bar.child(pets),
-            None => bar,
-        };
+            .child(div().flex_1().min_w_0().px_2().text_xs().text_color(p.muted).overflow_hidden().text_ellipsis().whitespace_nowrap().children(info));
         let bar = bar.child(
             crate::ui::icon_button(("lock", pane_id), if locked { "lock" } else { "unlock" }, if locked { "枠の固定を外す" } else { "今の枠を固定（一覧から選んでも中身を替えない）" }, p.muted, p.hover, p.text)
                 .when(!locked, |d| d.invisible().group_hover(lock_group, |s| s.visible()))
@@ -2153,7 +2191,19 @@ impl TerpApp {
             .on_drop(cx.listener(move |app, dragged: &DraggedTab, window, cx| app.drop_tab(dragged.id, pane_id, window, cx)))
             .drag_over::<ExternalPaths>(move |s, _, _, _| s.border_2().border_color(accent))
             .on_drop(cx.listener(move |app, paths: &ExternalPaths, window, cx| app.drop_paths(pane_id, paths, window, cx)));
-        div().flex().flex_col().size_full().min_w_0().min_h_0().child(bar).child(body).into_any_element()
+        div()
+            .flex()
+            .flex_col()
+            .size_full()
+            .min_w_0()
+            .min_h_0()
+            .rounded_md()
+            .overflow_hidden()
+            .border_1()
+            .border_color(if pane_active { p.accent } else { p.border })
+            .child(bar)
+            .child(body)
+            .into_any_element()
     }
 }
 
@@ -2257,11 +2307,14 @@ impl Render for TerpApp {
                     .flex_1()
                     .min_w_0()
                     .h_full()
-                    .child(div().flex_1().min_h_0().flex().flex_row().child(div().flex_1().min_w_0().h_full().flex().child(panes)).children(self.render_right_panel(&p, cx)))
+                    .bg(p.term_bg)
+                    .child(self.render_topbar(&p, cx))
+                    .child(div().flex_1().min_h_0().flex().px_2().pb_2().child(panes))
                     .when_some(error, |d, error| {
                         d.child(div().flex_none().px_3().py_1().text_xs().bg(p.active).text_color(p.warning).child(error))
                     }),
             )
+            .children(self.render_right_panel(&p, cx))
             .children(self.render_overview(&p, window, cx))
             .children(self.render_settings(&p, cx))
             .children(self.render_permission_cards(&p, cx))

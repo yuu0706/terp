@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 pub const SECTIONS: [&str; 7] = ["外観", "AI エージェント", "AI の手伝い", "コマンド", "通知", "ショートカット", "詳しい設定"];
+const SECTION_ICONS: [&str; 7] = ["palette", "robot", "sparkle", "play", "bell", "keyboard", "sliders"];
 
 pub struct Settings {
     pub section: usize,
@@ -276,10 +277,7 @@ impl TerpApp {
     }
 
     pub(crate) fn close_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(s) = self.settings.take() {
-            if s.preview.is_some() {
-                self.reload_appearance_now(window, cx);
-            }
+        if self.settings.take().is_some() {
             self.refocus(window, cx);
             cx.notify();
         }
@@ -405,20 +403,13 @@ impl TerpApp {
         cx.refresh_windows();
     }
 
-    // テーマの一覧に指を置いたら、保存せずに見た目だけ替える
+    // テーマの一覧に指を置いたら、見本だけをそのテーマで描く
     fn preview_theme(&mut self, name: Option<String>, cx: &mut Context<Self>) {
         let Some(s) = self.settings.as_mut() else { return };
-        if s.preview.as_ref() == name.as_ref() {
-            return;
+        if s.preview != name {
+            s.preview = name;
+            cx.notify();
         }
-        s.preview = name.clone();
-        let (mut config, error) = Config::load(&config_path());
-        if let Some(name) = name {
-            config.theme = if name.is_empty() { None } else { Some(name) };
-        }
-        let appearance = Appearance::build(config, error, self.font_delta, cx);
-        cx.set_global(appearance);
-        cx.refresh_windows();
     }
 
     fn on_capture_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -472,17 +463,20 @@ impl TerpApp {
 
     pub(crate) fn render_settings(&self, p: &Palette, cx: &mut Context<Self>) -> Option<AnyElement> {
         let s = self.settings.as_ref()?;
-        let mut nav = div().flex().flex_col().gap(px(2.0)).w(px(180.0)).flex_none().pt(px(44.0)).px_2();
+        let mut nav = div().id("settings-nav").flex().flex_col().gap(px(2.0)).w(px(220.0)).flex_none().px_2().py_3().border_r_1().border_color(p.border).overflow_y_scroll();
         for (i, label) in SECTIONS.iter().enumerate() {
             let selected = i == s.section;
             nav = nav.child(
                 div()
                     .id(("settings-nav", i))
-                    .px_2()
-                    .py_1()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .h(px(36.0))
+                    .px_3()
                     .rounded_md()
-                    .text_sm()
-                    .when(selected, |d| d.bg(p.accent_fill).text_color(p.text).font_weight(FontWeight::SEMIBOLD))
+                    .when(selected, |d| d.bg(p.active).text_color(p.text))
                     .when(!selected, |d| d.text_color(p.muted).hover(|s| s.bg(p.hover)))
                     .on_click(cx.listener(move |app, _: &ClickEvent, _, cx| {
                         if let Some(s) = app.settings.as_mut() {
@@ -491,6 +485,7 @@ impl TerpApp {
                         }
                         cx.notify();
                     }))
+                    .child(crate::ui::icon(SECTION_ICONS[i], 16.0, if selected { p.text } else { p.muted }))
                     .child(*label),
             );
         }
@@ -505,6 +500,52 @@ impl TerpApp {
             _ => self.settings_advanced(p, cx),
         };
         let capture_focus = s.capture_focus.clone();
+        // 信号機の右に「設定」の見出しを置き、帯の空いた所をつかむと窓が動く
+        let titlebar = div()
+            .id("settings-titlebar")
+            .flex()
+            .flex_row()
+            .flex_none()
+            .items_center()
+            .gap_3()
+            .h(px(40.0))
+            .pl(px(88.0))
+            .pr_2()
+            .border_b_1()
+            .border_color(p.border)
+            .on_mouse_down(MouseButton::Left, |event: &gpui::MouseDownEvent, window, _| {
+                if event.click_count == 2 {
+                    window.titlebar_double_click();
+                } else {
+                    window.start_window_move();
+                }
+            })
+            .child(div().font_weight(FontWeight::SEMIBOLD).child("設定"))
+            .child(div().flex_1().min_w_0().text_sm().text_color(p.warning).overflow_hidden().text_ellipsis().whitespace_nowrap().children(s.message.clone()))
+            .child(
+                crate::ui::icon_button("settings-close", "close", "設定を閉じる（Esc）", p.muted, p.hover, p.text)
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_click(cx.listener(|app, _: &ClickEvent, window, cx| app.close_settings(window, cx))),
+            );
+        let content = div()
+            .id("settings-body")
+            .flex_1()
+            .min_w_0()
+            .overflow_y_scroll()
+            .pt_3()
+            .px(px(32.0))
+            .pb(px(48.0))
+            .child(
+                div()
+                    .mb_3()
+                    .pb_2()
+                    .border_b_1()
+                    .border_color(p.border)
+                    .text_size(px(20.0))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(SECTIONS[s.section]),
+            )
+            .child(body);
         Some(
             deferred(
                 div()
@@ -514,62 +555,123 @@ impl TerpApp {
                     .inset_0()
                     .size_full()
                     .flex()
-                    .flex_row()
+                    .flex_col()
                     .bg(p.solid_bg)
                     .text_color(p.text)
                     .track_focus(&capture_focus)
                     .on_key_down(cx.listener(Self::on_capture_key))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .child(nav)
-                    .child(
-                        div()
-                            .flex_1()
-                            .flex()
-                            .flex_col()
-                            .min_w_0()
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_row()
-                                    .items_center()
-                                    .px_4()
-                                    .pt(px(40.0))
-                                    .pb_2()
-                                    .child(div().flex_1().text_lg().font_weight(FontWeight::SEMIBOLD).child(SECTIONS[s.section]))
-                                    .child(
-                                        crate::ui::icon_button("settings-close", "close", "設定を閉じる（Esc）", p.muted, p.hover, p.text)
-                                            .on_click(cx.listener(|app, _: &ClickEvent, window, cx| app.close_settings(window, cx))),
-                                    ),
-                            )
-                            .when_some(s.message.clone(), |d, m| d.child(div().mx_4().mb_2().px_2().py_1().rounded_md().bg(p.active).text_sm().text_color(p.warning).child(m)))
-                            .child(div().id("settings-body").flex_1().min_h_0().overflow_y_scroll().px_4().pb_6().child(body)),
-                    ),
+                    .child(titlebar)
+                    .child(div().flex_1().min_h_0().flex().flex_row().child(nav).child(content)),
             )
             .with_priority(1)
             .into_any_element(),
         )
     }
 
+    // 1項目: 名前、操作の部品、説明の順に縦に並べる
     fn field(&self, label: &str, help: Option<&str>, control: AnyElement, disabled: bool, p: &Palette) -> AnyElement {
+        self.field_wide(label, help, control, disabled, false, p)
+    }
+
+    fn field_wide(&self, label: &str, help: Option<&str>, control: AnyElement, disabled: bool, wide: bool, p: &Palette) -> AnyElement {
         div()
             .flex()
-            .flex_row()
+            .flex_col()
             .items_start()
-            .gap_4()
-            .py_2()
+            .gap(px(6.0))
+            .when(!wide, |d| d.max_w(px(560.0)))
+            .py_3()
             .border_b_1()
-            .border_color(p.border)
+            .border_color(p.border.opacity(0.6))
             .when(disabled, |d| d.opacity(0.5))
-            .child(
+            .when(!label.is_empty(), |d| d.child(div().font_weight(FontWeight::SEMIBOLD).child(label.to_string())))
+            .child(control)
+            .children(help.map(|h| div().text_sm().text_color(p.muted).child(h.to_string())))
+            .into_any_element()
+    }
+
+    // テーマの見本。色はこの見本にだけ当て、アプリの見た目には触らない
+    fn theme_preview(&self, name: &str, p: &Palette, cx: &App) -> AnyElement {
+        let mut config = cx.global::<Appearance>().config.clone();
+        config.theme = if name.is_empty() { None } else { Some(name.to_string()) };
+        let (theme, error) = crate::config::resolve_theme(&config);
+        if let Some(error) = error {
+            return div().text_sm().text_color(p.warning).child(error).into_any_element();
+        }
+        let chrome = crate::config::chrome_colors(&theme, config.accent.as_deref().and_then(Rgb::parse));
+        let c = |rgb: Rgb| hsla(rgb, 1.0);
+        let t = &theme.palette;
+        let span = |text: &str, color: Option<Rgb>| div().text_color(color.map(c).unwrap_or(c(theme.foreground))).child(text.to_string());
+        let line = |parts: Vec<gpui::Div>| div().flex().flex_row().children(parts);
+        let terminal = div()
+            .flex()
+            .flex_col()
+            .p_2()
+            .bg(c(theme.background))
+            .text_color(c(theme.foreground))
+            .text_sm()
+            .font_family(cx.global::<Appearance>().font.family.clone())
+            .child(line(vec![span("user@terp ", Some(t[2])), span("~/project", Some(t[4])), span(" $ ls", None)]))
+            .child(line(vec![span("src/  docs/  ", Some(t[4])), span("build.sh*  ", Some(t[2])), span("README.md", None)]))
+            .child(line(vec![span("$ git diff", None)]))
+            .child(line(vec![span("- const count = 1;", Some(t[1]))]))
+            .child(line(vec![span("+ const count = 42;", Some(t[2]))]))
+            .child(line(vec![span(" ", None)]))
+            .child(line(vec![span("// 色の見本", Some(t[8]))]))
+            .child(line(vec![span("const ", Some(t[5])), span("message = ", None), span("\"hello\"", Some(t[2])), span(";", None)]))
+            .child(line(vec![
+                span("return ", Some(t[5])),
+                span("42", Some(t[3])),
+                span("; ", None),
+                div().bg(c(chrome.selection)).child("選択した文字"),
+            ]))
+            .child(line(vec![span("$ ", None), div().w(px(8.0)).bg(c(theme.cursor)).child(" ")]));
+        let mut swatches = div().flex().flex_row().flex_wrap().gap_1().p_2();
+        for (i, color) in t.iter().enumerate() {
+            swatches = swatches.child(
                 div()
-                    .flex_1()
                     .flex()
                     .flex_col()
-                    .gap(px(2.0))
-                    .child(div().text_sm().child(label.to_string()))
-                    .children(help.map(|h| div().text_xs().text_color(p.muted).child(h.to_string()))),
+                    .items_center()
+                    .w(gpui::relative(0.11))
+                    .child(div().w_full().h(px(14.0)).bg(c(*color)))
+                    .child(div().text_xs().child(i.to_string())),
+            );
+        }
+        let item = |text: &'static str| div().px_2().py_1().child(text);
+        div()
+            .flex()
+            .flex_col()
+            .w_full()
+            .rounded_md()
+            .overflow_hidden()
+            .border_1()
+            .border_color(c(chrome.border))
+            .bg(c(chrome.bg))
+            .text_color(c(chrome.text))
+            .text_sm()
+            .child(div().p_2().font_weight(FontWeight::SEMIBOLD).child(if name.is_empty() { "内蔵の色".to_string() } else { name.to_string() }))
+            .child(terminal)
+            .child(swatches)
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .p_2()
+                    .child(
+                        div()
+                            .flex_1()
+                            .border_1()
+                            .border_color(c(chrome.border))
+                            .child(item("作業").text_color(c(chrome.text_muted)))
+                            .child(item("ターミナル").bg(c(chrome.bg_active)))
+                            .child(item("ファイル").bg(c(chrome.bg_hover))),
+                    )
+                    .child(div().px_2().py_1().rounded_md().bg(c(chrome.accent)).text_color(c(chrome.bg)).child("新しいターミナル")),
             )
-            .child(div().flex_none().child(control))
             .into_any_element()
     }
 
@@ -592,7 +694,7 @@ impl TerpApp {
     }
 
     fn choice_control(&self, key: &'static str, current: Value, options: Vec<(Value, String)>, disabled: bool, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
-        let mut row = div().flex().flex_row().flex_wrap().gap_1().max_w(px(420.0)).justify_end();
+        let mut row = div().flex().flex_row().flex_wrap().gap_1().max_w(px(420.0));
         for (i, (value, label)) in options.into_iter().enumerate() {
             let selected = value == current;
             row = row.child(
@@ -691,10 +793,11 @@ impl TerpApp {
         if !current.is_empty() && !s.themes.contains(&current) {
             names.push((current.clone(), format!("{current}（見つかりません）")));
         }
+        let shown = s.preview.clone().unwrap_or_else(|| current.clone());
         let mut list = div()
             .id("theme-list")
-            .h(px(220.0))
-            .w(px(420.0))
+            .h(px(320.0))
+            .w_full()
             .overflow_y_scroll()
             .rounded_md()
             .border_1()
@@ -702,17 +805,13 @@ impl TerpApp {
             .on_hover(cx.listener(|app, hovered: &bool, _, cx| {
                 if !hovered {
                     app.preview_theme(None, cx);
-                    if let Some(s) = app.settings.as_mut() {
-                        s.preview = None;
-                    }
-                    let (config, error) = Config::load(&config_path());
-                    let appearance = Appearance::build(config, error, app.font_delta, cx);
-                    cx.set_global(appearance);
-                    cx.refresh_windows();
                 }
             }));
+        let mut any = false;
         for (i, (value, label)) in names.into_iter().filter(|(_, l)| filter.is_empty() || l.to_lowercase().contains(&filter)).enumerate() {
-            let selected = value == current;
+            any = true;
+            let applied = value == current;
+            let previewing = value == shown;
             let (v1, v2) = (value.clone(), value.clone());
             list = list.child(
                 div()
@@ -720,11 +819,14 @@ impl TerpApp {
                     .flex()
                     .flex_row()
                     .items_center()
+                    .justify_between()
                     .gap_2()
+                    .min_h(px(32.0))
                     .px_2()
-                    .py(px(3.0))
-                    .text_sm()
-                    .when(selected, |d| d.bg(p.accent_fill).font_weight(FontWeight::SEMIBOLD))
+                    .py_1()
+                    .border_b_1()
+                    .border_color(p.border)
+                    .when(previewing, |d| d.bg(p.hover))
                     .hover(|s| s.bg(p.hover))
                     .on_hover(cx.listener(move |app, hovered: &bool, _, cx| {
                         if *hovered {
@@ -732,22 +834,34 @@ impl TerpApp {
                         }
                     }))
                     .on_click(cx.listener(move |app, _: &ClickEvent, window, cx| {
-                        if let Some(s) = app.settings.as_mut() {
-                            s.preview = None;
-                        }
                         let v = if v2.is_empty() { None } else { Some(Value::String(v2.clone())) };
                         app.set_config("theme", v, window, cx);
                     }))
-                    .child(div().w(px(12.0)).child(if selected { "✓" } else { "" }))
-                    .child(label),
+                    .child(div().min_w_0().child(label))
+                    .when(applied, |d| d.child(div().flex_none().text_sm().text_color(p.accent).child("使用中"))),
             );
         }
+        if !any {
+            list = list.child(div().p_2().text_sm().text_color(p.muted).child("該当するテーマなし。絞り込みを変える"));
+        }
+        let preview = if any { Some(self.theme_preview(&shown, p, cx)) } else { None };
         let theme_control = div()
             .flex()
-            .flex_col()
-            .gap_1()
-            .child(div().w(px(420.0)).px_2().py_1().rounded_md().border_1().border_color(p.border).bg(p.term_bg).text_sm().child(s.theme_filter.clone()))
-            .child(list)
+            .flex_row()
+            .flex_wrap()
+            .gap_3()
+            .w_full()
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .flex_1()
+                    .min_w(px(260.0))
+                    .child(div().w_full().px_2().py_1().rounded_md().border_1().border_color(p.border).bg(p.term_bg).text_sm().child(s.theme_filter.clone()))
+                    .child(list),
+            )
+            .child(div().flex_1().min_w(px(260.0)).children(preview))
             .into_any_element();
         let color = |k: &str| match k {
             "accent" => c.accent.as_deref().and_then(Rgb::parse),
@@ -769,8 +883,8 @@ impl TerpApp {
             .flex()
             .flex_col()
             .child(self.field(
-                "Ghostty から取り込む",
-                Some("Ghostty の設定から、テーマ・フォント・透過・余白・コントラスト・カーソルを、変わる項目を確かめてから取り込む"),
+                "",
+                None,
                 div()
                     .id("import-ghostty")
                     .px_3()
@@ -786,7 +900,7 @@ impl TerpApp {
                 false,
                 p,
             ))
-            .child(self.field("テーマ", Some("Ghostty のテーマの書式のファイルを読む。自分で作ったテーマは ~/.config/terp/themes に置く。指を置くと見た目だけ試せる"), theme_control, false, p))
+            .child(self.field_wide("テーマ", Some("Ghostty のテーマの書式のファイルを読む。自分で作ったテーマは ~/.config/terp/themes に置く"), theme_control, false, true, p))
             .child(self.field("強調色", Some("新しいターミナルのボタンや未読の印の色。既定に戻すとテーマのカーソルの色になる"), self.text_control("accent", 200.0, p, Some(color("accent").unwrap_or(fallback("accent"))), cx), false, p))
             .child(self.field("文字色", Some("テーマの文字色の代わりに使う。既定に戻すとテーマの色になる"), self.text_control("foreground", 200.0, p, Some(color("foreground").unwrap_or(fallback("foreground"))), cx), false, p))
             .child(self.field("ターミナルの背景色", Some("テーマの背景色の代わりに使う。アプリの背景色を決めていなければ、一覧や枠の色もこの色から作る"), self.text_control("background", 200.0, p, Some(color("background").unwrap_or(fallback("background"))), cx), false, p))
