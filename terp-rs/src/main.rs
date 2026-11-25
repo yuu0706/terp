@@ -6,6 +6,7 @@ mod assist;
 mod appearance;
 mod config;
 mod dock;
+mod ghostty;
 mod git;
 mod gitops;
 mod input;

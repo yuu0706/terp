@@ -328,6 +328,59 @@ impl TerpApp {
         self.set_config(key, value, window, cx);
     }
 
+    // Ghostty の設定を読み、変わる項目と写さない項目を確かめてから取り込む
+    fn import_ghostty(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (entries, files) = match crate::ghostty::read() {
+            Ok(found) => found,
+            Err(err) => {
+                if let Some(s) = self.settings.as_mut() {
+                    s.message = Some(err);
+                }
+                cx.notify();
+                return;
+            }
+        };
+        if files.is_empty() {
+            if let Some(s) = self.settings.as_mut() {
+                s.message = Some("Ghostty の設定が見つからない".into());
+            }
+            cx.notify();
+            return;
+        }
+        let (changes, skipped) = crate::ghostty::map(&entries, |n| crate::config::find_theme(n).is_some());
+        let raw = raw_config();
+        let changed: Vec<(String, Value)> = changes.into_iter().filter(|(k, v)| raw.get(k) != Some(v)).collect();
+        let mut body: Vec<String> = changed
+            .iter()
+            .map(|(k, v)| format!("{k}: {} → {}", raw.get(k).map(|x| x.to_string()).unwrap_or_else(|| "（既定）".into()), v))
+            .collect();
+        for (k, v, why) in &skipped {
+            body.push(format!("写さない: {k} = {v}（{why}）"));
+        }
+        body.push(format!("読んだファイル: {}", files.iter().map(|f| f.display().to_string()).collect::<Vec<_>>().join("、")));
+        let spec = crate::overlay::DialogSpec {
+            title: "Ghostty から取り込む".into(),
+            body,
+            fields: Vec::new(),
+            choice: None,
+            confirm: "取り込む".into(),
+            danger: false,
+            blocked: changed.is_empty().then(|| "変わる項目はない".into()),
+        };
+        self.open_dialog(
+            spec,
+            std::rc::Rc::new(move |app, _, _, window, cx| {
+                for (k, v) in &changed {
+                    write_config(k, Some(v.clone()))?;
+                }
+                app.reload_appearance_now(window, cx);
+                Ok(())
+            }),
+            window,
+            cx,
+        );
+    }
+
     fn add_command(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(s) = &self.settings else { return };
         let label = s.command_label.read(cx).text().trim().to_string();
@@ -715,6 +768,24 @@ impl TerpApp {
         div()
             .flex()
             .flex_col()
+            .child(self.field(
+                "Ghostty から取り込む",
+                Some("Ghostty の設定から、テーマ・フォント・透過・余白・コントラスト・カーソルを、変わる項目を確かめてから取り込む"),
+                div()
+                    .id("import-ghostty")
+                    .px_3()
+                    .py_1()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(p.border)
+                    .text_sm()
+                    .hover(|s| s.bg(p.hover))
+                    .on_click(cx.listener(|app, _: &ClickEvent, window, cx| app.import_ghostty(window, cx)))
+                    .child("Ghostty から取り込む")
+                    .into_any_element(),
+                false,
+                p,
+            ))
             .child(self.field("テーマ", Some("Ghostty のテーマの書式のファイルを読む。自分で作ったテーマは ~/.config/terp/themes に置く。指を置くと見た目だけ試せる"), theme_control, false, p))
             .child(self.field("強調色", Some("新しいターミナルのボタンや未読の印の色。既定に戻すとテーマのカーソルの色になる"), self.text_control("accent", 200.0, p, Some(color("accent").unwrap_or(fallback("accent"))), cx), false, p))
             .child(self.field("文字色", Some("テーマの文字色の代わりに使う。既定に戻すとテーマの色になる"), self.text_control("foreground", 200.0, p, Some(color("foreground").unwrap_or(fallback("foreground"))), cx), false, p))
