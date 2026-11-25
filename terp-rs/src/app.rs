@@ -623,34 +623,57 @@ impl TerpApp {
         self.run_in_new_terminal(e.cwd.clone(), line, false, window, cx);
     }
 
+    // 端末を開き直すための控え
+    pub(crate) fn saved_of(&self, id: u64, cx: &App) -> Option<crate::snapshot::Saved> {
+        let s = self.session(id)?;
+        let v = s.view.read(cx);
+        let program = v.process.as_ref().map(|p| p.name.clone()).unwrap_or_default();
+        let agent = (v.is_agent() && (program == "claude" || program == "codex")).then(|| program.clone());
+        let (session_id, config_dir) = match (&v.agent_session, agent.as_deref()) {
+            (Some(a), Some("claude")) => (a.id.clone(), a.config_dir.clone()),
+            (Some(a), Some("codex")) => (a.file.as_deref().and_then(crate::snapshot::codex_id), None),
+            _ => (None, None),
+        };
+        Some(crate::snapshot::Saved {
+            id: v.terminal.remote_id(),
+            cwd: v.cwd(),
+            workspace: s.workspace.clone(),
+            custom_name: v.custom_name.clone(),
+            agent_title: v.agent_title.clone(),
+            work_path: v.work_path.clone(),
+            agent: agent.filter(|_| session_id.is_some()),
+            agent_session: session_id,
+            config_dir,
+            bypass: v.bypass,
+        })
+    }
+
+    // 控えから1枚開き直し、エージェントの会話を再開する
+    pub(crate) fn reopen_saved(&mut self, s: &crate::snapshot::Saved, window: &mut Window, cx: &mut Context<Self>) -> Option<u64> {
+        let configured = cx.global::<Appearance>().config.agents.clone();
+        let agents = crate::agents::detect(&configured, "");
+        let workspace = Some(s.workspace.clone()).filter(|w| self.projects.workspaces.iter().any(|x| x.id == *w)).unwrap_or_else(|| self.workspace());
+        let id = self.spawn_session_in(s.cwd.clone(), workspace.clone(), window, cx)?;
+        let line = crate::snapshot::resume_line(s, &agents);
+        if let Some(session) = self.session(id) {
+            session.view.update(cx, |v, _| {
+                v.custom_name = s.custom_name.clone();
+                v.work_path = s.work_path.clone();
+                v.bypass = s.bypass && line.is_some();
+                v.save_meta(&workspace);
+                if let Some(line) = &line {
+                    v.terminal.write(format!("{line}\r").as_bytes());
+                }
+            });
+        }
+        self.layouts.entry(workspace).or_default().add_tab(id);
+        Some(id)
+    }
+
     // 開き直すための控えと、会話の履歴を書く
     fn write_snapshot(&mut self, cx: &App) {
-        let saved: Vec<crate::snapshot::Saved> = self
-            .sessions
-            .iter()
-            .map(|s| {
-                let v = s.view.read(cx);
-                let program = v.process.as_ref().map(|p| p.name.clone()).unwrap_or_default();
-                let agent = (v.is_agent() && (program == "claude" || program == "codex")).then(|| program.clone());
-                let (session_id, config_dir) = match (&v.agent_session, agent.as_deref()) {
-                    (Some(a), Some("claude")) => (a.id.clone(), a.config_dir.clone()),
-                    (Some(a), Some("codex")) => (a.file.as_deref().and_then(crate::snapshot::codex_id), None),
-                    _ => (None, None),
-                };
-                crate::snapshot::Saved {
-                    id: v.terminal.remote_id(),
-                    cwd: v.cwd(),
-                    workspace: s.workspace.clone(),
-                    custom_name: v.custom_name.clone(),
-                    agent_title: v.agent_title.clone(),
-                    work_path: v.work_path.clone(),
-                    agent: agent.filter(|_| session_id.is_some()),
-                    agent_session: session_id,
-                    config_dir,
-                    bypass: v.bypass,
-                }
-            })
-            .collect();
+        let ids: Vec<u64> = self.sessions.iter().map(|s| s.id).collect();
+        let saved: Vec<crate::snapshot::Saved> = ids.into_iter().filter_map(|id| self.saved_of(id, cx)).collect();
         if let Err(err) = crate::snapshot::save(&saved) {
             self.notice = Some(format!("開き直すための控えを書けない: {err}"));
         }

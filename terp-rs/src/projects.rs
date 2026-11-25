@@ -139,6 +139,30 @@ pub fn save_active_workspace(id: &str) -> anyhow::Result<()> {
     })
 }
 
+// ドラフトに出し入れする。外すときは閉じた端末の控え（parked）を残し、戻すときは消す
+pub fn set_draft_parked(path: &str, draft: bool, parked: Vec<Value>) -> anyhow::Result<()> {
+    update(|map| {
+        with_project(map, path, |p| {
+            p.insert("draft".into(), Value::Bool(draft));
+            p.insert("parked".into(), Value::Array(if draft { Vec::new() } else { parked }));
+        });
+        Ok(())
+    })
+}
+
+// ドラフトから外したときに閉じた端末の控え
+pub fn parked(path: &str) -> Vec<Value> {
+    let value: Value = std::fs::read_to_string(projects_path()).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(Value::Null);
+    value
+        .get("projects")
+        .and_then(Value::as_array)
+        .and_then(|list| list.iter().find(|p| p.get("path").and_then(Value::as_str) == Some(path)))
+        .and_then(|p| p.get("parked"))
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+}
+
 pub fn set_draft(path: &str, draft: bool) -> anyhow::Result<()> {
     update(|map| {
         with_project(map, path, |p| {

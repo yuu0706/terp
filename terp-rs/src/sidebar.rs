@@ -160,11 +160,88 @@ impl TerpApp {
         }
     }
 
-    fn toggle_draft(&mut self, path: String, draft: bool, cx: &mut Context<Self>) {
-        if let Err(err) = projects::set_draft(&path, draft) {
-            self.notice = Some(format!("ドラフトを変えられない: {err}"));
+    // ドラフトに戻すときは、外したときに閉じた端末を開き直して会話を再開する。
+    // 外すときは中の端末を閉じ、claude・codex の会話は控えに残す（確認の後）
+    fn toggle_draft(&mut self, path: String, draft: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if draft {
+            // Electron 版が書いた控えは空の項目を null で持つため、外してから読む
+            let parked: Vec<crate::snapshot::Saved> = projects::parked(&path)
+                .into_iter()
+                .filter_map(|mut v| {
+                    if let Some(m) = v.as_object_mut() {
+                        m.retain(|_, x| !x.is_null());
+                    }
+                    serde_json::from_value(v).ok()
+                })
+                .collect();
+            if let Err(err) = projects::set_draft_parked(&path, true, Vec::new()) {
+                self.notice = Some(format!("ドラフトを変えられない: {err}"));
+            }
+            for s in parked.iter().filter(|s| s.cwd.is_absolute()) {
+                self.reopen_saved(s, window, cx);
+            }
+            self.reload_projects(cx);
+            return;
         }
-        self.reload_projects(cx);
+        let ids: Vec<u64> = self.sessions.iter().map(|s| s.id).filter(|id| self.placement(*id, cx).is_some_and(|(r, _)| r == path)).collect();
+        let mut entries = Vec::new();
+        let mut lost = Vec::new();
+        for id in &ids {
+            let Some(saved) = self.saved_of(*id, cx) else { continue };
+            let view = self.session(*id).map(|s| s.view.read(cx));
+            let program = view.and_then(|v| v.process.as_ref().map(|p| p.name.clone())).unwrap_or_default();
+            let name = view.map(|v| v.display_name()).unwrap_or_default();
+            let shell = !crate::agent::is_agent(Some(&program));
+            if !shell && saved.agent_session.is_none() {
+                lost.push(format!("{name}（{program}）"));
+            }
+            entries.push(serde_json::to_value(&saved).unwrap_or_default());
+        }
+        let name = Path::new(&path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let has_terminals = !ids.is_empty();
+        let park = move |app: &mut TerpApp, window: &mut Window, cx: &mut Context<TerpApp>| -> Result<(), String> {
+            projects::set_draft_parked(&path, false, entries.clone()).map_err(|e| format!("ドラフトを変えられない: {e}"))?;
+            for id in &ids {
+                app.close(*id, false, window, cx);
+            }
+            app.reload_projects(cx);
+            Ok(())
+        };
+        let park = Rc::new(park);
+        if !cx.global::<crate::appearance::Appearance>().config.confirm_draft_remove {
+            if let Err(e) = park(self, window, cx) {
+                self.notice = Some(e);
+            }
+            return;
+        }
+        let mut message = String::new();
+        if has_terminals {
+            message.push_str("中のターミナルを閉じます。claude・codex の会話は、ドラフトに戻すと再開します。");
+        }
+        if !lost.is_empty() {
+            message.push_str(&format!("次のものは止まり、戻りません: {}。", lost.join("、")));
+        }
+        message.push_str("「すべて」からいつでも戻せます。");
+        let spec = DialogSpec {
+            title: format!("{name} をドラフトから外しますか？"),
+            body: vec![message, "確認は、設定の「通知」でいつでも戻せます。".into()],
+            fields: Vec::new(),
+            choice: Some(Choice { label: "次から".into(), options: vec!["次も確認する".into(), "今後は確認しない".into()], selected: 0 }),
+            confirm: "外す".into(),
+            danger: false,
+            blocked: None,
+        };
+        self.open_dialog(
+            spec,
+            Rc::new(move |app, _, choice, window, cx| {
+                if choice == 1 {
+                    let _ = crate::settings::write_config("confirmDraftRemove", Some(serde_json::Value::Bool(false)));
+                }
+                park(app, window, cx)
+            }),
+            window,
+            cx,
+        );
     }
 
     fn forget_repo(&mut self, path: String, cx: &mut Context<Self>) {
@@ -505,7 +582,7 @@ impl TerpApp {
         }
         let p3 = path.clone();
         items.push(MenuItem::separator());
-        items.push(MenuItem::new("ドラフトから外す", action(move |app, _, cx| app.toggle_draft(p3.clone(), false, cx))));
+        items.push(MenuItem::new("ドラフトから外す", action(move |app, window, cx| app.toggle_draft(p3.clone(), false, window, cx))));
         self.open_menu(position, items, cx);
     }
 
@@ -726,7 +803,7 @@ impl TerpApp {
                     .when(draft, |d| d.bg(p.accent_fill_dim))
                     .hover(|s| s.bg(p.hover))
                     .tooltip(move |_, cx| crate::tooltip::text(p3.clone(), cx))
-                    .on_click(cx.listener(move |app, _: &ClickEvent, _, cx| app.toggle_draft(p1.clone(), !draft, cx)))
+                    .on_click(cx.listener(move |app, _: &ClickEvent, window, cx| app.toggle_draft(p1.clone(), !draft, window, cx)))
                     .child(icon(if draft { "star-filled" } else { "star" }, 13.0, if draft { p.accent } else { p.muted }))
                     .child(div().flex_1().overflow_hidden().text_ellipsis().whitespace_nowrap().child(project.name().to_string()))
                     .child(
@@ -888,9 +965,9 @@ impl TerpApp {
                 icon_button(SharedString::from(format!("undraft-{path}")), "star-filled", "ドラフトから外す（「すべて」に残る）", p.accent, p.active, p.text)
                     .invisible()
                     .group_hover(SharedString::from(format!("repo-{path}")), |s| s.visible())
-                    .on_click(cx.listener(move |app, _: &ClickEvent, _, cx| {
+                    .on_click(cx.listener(move |app, _: &ClickEvent, window, cx| {
                         cx.stop_propagation();
-                        app.toggle_draft(p2.clone(), false, cx);
+                        app.toggle_draft(p2.clone(), false, window, cx);
                     })),
             )
             .child({
