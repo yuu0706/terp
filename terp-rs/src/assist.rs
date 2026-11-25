@@ -80,6 +80,10 @@ pub fn blocked(config: &Config, flag: Option<bool>, label: &str) -> Option<Strin
 }
 
 pub fn ask(feature: &str, model: &str, system: &str, prompt: &str) -> Result<String, String> {
+    ask_within(feature, model, system, prompt, Duration::from_secs(60))
+}
+
+pub fn ask_within(feature: &str, model: &str, system: &str, prompt: &str, timeout: Duration) -> Result<String, String> {
     let env = crate::git::login_env();
     let path = env.get("PATH").cloned().unwrap_or_default();
     let claude = path.split(':').map(|d| Path::new(d).join("claude")).find(|p| p.is_file()).ok_or("claude が見つかりません")?;
@@ -93,8 +97,12 @@ pub fn ask(feature: &str, model: &str, system: &str, prompt: &str) -> Result<Str
     .current_dir(config_dir())
     .env_clear()
     .envs(env);
-    let out = crate::git::run_with_timeout(&mut cmd, Some(b""), Duration::from_secs(60)).map_err(|e| {
-        if e.kind() == std::io::ErrorKind::TimedOut { "claude が60秒で終わりませんでした".to_string() } else { "claude の実行に失敗しました".to_string() }
+    let out = crate::git::run_with_timeout(&mut cmd, Some(b""), timeout).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::TimedOut {
+            format!("claude が{}秒で終わりませんでした", timeout.as_secs())
+        } else {
+            "claude の実行に失敗しました".to_string()
+        }
     })?;
     if out.status != Some(0) {
         return Err("claude の実行に失敗しました".into());

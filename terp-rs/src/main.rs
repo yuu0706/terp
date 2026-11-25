@@ -29,6 +29,8 @@ mod snapshot;
 mod state;
 mod terminal;
 mod terminal_view;
+mod themeai;
+mod themegen;
 mod tooltip;
 mod transcript;
 mod ui;

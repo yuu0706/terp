@@ -404,8 +404,8 @@ pub fn resolve_theme(config: &Config) -> (Theme, Option<String>) {
             }
         }
     }
-    // appBackground は、作ったときのテーマと今のテーマが同じときだけ使う
-    if config.app_background_theme.is_none() || config.app_background_theme == config.theme {
+    // appBackground は、決めたときのテーマ（既定のテーマは空の文字）と今のテーマが同じときだけ使う。印の無い古い値は使わない
+    if config.app_background_theme.as_deref() == Some(config.theme.as_deref().unwrap_or("")) {
         theme.app_background = config.app_background.as_deref().and_then(Rgb::parse);
     }
     (theme, error)
@@ -545,6 +545,16 @@ pub fn chrome_colors(theme: &Theme, accent: Option<Rgb>) -> Chrome {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn アプリの背景色は決めたときのテーマの間だけ使う() {
+        let (config, _) = Config::parse(r##"{"appBackground": "#e6ecf5"}"##);
+        assert_eq!(resolve_theme(&config).0.app_background, None);
+        let (config, _) = Config::parse(r##"{"appBackground": "#e6ecf5", "appBackgroundTheme": ""}"##);
+        assert_eq!(resolve_theme(&config).0.app_background, Rgb::parse("#e6ecf5"));
+        let (config, _) = Config::parse(r##"{"theme": "0x96f", "appBackground": "#e6ecf5", "appBackgroundTheme": ""}"##);
+        assert_eq!(resolve_theme(&config).0.app_background, None);
+    }
 
     #[test]
     fn 不正な項目だけを既定値に戻す() {

@@ -30,6 +30,12 @@ pub struct Settings {
     _subscriptions: Vec<Subscription>,
 }
 
+impl Settings {
+    pub fn reload_themes(&mut self) {
+        self.themes = list_themes();
+    }
+}
+
 // config.json を読み、変えた値だけを差し替えて書く。None はその項目を消す（既定に戻す）。JSON が壊れていたら書かない
 pub fn write_config(key: &str, value: Option<Value>) -> Result<(), String> {
     let path = config_path();
@@ -285,7 +291,14 @@ impl TerpApp {
 
     // 設定を書き、すぐ画面に反映する
     fn set_config(&mut self, key: &str, value: Option<Value>, window: &mut Window, cx: &mut Context<Self>) {
-        let result = write_config(key, value);
+        // アプリの背景色は、決めたときのテーマの間だけ使う。そのテーマの名前を一緒に書く
+        let mark = (key == "appBackground").then(|| {
+            value.as_ref().map(|_| Value::String(cx.global::<Appearance>().config.theme.clone().unwrap_or_default()))
+        });
+        let mut result = write_config(key, value);
+        if let (Some(mark), Ok(())) = (mark, &result) {
+            result = write_config("appBackgroundTheme", mark);
+        }
         if let Some(s) = self.settings.as_mut() {
             s.message = result.err();
         }
@@ -414,7 +427,9 @@ impl TerpApp {
 
     fn on_capture_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let Some(id) = self.settings.as_ref().and_then(|s| s.capturing) else {
-            if event.keystroke.key == "escape" {
+            if event.keystroke.key == "escape" && self.theme_ai.is_some() {
+                self.close_theme_ai(cx);
+            } else if event.keystroke.key == "escape" {
                 self.close_settings(window, cx);
             }
             return;
@@ -600,6 +615,11 @@ impl TerpApp {
             return div().text_sm().text_color(p.warning).child(error).into_any_element();
         }
         let chrome = crate::config::chrome_colors(&theme, config.accent.as_deref().and_then(Rgb::parse));
+        let label = if name.is_empty() { "内蔵の色".to_string() } else { name.to_string() };
+        Self::theme_sample(&theme, &chrome, &label, cx)
+    }
+
+    pub(crate) fn theme_sample(theme: &crate::config::Theme, chrome: &crate::config::Chrome, label: &str, cx: &App) -> AnyElement {
         let c = |rgb: Rgb| hsla(rgb, 1.0);
         let t = &theme.palette;
         let span = |text: &str, color: Option<Rgb>| div().text_color(color.map(c).unwrap_or(c(theme.foreground))).child(text.to_string());
@@ -651,7 +671,7 @@ impl TerpApp {
             .bg(c(chrome.bg))
             .text_color(c(chrome.text))
             .text_sm()
-            .child(div().p_2().font_weight(FontWeight::SEMIBOLD).child(if name.is_empty() { "内蔵の色".to_string() } else { name.to_string() }))
+            .child(div().p_2().font_weight(FontWeight::SEMIBOLD).child(label.to_string()))
             .child(terminal)
             .child(swatches)
             .child(
@@ -802,6 +822,7 @@ impl TerpApp {
             .rounded_md()
             .border_1()
             .border_color(p.border)
+            .on_scroll(|_, _, cx| cx.stop_propagation())
             .on_hover(cx.listener(|app, hovered: &bool, _, cx| {
                 if !hovered {
                     app.preview_theme(None, cx);
@@ -863,6 +884,26 @@ impl TerpApp {
             )
             .child(div().flex_1().min_w(px(260.0)).children(preview))
             .into_any_element();
+        let theme_heading = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .w_full()
+            .child(div().font_weight(FontWeight::SEMIBOLD).child("テーマ"))
+            .child(
+                div()
+                    .id("theme-ai-open")
+                    .px_2()
+                    .py(px(2.0))
+                    .rounded_md()
+                    .border_1()
+                    .border_color(p.border)
+                    .text_xs()
+                    .hover(|s| s.bg(p.hover))
+                    .on_click(cx.listener(|app, _: &ClickEvent, window, cx| app.open_theme_ai(window, cx)))
+                    .child("AI で好みを作成"),
+            );
         let color = |k: &str| match k {
             "accent" => c.accent.as_deref().and_then(Rgb::parse),
             "foreground" => c.foreground.as_deref().and_then(Rgb::parse),
@@ -900,7 +941,7 @@ impl TerpApp {
                 false,
                 p,
             ))
-            .child(self.field_wide("テーマ", Some("Ghostty のテーマの書式のファイルを読む。自分で作ったテーマは ~/.config/terp/themes に置く"), theme_control, false, true, p))
+            .child(self.field_wide("", Some("Ghostty のテーマの書式のファイルを読む。自分で作ったテーマは ~/.config/terp/themes に置く"), div().flex().flex_col().gap(px(6.0)).w_full().child(theme_heading).child(theme_control).into_any_element(), false, true, p))
             .child(self.field("強調色", Some("新しいターミナルのボタンや未読の印の色。既定に戻すとテーマのカーソルの色になる"), self.text_control("accent", 200.0, p, Some(color("accent").unwrap_or(fallback("accent"))), cx), false, p))
             .child(self.field("文字色", Some("テーマの文字色の代わりに使う。既定に戻すとテーマの色になる"), self.text_control("foreground", 200.0, p, Some(color("foreground").unwrap_or(fallback("foreground"))), cx), false, p))
             .child(self.field("ターミナルの背景色", Some("テーマの背景色の代わりに使う。アプリの背景色を決めていなければ、一覧や枠の色もこの色から作る"), self.text_control("background", 200.0, p, Some(color("background").unwrap_or(fallback("background"))), cx), false, p))

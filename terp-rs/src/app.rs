@@ -164,6 +164,7 @@ pub struct TerpApp {
     pub(crate) overview: Option<crate::overview::Overview>,
     pub(crate) overview_tab_memory: Option<String>,
     pub(crate) settings: Option<crate::settings::Settings>,
+    pub(crate) theme_ai: Option<crate::themeai::ThemeAi>,
     pub(crate) panel: Option<crate::rightpanel::RightPanel>,
     pub(crate) pets: crate::pets::Pets,
     // よく戻るタブ。タブごとの訪れた時刻（3秒以上とどまったものだけ）と、今いるタブ
@@ -415,6 +416,7 @@ impl TerpApp {
             overview: None,
             overview_tab_memory: None,
             settings: None,
+            theme_ai: None,
             panel: None,
             pets: Default::default(),
             visits: HashMap::new(),
@@ -2317,6 +2319,7 @@ impl Render for TerpApp {
             .children(self.render_right_panel(&p, cx))
             .children(self.render_overview(&p, window, cx))
             .children(self.render_settings(&p, cx))
+            .children(self.render_theme_ai(&p, cx))
             .children(self.render_permission_cards(&p, cx))
             .children(self.render_offer(&p, cx))
             .children(self.render_host_offer(&p, cx))
