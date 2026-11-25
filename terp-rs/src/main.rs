@@ -115,12 +115,37 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-+", FontBigger, None),
         KeyBinding::new("ctrl-shift-tab", RecentTabBack, None),
     ];
+    // 誤った値と、別の操作と重なる上書きは捨てて既定のキーにし、知らせる
+    let mut bad = false;
+    let mut used: Vec<String> = Vec::new();
+    for (id, default, _) in shortcuts() {
+        if let Some(Some(custom)) = overrides.get(id) {
+            match keys::accelerator_to_gpui(custom) {
+                Some(k) if !used.contains(&k) => used.push(k),
+                _ => bad = true,
+            }
+        } else if let Some(k) = keys::accelerator_to_gpui(default)
+            && !matches!(overrides.get(id), Some(None))
+        {
+            used.push(k);
+        }
+    }
+    let known: Vec<&str> = shortcuts().iter().map(|s| s.0).collect();
+    if overrides.keys().any(|k| !known.contains(&k.as_str())) {
+        bad = true;
+    }
+    let mut taken: Vec<String> = Vec::new();
     for (id, default, action) in shortcuts() {
         let accelerator = match overrides.get(id) {
             Some(None) => continue,
-            Some(Some(custom)) => keys::accelerator_to_gpui(custom).or_else(|| keys::accelerator_to_gpui(default)),
+            Some(Some(custom)) => keys::accelerator_to_gpui(custom)
+                .filter(|k| !taken.contains(k))
+                .or_else(|| keys::accelerator_to_gpui(default)),
             None => keys::accelerator_to_gpui(default),
         };
+        if let Some(k) = &accelerator {
+            taken.push(k.clone());
+        }
         if let Some(binding) = accelerator.and_then(|keystroke| KeyBinding::load(&keystroke, action, None, false, None, cx).ok()) {
             bindings.push(binding);
         }
@@ -128,6 +153,14 @@ pub fn bind_keys(cx: &mut App) {
     bindings.extend(input::key_bindings());
     cx.clear_key_bindings();
     cx.bind_keys(bindings);
+    if bad {
+        let warning = "keybindings の値を確認する。使えない割り当ては既定で動作中".to_string();
+        let appearance = cx.global_mut::<Appearance>();
+        appearance.error = Some(match appearance.error.take() {
+            Some(e) => format!("{e} / {warning}"),
+            None => warning,
+        });
+    }
 }
 
 fn set_menus(cx: &mut App) {
@@ -245,7 +278,26 @@ fn main() {
         load_appearance(0.0, cx);
         bind_keys(cx);
         set_menus(cx);
-        cx.on_action(|_: &Quit, cx| cx.quit());
+        // 全画面のまま閉じると次に開いたとき黒い画面が残るため、先に全画面を抜けてから終える
+        cx.on_action(|_: &Quit, cx| {
+            let full = cx.windows().iter().any(|w| w.update(cx, |_, window, _| window.is_fullscreen()).unwrap_or(false));
+            if !full {
+                cx.quit();
+                return;
+            }
+            for w in cx.windows() {
+                let _ = w.update(cx, |_, window, _| {
+                    if window.is_fullscreen() {
+                        window.toggle_fullscreen();
+                    }
+                });
+            }
+            cx.spawn(async move |cx| {
+                cx.background_executor().timer(std::time::Duration::from_millis(1200)).await;
+                let _ = cx.update(|cx| cx.quit());
+            })
+            .detach();
+        });
         cx.on_action(|_: &Hide, cx| cx.hide());
         cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
         cx.on_action(|_: &ShowAll, cx| cx.unhide_other_apps());

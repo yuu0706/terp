@@ -15,6 +15,20 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Instant;
 
+// ドラッグしているリポジトリの見出し（並べ替え）
+#[derive(Clone)]
+pub struct DraggedRepo {
+    path: String,
+    name: String,
+}
+
+impl Render for DraggedRepo {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let p = crate::app::palette(cx);
+        div().px_2().py_1().rounded_md().border_1().border_color(p.accent).bg(p.accent_fill).text_sm().text_color(p.text).child(self.name.clone())
+    }
+}
+
 // 作業ごとの端末
 pub struct Work {
     pub worktree: Worktree,
@@ -259,6 +273,22 @@ impl TerpApp {
         }
         self.refresh_repos(cx);
         cx.notify();
+    }
+
+    // 表示中のリポジトリの並びだけを入れ替える（ほかのワークスペースの位置は保つ）
+    fn move_repo_before(&mut self, dragged: &str, target: &str, cx: &mut Context<Self>) {
+        if dragged == target {
+            return;
+        }
+        let ws = self.workspace();
+        let mut order: Vec<String> = self.tree(&ws, cx).repos.into_iter().map(|r| r.project.path).collect();
+        order.retain(|p| p != dragged);
+        let at = order.iter().position(|p| p == target).unwrap_or(order.len());
+        order.insert(at, dragged.to_string());
+        if let Err(err) = projects::reorder(&order) {
+            self.notice = Some(format!("並べ替えを記録できない: {err}"));
+        }
+        self.reload_projects(cx);
     }
 
     fn toggle_collapsed(&mut self, path: String, cx: &mut Context<Self>) {
@@ -935,6 +965,7 @@ impl TerpApp {
         let all_ids: Vec<u64> = repo.works.iter().flat_map(|w| w.terminals.iter().copied()).collect();
         let summary = self.summary_mark(&all_ids, p, cx);
         let (p1, p2, p3, p4) = (path.clone(), path.clone(), path.clone(), path.clone());
+        let accent = p.accent;
         let head = div()
             .id(SharedString::from(format!("repo-{path}")))
             .group(SharedString::from(format!("repo-{path}")))
@@ -958,6 +989,12 @@ impl TerpApp {
                     app.repo_menu(p3.clone(), event.position, cx);
                 }),
             )
+            .on_drag(DraggedRepo { path: path.clone(), name: repo.project.name().to_string() }, |r, _, _, cx| cx.new(|_| r.clone()))
+            .drag_over::<DraggedRepo>(move |s, _, _, _| s.border_t_2().border_color(accent))
+            .on_drop(cx.listener({
+                let target = path.clone();
+                move |app, dragged: &DraggedRepo, _, cx| app.move_repo_before(&dragged.path, &target, cx)
+            }))
             .child(icon(if collapsed { "chevron-right" } else { "chevron-down" }, 12.0, p.muted))
             .child(div().flex_1().overflow_hidden().text_ellipsis().whitespace_nowrap().child(repo.project.name().to_string()))
             .when(collapsed, |d| d.children(summary))
