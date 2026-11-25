@@ -12,6 +12,7 @@ mod input;
 mod inputbox;
 mod keys;
 mod links;
+mod offers;
 mod overlay;
 mod overview;
 mod panes;

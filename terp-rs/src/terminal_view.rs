@@ -82,6 +82,7 @@ pub struct TerminalView {
     last_output: Option<Instant>,
     last_input: Option<Instant>,
     created: Instant,
+    pub created_at: std::time::SystemTime,
     pub agent: AgentStatus,
     pub agent_title: Option<String>,
     // ダブルクリックで付けた名前
@@ -143,6 +144,7 @@ impl TerminalView {
                 last_output: None,
                 last_input: None,
                 created: Instant::now(),
+                created_at: std::time::SystemTime::now(),
                 agent: AgentStatus::default(),
                 agent_title: None,
                 custom_name: None,

@@ -167,6 +167,7 @@ pub struct TerpApp {
     // よく戻るタブ。タブごとの訪れた時刻（3秒以上とどまったものだけ）と、今いるタブ
     pub(crate) visits: HashMap<u64, Vec<Instant>>,
     pub(crate) current_visit: Option<(u64, Instant)>,
+    pub(crate) offers: crate::offers::Offers,
     // 右下に数秒出す知らせ
     pub(crate) toast: Option<(String, Instant)>,
     // 閉じた許可のカード（同じ画面の間は出し直さない）
@@ -414,6 +415,7 @@ impl TerpApp {
             pets: Default::default(),
             visits: HashMap::new(),
             current_visit: None,
+            offers: Default::default(),
             toast: None,
             dismissed_prompts: HashMap::new(),
             poll_count: 0,
@@ -515,6 +517,7 @@ impl TerpApp {
         self.poll_count += 1;
         if self.poll_count % 5 == 0 {
             self.refresh_repos(cx);
+            self.scan_new_repos(cx);
         }
         if self.poll_count % 3 == 0 {
             self.refresh_intel(cx);
@@ -2101,6 +2104,7 @@ impl Render for TerpApp {
             .children(self.render_overview(&p, window, cx))
             .children(self.render_settings(&p, cx))
             .children(self.render_permission_cards(&p, cx))
+            .children(self.render_offer(&p, cx))
             .children(self.render_toast(&p))
             .children(self.render_menu(&p, cx))
             .children(self.render_dialog(&p, cx))
