@@ -73,6 +73,8 @@ fn shortcuts() -> Vec<(&'static str, &'static str, Box<dyn Action>)> {
         ("workspace-prev", "Control+Command+[", Box::new(WorkspacePrev)),
         ("toggle-sidebar", "Command+B", Box::new(ToggleSidebar)),
         ("reopen", "Command+Shift+T", Box::new(ReopenClosed)),
+        ("overview", "Command+M", Box::new(ToggleOverview)),
+        ("new-work", "Command+N", Box::new(NewWork)),
         ("font-bigger", "Command+=", Box::new(FontBigger)),
         ("font-smaller", "Command+-", Box::new(FontSmaller)),
         ("font-reset", "Command+0", Box::new(FontReset)),
@@ -91,6 +93,7 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-v", Paste, Some("Terminal")),
         // ＋ を直接打つ配列のための別名
         KeyBinding::new("cmd-+", FontBigger, None),
+        KeyBinding::new("ctrl-shift-tab", RecentTabBack, None),
     ];
     for (id, default, action) in shortcuts() {
         let accelerator = match overrides.get(id) {
@@ -123,6 +126,9 @@ fn set_menus(cx: &mut App) {
             MenuItem::action("右に分割", SplitRight),
             MenuItem::action("タブを閉じる", CloseTab),
             MenuItem::action("閉じたタブを開き直す", ReopenClosed),
+            MenuItem::separator(),
+            MenuItem::action("新しい作業…", NewWork),
+            MenuItem::action("リポジトリを追加…", AddRepository),
             MenuItem::action("名前を変える", RenameTab),
             MenuItem::separator(),
             MenuItem::action("画面を消去", Clear),
@@ -148,6 +154,7 @@ fn set_menus(cx: &mut App) {
             MenuItem::action("前のタブ", PrevTab),
             MenuItem::action("次のタブ", NextTab),
             MenuItem::action("次の要対応", NextAttention),
+            MenuItem::action("全体の一覧", ToggleOverview),
             MenuItem::separator(),
             MenuItem::action("左の枠", PaneLeft),
             MenuItem::action("右の枠", PaneRight),

@@ -80,6 +80,9 @@ pub enum InputEvent {
     Up,
     Down,
     Tab { back: bool },
+    // 端で ←→ を押した（字の中を動けないとき）
+    EdgeLeft,
+    EdgeRight,
 }
 
 pub struct TextInput {
@@ -356,10 +359,18 @@ impl Render for TextInput {
                 this.delete_selection_or(target, cx)
             }))
             .on_action(cx.listener(|this, _: &Left, _, cx| {
+                if this.selected.is_empty() && this.cursor() == 0 {
+                    cx.emit(InputEvent::EdgeLeft);
+                    return;
+                }
                 let to = if this.selected.is_empty() { this.previous_boundary(this.cursor()) } else { this.selected.start };
                 this.move_to(to, cx)
             }))
             .on_action(cx.listener(|this, _: &Right, _, cx| {
+                if this.selected.is_empty() && this.cursor() == this.content.len() {
+                    cx.emit(InputEvent::EdgeRight);
+                    return;
+                }
                 let to = if this.selected.is_empty() { this.next_boundary(this.cursor()) } else { this.selected.end };
                 this.move_to(to, cx)
             }))

@@ -273,6 +273,32 @@ impl TerminalView {
         folder_name(&self.cwd())
     }
 
+    // 画面の末尾 n 行（末尾の空行を除く）。全体の一覧の縮小表示に使う
+    pub fn tail_lines(&self, n: usize) -> Vec<String> {
+        let term = self.terminal.term.lock();
+        let grid = term.grid();
+        let rows = grid.screen_lines();
+        let cols = grid.columns();
+        let mut lines: Vec<String> = (0..rows)
+            .map(|row| {
+                let line = &grid[Line(row as i32)];
+                let mut text = String::with_capacity(cols);
+                for col in 0..cols {
+                    let cell = &line[Column(col)];
+                    if !cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
+                        text.push(cell.c);
+                    }
+                }
+                text.trim_end().to_string()
+            })
+            .collect();
+        while lines.last().is_some_and(|l| l.is_empty()) {
+            lines.pop();
+        }
+        let start = lines.len().saturating_sub(n);
+        lines.split_off(start)
+    }
+
     // 開き直したときに戻す情報を、常駐のプロセスに預ける
     pub fn save_meta(&self, workspace: &str) {
         let mut meta = serde_json::json!({ "workspace": workspace });

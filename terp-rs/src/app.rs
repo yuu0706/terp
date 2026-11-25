@@ -58,6 +58,10 @@ actions!(
         ToggleSidebar,
         ReopenClosed,
         RenameTab,
+        ToggleOverview,
+        RecentTabBack,
+        NewWork,
+        AddRepository,
         FontBigger,
         FontSmaller,
         FontReset,
@@ -150,6 +154,7 @@ pub struct TerpApp {
     pub(crate) repos_loading: bool,
     pub(crate) agents: Vec<crate::agents::Agent>,
     pub(crate) overview: Option<crate::overview::Overview>,
+    pub(crate) overview_tab_memory: Option<String>,
     pub(crate) poll_count: u64,
     pub(crate) dialog: Option<crate::overlay::Dialog>,
     pub(crate) _poll: Task<()>,
@@ -351,6 +356,7 @@ impl TerpApp {
             repos_loading: false,
             agents: Vec::new(),
             overview: None,
+            overview_tab_memory: None,
             poll_count: 0,
             _poll: poll,
         };
@@ -982,6 +988,10 @@ impl TerpApp {
     }
 
     fn recent_tab(&mut self, _: &RecentTab, window: &mut Window, cx: &mut Context<Self>) {
+        if self.overview.is_some() {
+            self.cycle_overview_tab(1, cx);
+            return;
+        }
         let ws = self.workspace();
         let ids = self.workspace_ids(&ws);
         if let Some(id) = self.recent.iter().rev().find(|r| ids.contains(r) && Some(**r) != self.active_id()).copied() {
@@ -1423,6 +1433,10 @@ impl Render for TerpApp {
             .on_action(cx.listener(Self::next_attention))
             .on_action(cx.listener(Self::open_config))
             .on_action(cx.listener(Self::reopen_closed))
+            .on_action(cx.listener(|app, _: &ToggleOverview, w, cx| app.toggle_overview(w, cx)))
+            .on_action(cx.listener(|app, _: &RecentTabBack, _, cx| app.cycle_overview_tab(-1, cx)))
+            .on_action(cx.listener(|app, _: &NewWork, w, cx| app.new_work_dialog(None, w, cx)))
+            .on_action(cx.listener(|app, _: &AddRepository, w, cx| app.prompt_add_repo(w, cx)))
             .on_action(cx.listener(Self::rename_active))
             .on_action(cx.listener(|app, _: &NextTab, w, cx| app.cycle_tab(1, w, cx)))
             .on_action(cx.listener(|app, _: &PrevTab, w, cx| app.cycle_tab(-1, w, cx)))
