@@ -460,6 +460,10 @@ impl TerpApp {
 
     fn row_menu(&mut self, id: u64, position: gpui::Point<gpui::Pixels>, cx: &mut Context<Self>) {
         let mut items = vec![MenuItem::new("名前を変更", action(move |app, window, cx| app.start_rename(id, window, cx)))];
+        let config = &cx.global::<crate::appearance::Appearance>().config;
+        if config.ai_assist && config.ai_name_terminal {
+            items.push(MenuItem::new("AI で名前を付ける", action(move |app, _, cx| app.name_with_ai(id, cx))));
+        }
         let current = self.session(id).map(|s| s.workspace.clone()).unwrap_or_default();
         if self.projects.workspaces.len() > 1 {
             items.push(MenuItem::separator());

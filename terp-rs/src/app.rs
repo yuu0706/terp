@@ -157,6 +157,8 @@ pub struct TerpApp {
     pub(crate) overview: Option<crate::overview::Overview>,
     pub(crate) overview_tab_memory: Option<String>,
     pub(crate) settings: Option<crate::settings::Settings>,
+    // 右下に数秒出す知らせ
+    pub(crate) toast: Option<(String, Instant)>,
     pub(crate) poll_count: u64,
     pub(crate) intel_running: bool,
     pub(crate) expanded_subagents: std::collections::HashSet<u64>,
@@ -375,6 +377,7 @@ impl TerpApp {
             overview: None,
             overview_tab_memory: None,
             settings: None,
+            toast: None,
             poll_count: 0,
             intel_running: false,
             expanded_subagents: Default::default(),
@@ -479,6 +482,18 @@ impl TerpApp {
         }
         if self.poll_count % 10 == 0 {
             self.write_snapshot(cx);
+        }
+        if self.poll_count % 2 == 0 {
+            let waiting: Vec<_> = self.sessions.iter().filter(|s| s.view.read(cx).pending_rename.is_some()).map(|s| s.view.clone()).collect();
+            for view in waiting {
+                let program = view.read(cx).process.as_ref().map(|p| p.name.clone()).unwrap_or_default();
+                if let Some(name) = view.update(cx, |v, _| v.flush_rename()) {
+                    self.show_toast(format!("{program} の会話の名前も「{name}」に変えました"), cx);
+                }
+            }
+        }
+        if self.toast.as_ref().is_some_and(|(_, at)| at.elapsed() >= Duration::from_secs(6)) {
+            self.toast = None;
         }
         // 経過の表示（考え中 1:23 など）を進める
         cx.notify();
@@ -714,9 +729,14 @@ impl TerpApp {
         let Some(session) = self.session(id) else { return };
         let workspace = session.workspace.clone();
         let name = name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty());
+        let rename = cx.global::<Appearance>().config.agent_rename;
         session.view.update(cx, |view, cx| {
             view.custom_name = name.clone();
             view.save_meta(&workspace);
+            // 付けた名前を claude・codex の会話の名前にも写す（手が空くまで待つ）
+            if rename && let Some(name) = &name {
+                view.pending_rename = Some(name.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(80).collect());
+            }
             cx.notify();
         });
         cx.notify();
@@ -1163,6 +1183,61 @@ impl TerpApp {
 
     pub(crate) fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.open_settings_screen(window, cx);
+    }
+
+    pub(crate) fn show_toast(&mut self, text: String, cx: &mut Context<Self>) {
+        self.toast = Some((text, Instant::now()));
+        cx.notify();
+    }
+
+    // 画面の末尾を渡して、claude に名前を付けさせる
+    pub(crate) fn name_with_ai(&mut self, id: u64, cx: &mut Context<Self>) {
+        let Some(session) = self.session(id) else { return };
+        let view = session.view.clone();
+        let (screen, cwd, program) = {
+            let v = view.read(cx);
+            (v.screen_tail(), short_path(&v.cwd()), v.process.as_ref().map(|p| p.name.clone()).unwrap_or_default())
+        };
+        let config = cx.global::<Appearance>().config.clone();
+        view.update(cx, |v, cx| {
+            v.ai_naming = true;
+            cx.notify();
+        });
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = cx.background_executor().spawn(async move { crate::assist::terminal_name(&config, &screen, &cwd, &program) }).await;
+            let _ = this.update(cx, |app, cx| {
+                view.update(cx, |v, _| v.ai_naming = false);
+                match result {
+                    Ok(name) => app.set_name(id, Some(name), cx),
+                    Err(err) => app.show_toast(err, cx),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn render_toast(&self, p: &Palette) -> Option<AnyElement> {
+        let (text, _) = self.toast.as_ref()?;
+        Some(
+            div()
+                .absolute()
+                .right(px(16.0))
+                .bottom(px(16.0))
+                .max_w(px(420.0))
+                .px_3()
+                .py_2()
+                .rounded_lg()
+                .border_1()
+                .border_color(p.border)
+                .bg(p.solid_bg)
+                .shadow_lg()
+                .text_sm()
+                .text_color(p.text)
+                .child(text.clone())
+                .into_any_element(),
+        )
     }
 
     // 操作中の端末へ入力を戻す
@@ -1748,6 +1823,7 @@ impl Render for TerpApp {
             )
             .children(self.render_overview(&p, window, cx))
             .children(self.render_settings(&p, cx))
+            .children(self.render_toast(&p))
             .children(self.render_menu(&p, cx))
             .children(self.render_dialog(&p, cx))
     }

@@ -99,6 +99,14 @@ pub struct TerminalView {
     pub subagents: Vec<crate::transcript::Subagent>,
     // 前に通知へ使った返答（同じ返答を2回使わない）
     pub last_reply: Option<u64>,
+    // 会話へ /rename で写すのを待っている名前
+    pub pending_rename: Option<String>,
+    // AI で名前を付けている間
+    pub ai_naming: bool,
+    // ⌘A で入力欄だけを選んだとき、写すのは印と字下げを除いた文
+    input_selection: Option<String>,
+    blink_on: bool,
+    _blink: Task<()>,
     title_working: bool,
     marked_text: Option<String>,
     layout: Layout,
@@ -145,6 +153,29 @@ impl TerminalView {
                 edits: Vec::new(),
                 subagents: Vec::new(),
                 last_reply: None,
+                pending_rename: None,
+                ai_naming: false,
+                input_selection: None,
+                blink_on: true,
+                _blink: cx.spawn(async move |this, cx| {
+                    loop {
+                        cx.background_executor().timer(std::time::Duration::from_millis(530)).await;
+                        let alive = this
+                            .update(cx, |view, cx| {
+                                if cx.global::<Appearance>().config.cursor_blink {
+                                    view.blink_on = !view.blink_on;
+                                    cx.notify();
+                                } else if !view.blink_on {
+                                    view.blink_on = true;
+                                    cx.notify();
+                                }
+                            })
+                            .is_ok();
+                        if !alive {
+                            break;
+                        }
+                    }
+                }),
                 title_working: false,
                 marked_text: None,
                 layout: Layout::default(),
@@ -288,6 +319,9 @@ impl TerminalView {
         if let Some(name) = self.custom_name.as_ref().filter(|n| !n.trim().is_empty()) {
             return name.clone();
         }
+        if self.ai_naming {
+            return "名前を考え中…".into();
+        }
         if self.is_agent() {
             if let Some(title) = &self.agent_title {
                 return title.clone();
@@ -297,6 +331,13 @@ impl TerminalView {
             }
         }
         folder_name(&self.cwd())
+    }
+
+    // AI に渡す画面の末尾（最大40行・2,000字）
+    pub fn screen_tail(&self) -> String {
+        let text = self.tail_lines(40).join("\n");
+        let chars: Vec<char> = text.chars().collect();
+        chars[chars.len().saturating_sub(2000)..].iter().collect()
     }
 
     // 画面の末尾 n 行（末尾の空行を除く）。全体の一覧の縮小表示に使う
@@ -323,6 +364,26 @@ impl TerminalView {
         }
         let start = lines.len().saturating_sub(n);
         lines.split_off(start)
+    }
+
+    // 待っている名前を、手が空いていて入力欄が空なら /rename で送る。送れたら名前を返す
+    pub fn flush_rename(&mut self) -> Option<String> {
+        let name = self.pending_rename.clone()?;
+        let program = self.process.as_ref().map(|p| p.name.clone()).unwrap_or_default();
+        if !self.is_agent() || !(program == "claude" || program == "codex") {
+            self.pending_rename = None;
+            return None;
+        }
+        if matches!(self.agent_state(), AgentState::Working | AgentState::Waiting) {
+            return None;
+        }
+        let (found, _) = self.agent_input_box()?;
+        if !found.text.is_empty() {
+            return None;
+        }
+        self.pending_rename = None;
+        self.terminal.write(format!("/rename {name}\r").as_bytes());
+        Some(name)
     }
 
     // 開き直したときに戻す情報を、常駐のプロセスに預ける
@@ -355,6 +416,8 @@ impl TerminalView {
     fn write_input(&mut self, bytes: &[u8], cx: &mut Context<Self>) {
         self.agent.apply(AgentEvent::Input, Instant::now());
         self.last_input = Some(Instant::now());
+        self.blink_on = true;
+        self.input_selection = None;
         {
             let mut term = self.terminal.term.lock();
             term.scroll_display(Scroll::Bottom);
@@ -383,6 +446,10 @@ impl TerminalView {
     }
 
     fn copy(&mut self, _: &Copy, _window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(text) = self.input_selection.clone() {
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
+            return;
+        }
         if let Some(text) = self.terminal.term.lock().selection_to_string() {
             cx.write_to_clipboard(ClipboardItem::new_string(text));
         }
@@ -399,7 +466,71 @@ impl TerminalView {
         self.write_input(&bytes, cx);
     }
 
+    // 画面の各行（入力欄を探すため）
+    fn screen_lines(&self) -> (Vec<crate::inputbox::LineInfo>, usize, usize) {
+        let term = self.terminal.term.lock();
+        let grid = term.grid();
+        let (rows, cols) = (grid.screen_lines(), grid.columns());
+        let offset = grid.display_offset() as i32;
+        let mut lines = Vec::with_capacity(rows);
+        for r in 0..rows {
+            let line = &grid[Line(r as i32 - offset)];
+            let mut text = String::new();
+            let mut col_of = Vec::new();
+            let mut dim = Vec::new();
+            for c in 0..cols {
+                let cell = &line[Column(c)];
+                if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
+                    continue;
+                }
+                text.push(cell.c);
+                col_of.push(c);
+                dim.push(cell.flags.contains(Flags::DIM));
+            }
+            let mid = &line[Column(cols / 2)];
+            let bg = match mid.bg {
+                Color::Named(NamedColor::Background) => None,
+                Color::Named(n) => Some(0x1000_0000 | n as u32),
+                Color::Indexed(i) => Some(0x2000_0000 | i as u32),
+                Color::Spec(c) => Some(((c.r as u32) << 16) | ((c.g as u32) << 8) | c.b as u32),
+            };
+            lines.push(crate::inputbox::LineInfo { text: text.trim_end().to_string(), cols: col_of, bg, dim });
+        }
+        let cursor = grid.cursor.point;
+        let row = (cursor.line.0 + offset).max(0) as usize;
+        (lines, cols, row)
+    }
+
+    pub fn agent_input_box(&self) -> Option<(crate::inputbox::InputBox, Vec<Vec<usize>>)> {
+        let (lines, cols, row) = self.screen_lines();
+        let found = crate::inputbox::find(&lines, cols, row)?;
+        Some((found, lines.into_iter().map(|l| l.cols).collect()))
+    }
+
     fn select_all(&mut self, _: &SelectAll, _window: &mut Window, cx: &mut Context<Self>) {
+        // エージェントの画面では、入力欄だけを選ぶ（見つからなければ全体）
+        if self.is_agent() && cx.global::<Appearance>().config.agent_input_select
+            && let Some((found, cols)) = self.agent_input_box()
+        {
+            let mut term = self.terminal.term.lock();
+            term.selection = None;
+            self.input_selection = None;
+            if !found.text.is_empty() {
+                let offset = term.grid().display_offset() as i32;
+                let col = |row: usize, ch: usize| cols.get(row).and_then(|c| c.get(ch).copied()).unwrap_or(ch);
+                let start = AlacPoint::new(Line(found.start.0 as i32 - offset), Column(col(found.start.0, found.start.1)));
+                let end_ch = found.end.1.saturating_sub(1);
+                let end = AlacPoint::new(Line(found.end.0 as i32 - offset), Column(col(found.end.0, end_ch)));
+                let mut selection = Selection::new(SelectionType::Simple, start, Side::Left);
+                selection.update(end, Side::Right);
+                term.selection = Some(selection);
+                self.input_selection = Some(found.text);
+            }
+            drop(term);
+            cx.notify();
+            return;
+        }
+        self.input_selection = None;
         let mut term = self.terminal.term.lock();
         let top = AlacPoint::new(Line(-(term.history_size() as i32)), Column(0));
         let bottom = AlacPoint::new(Line(term.screen_lines() as i32 - 1), Column(term.columns().saturating_sub(1)));
@@ -713,6 +844,7 @@ impl TerminalView {
         };
         term.selection = Some(Selection::new(kind, point, side));
         drop(term);
+        self.input_selection = None;
         self.selecting = true;
         cx.notify();
     }
@@ -998,6 +1130,7 @@ impl Element for TerminalElement {
         let layout = Layout { bounds_origin: bounds.origin, origin, cell_width, line_height, cols, rows };
 
         let focused = self.view.read(cx).focus.is_focused(window);
+        let blink_hidden = focused && !self.view.read(cx).blink_on;
         let marked = self.view.read(cx).marked_text.clone();
         self.view.update(cx, |view, _| {
             view.layout = layout;
@@ -1157,7 +1290,7 @@ impl Element for TerminalElement {
         let mut cursor = Vec::new();
         let cursor_point = content.cursor.point;
         let cursor_row = cursor_point.line.0 + display_offset;
-        if content.cursor.shape != CursorShape::Hidden && (0..rows as i32).contains(&cursor_row) && marked.is_none() {
+        if content.cursor.shape != CursorShape::Hidden && !blink_hidden && (0..rows as i32).contains(&cursor_row) && marked.is_none() {
             let o = cell_origin(cursor_row, cursor_point.column.0);
             let wide = term.grid()[cursor_point].flags.contains(Flags::WIDE_CHAR);
             let w = if wide { cell_width * 2.0 } else { cell_width };

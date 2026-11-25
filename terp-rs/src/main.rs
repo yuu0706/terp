@@ -8,6 +8,7 @@ mod config;
 mod dock;
 mod git;
 mod input;
+mod inputbox;
 mod keys;
 mod links;
 mod overlay;
