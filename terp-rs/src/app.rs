@@ -159,6 +159,8 @@ pub struct TerpApp {
     pub(crate) settings: Option<crate::settings::Settings>,
     // 右下に数秒出す知らせ
     pub(crate) toast: Option<(String, Instant)>,
+    // 閉じた許可のカード（同じ画面の間は出し直さない）
+    pub(crate) dismissed_prompts: HashMap<u64, String>,
     pub(crate) poll_count: u64,
     pub(crate) intel_running: bool,
     pub(crate) expanded_subagents: std::collections::HashSet<u64>,
@@ -378,6 +380,7 @@ impl TerpApp {
             overview_tab_memory: None,
             settings: None,
             toast: None,
+            dismissed_prompts: HashMap::new(),
             poll_count: 0,
             intel_running: false,
             expanded_subagents: Default::default(),
@@ -1218,6 +1221,122 @@ impl TerpApp {
         .detach();
     }
 
+    // 表示していないエージェントの許可待ちを、右下のカードで答えられるようにする
+    fn render_permission_cards(&self, p: &Palette, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !cx.global::<Appearance>().config.permission_card {
+            return None;
+        }
+        let mut cards = Vec::new();
+        for s in &self.sessions {
+            let view = s.view.read(cx);
+            if !view.is_agent() || view.agent_state() != AgentState::Waiting || self.is_visible(s.id) {
+                continue;
+            }
+            let Some(prompt) = crate::permission::parse(&view.screen_text()) else { continue };
+            let sig = prompt.signature();
+            if self.dismissed_prompts.get(&s.id) == Some(&sig) {
+                continue;
+            }
+            cards.push((s.id, view.display_name(), prompt, sig));
+        }
+        if cards.is_empty() {
+            return None;
+        }
+        let mut column = div().absolute().right(px(16.0)).bottom(px(64.0)).w(px(360.0)).flex().flex_col().gap_2();
+        for (id, name, prompt, sig) in cards {
+            let mut options = div().flex().flex_col().gap_1();
+            for (i, label) in prompt.options.iter().enumerate() {
+                let sig = sig.clone();
+                options = options.child(
+                    div()
+                        .id(SharedString::from(format!("perm-{id}-{i}")))
+                        .px_2()
+                        .py_1()
+                        .rounded_md()
+                        .border_1()
+                        .border_color(p.border)
+                        .text_sm()
+                        .when(i == prompt.cursor, |d| d.border_color(p.accent))
+                        .hover(|s| s.bg(p.hover))
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .on_click(cx.listener(move |app, _: &ClickEvent, window, cx| app.answer_permission(id, i, sig.clone(), window, cx)))
+                        .child(format!("{}. {label}", i + 1)),
+                );
+            }
+            let sig2 = sig.clone();
+            column = column.child(
+                div()
+                    .id(("perm-card", id))
+                    .occlude()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .p_3()
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(p.warning)
+                    .bg(p.solid_bg)
+                    .shadow_lg()
+                    .text_color(p.text)
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_2()
+                            .children(mark_dot(Mark::Agent(AgentState::Waiting), p))
+                            .child(div().flex_1().text_sm().font_weight(FontWeight::SEMIBOLD).overflow_hidden().text_ellipsis().whitespace_nowrap().child(name))
+                            .child(
+                                crate::ui::icon_button(("perm-close", id), "close", "このカードを閉じる（ターミナルの許可待ちは続く）", p.muted, p.hover, p.text)
+                                    .on_click(cx.listener(move |app, _: &ClickEvent, _, cx| {
+                                        app.dismissed_prompts.insert(id, sig2.clone());
+                                        cx.notify();
+                                    })),
+                            ),
+                    )
+                    .child(div().text_sm().child(prompt.question.clone()))
+                    .when(!prompt.detail.is_empty(), |d| {
+                        d.child(div().px_2().py_1().rounded_md().bg(p.term_bg).text_xs().text_color(p.muted).child(prompt.detail.join("\n")))
+                    })
+                    .child(options)
+                    .child(
+                        div()
+                            .id(("perm-go", id))
+                            .px_2()
+                            .py_1()
+                            .rounded_md()
+                            .text_sm()
+                            .text_color(p.muted)
+                            .hover(|s| s.bg(p.hover).text_color(p.text))
+                            .on_click(cx.listener(move |app, _: &ClickEvent, window, cx| app.select(id, window, cx)))
+                            .child("ターミナルへ移る"),
+                    ),
+            );
+        }
+        Some(column.into_any_element())
+    }
+
+    // 押す直前に画面を読み直し、同じ許可の画面のときだけ矢印と Enter を送る
+    fn answer_permission(&mut self, id: u64, index: usize, sig: String, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(view) = self.session(id).map(|s| s.view.clone()) else { return };
+        let prompt = (view.read(cx).agent_state() == AgentState::Waiting).then(|| crate::permission::parse(&view.read(cx).screen_text())).flatten();
+        let Some(prompt) = prompt.filter(|p| p.signature() == sig) else {
+            self.show_toast("許可の画面が変わったため、送りませんでした".into(), cx);
+            return;
+        };
+        view.update(cx, |v, cx| {
+            v.send_keys(&crate::permission::keys(prompt.cursor, index));
+            cx.notify();
+        });
+        self.dismissed_prompts.insert(id, sig);
+        // 「No, and tell Claude …」は続けて文を打つため、そのターミナルへ移る
+        let label = prompt.options[index].to_lowercase();
+        if label.contains("tell claude") || label.contains("differently") {
+            self.select(id, window, cx);
+        }
+        cx.notify();
+    }
+
     fn render_toast(&self, p: &Palette) -> Option<AnyElement> {
         let (text, _) = self.toast.as_ref()?;
         Some(
@@ -1823,6 +1942,7 @@ impl Render for TerpApp {
             )
             .children(self.render_overview(&p, window, cx))
             .children(self.render_settings(&p, cx))
+            .children(self.render_permission_cards(&p, cx))
             .children(self.render_toast(&p))
             .children(self.render_menu(&p, cx))
             .children(self.render_dialog(&p, cx))

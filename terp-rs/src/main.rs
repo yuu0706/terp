@@ -14,6 +14,7 @@ mod links;
 mod overlay;
 mod overview;
 mod panes;
+mod permission;
 mod projects;
 mod ptyhost;
 mod search;

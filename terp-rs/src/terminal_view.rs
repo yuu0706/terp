@@ -333,6 +333,18 @@ impl TerminalView {
         folder_name(&self.cwd())
     }
 
+    // 画面の1画面分の文字（許可の画面を読むため）
+    pub fn screen_text(&self) -> String {
+        let (lines, _, _) = self.screen_lines();
+        lines.into_iter().map(|l| l.text).collect::<Vec<_>>().join("\n")
+    }
+
+    // 書き込む（キーとして送る）
+    pub fn send_keys(&mut self, text: &str) {
+        self.agent.apply(AgentEvent::Input, Instant::now());
+        self.terminal.write(text.as_bytes());
+    }
+
     // AI に渡す画面の末尾（最大40行・2,000字）
     pub fn screen_tail(&self) -> String {
         let text = self.tail_lines(40).join("\n");
