@@ -71,6 +71,7 @@ actions!(
         ToggleChanges,
         ToggleHistory,
         RedrawTerminal,
+        ToggleLock,
     ]
 );
 
@@ -163,6 +164,9 @@ pub struct TerpApp {
     pub(crate) settings: Option<crate::settings::Settings>,
     pub(crate) panel: Option<crate::rightpanel::RightPanel>,
     pub(crate) pets: crate::pets::Pets,
+    // よく戻るタブ。タブごとの訪れた時刻（3秒以上とどまったものだけ）と、今いるタブ
+    pub(crate) visits: HashMap<u64, Vec<Instant>>,
+    pub(crate) current_visit: Option<(u64, Instant)>,
     // 右下に数秒出す知らせ
     pub(crate) toast: Option<(String, Instant)>,
     // 閉じた許可のカード（同じ画面の間は出し直さない）
@@ -408,6 +412,8 @@ impl TerpApp {
             settings: None,
             panel: None,
             pets: Default::default(),
+            visits: HashMap::new(),
+            current_visit: None,
             toast: None,
             dismissed_prompts: HashMap::new(),
             poll_count: 0,
@@ -889,10 +895,9 @@ impl TerpApp {
             self.set_workspace(&workspace, window, cx);
         }
         let previous = self.active_id();
-        // 枠のタブに無い端末は、操作中の枠のタブに足して出す
-        if !self.layout_mut().select(id) {
-            self.layout_mut().add_tab(id);
-        }
+        // 枠のタブに無い端末は、固定していない枠のタブに足して出す
+        self.layout_mut().show_tab(id);
+        self.record_visit(id);
         if let Some(previous) = previous
             && previous != id
         {
@@ -1257,6 +1262,32 @@ impl TerpApp {
 
     pub(crate) fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.open_settings_screen(window, cx);
+    }
+
+    fn record_visit(&mut self, id: u64) {
+        let now = Instant::now();
+        if let Some((prev, since)) = self.current_visit {
+            if prev == id {
+                return;
+            }
+            if now.duration_since(since) >= Duration::from_secs(3) {
+                self.visits.entry(prev).or_default().push(since);
+            }
+        }
+        self.current_visit = Some((id, now));
+    }
+
+    // 直近30分に戻った回数（3回以上で薄く、5回以上で少し濃く色を付ける）
+    pub(crate) fn visit_tint(&self, id: u64, p: &Palette, cx: &App) -> Option<Hsla> {
+        if !cx.global::<Appearance>().config.frequent_tabs {
+            return None;
+        }
+        let n = self.visits.get(&id).map(|v| v.iter().filter(|t| t.elapsed() < Duration::from_secs(1800)).count()).unwrap_or(0);
+        match n {
+            0..3 => None,
+            3..5 => Some(p.accent.opacity(0.10)),
+            _ => Some(p.accent.opacity(0.18)),
+        }
     }
 
     pub(crate) fn show_toast(&mut self, text: String, cx: &mut Context<Self>) {
@@ -1774,7 +1805,9 @@ impl TerpApp {
             let Some(session) = self.session(id) else { continue };
             let view = session.view.read(cx);
             let selected = pane.active == Some(id);
-            let label = format!("{}  {}", index + 1, view.display_name());
+            let tint = self.visit_tint(id, p, cx);
+            let label = view.display_name();
+            let _ = index;
             let name = self.name_label(id, label);
             let state = view.agent_state();
             let dot = mark_dot(mark_of(view), p);
@@ -1793,7 +1826,7 @@ impl TerpApp {
                     .text_sm()
                     .text_color(if selected { p.text } else { p.muted })
                     .when(selected, |d| d.bg(if layout.active_pane == pane_id { p.accent_fill } else { p.accent_fill_dim }))
-                    .when(!selected, |d| d.hover(|s| s.bg(p.hover)))
+                    .when(!selected, |d| d.when_some(tint, |d, t| d.bg(t)).hover(|s| s.bg(p.hover)))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_mouse_down(MouseButton::Middle, cx.listener(move |app, _: &MouseDownEvent, window, cx| {
                         cx.stop_propagation();
@@ -1870,10 +1903,40 @@ impl TerpApp {
                 })
             });
 
+        // 出しているタブの「プログラム名 · リポジトリ / ブランチ」と、枠の錠
+        let info = pane.active.and_then(|id| self.session(id)).map(|s| {
+            let v = s.view.read(cx);
+            let program = v.process.as_ref().map(|p| p.name.clone()).unwrap_or_default();
+            let place = match self.placement(s.id, cx) {
+                Some((repo, work)) => {
+                    let name = Path::new(&repo).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                    let branch = self.repos.get(&repo).and_then(|l| l.iter().find(|w| w.path == work)).map(|w| w.label());
+                    branch.map(|b| format!("{name} / {b}")).unwrap_or(name)
+                }
+                None => short_path(&v.cwd()),
+            };
+            [program, place].into_iter().filter(|x| !x.is_empty()).collect::<Vec<_>>().join(" · ")
+        });
+        let locked = pane.locked;
+        let lock_group = SharedString::from(format!("bar-{pane_id}"));
+        let bar = bar
+            .group(lock_group.clone())
+            .when_some(info.filter(|_| pets.is_none()), |d, info| {
+                d.child(div().flex_1().min_w_0().px_2().text_xs().text_color(p.muted).overflow_hidden().text_ellipsis().whitespace_nowrap().child(info))
+            });
         let bar = match pets {
             Some(pets) => bar.child(pets),
             None => bar,
         };
+        let bar = bar.child(
+            crate::ui::icon_button(("lock", pane_id), if locked { "lock" } else { "unlock" }, if locked { "枠の固定を外す" } else { "今の枠を固定（一覧から選んでも中身を替えない）" }, p.muted, p.hover, p.text)
+                .when(!locked, |d| d.invisible().group_hover(lock_group, |s| s.visible()))
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_click(cx.listener(move |app, _: &ClickEvent, _, cx| {
+                    app.layout_mut().toggle_lock(pane_id);
+                    cx.notify();
+                })),
+        );
         let hint = self.drop_hint.filter(|(id, _)| *id == pane_id).map(|(_, side)| side);
         let content: AnyElement = match pane.active.and_then(|id| self.session(id)) {
             Some(session) => div().size_full().bg(p.term_bg).child(session.view.clone()).into_any_element(),
@@ -1966,6 +2029,13 @@ impl Render for TerpApp {
             .on_action(cx.listener(Self::open_config))
             .on_action(cx.listener(Self::reopen_closed))
             .on_action(cx.listener(|app, _: &OpenSettings, w, cx| app.open_settings(w, cx)))
+            .on_action(cx.listener(|app, _: &ToggleLock, _, cx| {
+                let pane = app.layout().map(|l| l.active_pane);
+                if let Some(pane) = pane {
+                    app.layout_mut().toggle_lock(pane);
+                }
+                cx.notify();
+            }))
             .on_action(cx.listener(|app, _: &RedrawTerminal, _, cx| {
                 if let Some(s) = app.active_id().and_then(|id| app.session(id)) {
                     s.view.update(cx, |v, cx| {

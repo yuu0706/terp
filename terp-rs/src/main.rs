@@ -174,6 +174,7 @@ fn set_menus(cx: &mut App) {
             MenuItem::action("次のタブ", NextTab),
             MenuItem::action("次の要対応", NextAttention),
             MenuItem::action("全体の一覧", ToggleOverview),
+            MenuItem::action("今の枠を固定", ToggleLock),
             MenuItem::separator(),
             MenuItem::action("左の枠", PaneLeft),
             MenuItem::action("右の枠", PaneRight),

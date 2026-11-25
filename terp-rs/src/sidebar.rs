@@ -1137,6 +1137,7 @@ impl TerpApp {
             .rounded_md()
             .when(selected, |d| d.bg(p.accent_fill).border_l_2().border_color(p.accent))
             .when(!selected && visible, |d| d.bg(p.accent_fill_dim))
+            .when(!selected && !visible, |d| d.when_some(self.visit_tint(id, p, cx), |d, t| d.bg(t)))
             .when(!selected, |d| d.hover(|s| s.bg(p.hover)))
             .tooltip(move |_, cx| crate::tooltip::text(tip.clone(), cx))
             .on_click(cx.listener(move |app, event: &ClickEvent, window, cx| {

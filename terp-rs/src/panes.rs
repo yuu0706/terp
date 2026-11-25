@@ -46,6 +46,9 @@ pub struct Pane {
     pub id: u64,
     pub tabs: Vec<u64>,
     pub active: Option<u64>,
+    // 固定した枠は、一覧から選んでも中身を差し替えない
+    #[serde(default)]
+    pub locked: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -66,7 +69,7 @@ pub struct Rect {
 
 impl Default for Layout {
     fn default() -> Self {
-        Layout { root: Node::Leaf(1), panes: vec![Pane { id: 1, tabs: Vec::new(), active: None }], active_pane: 1, next_pane: 2 }
+        Layout { root: Node::Leaf(1), panes: vec![Pane { id: 1, tabs: Vec::new(), active: None, locked: false }], active_pane: 1, next_pane: 2 }
     }
 }
 
@@ -136,6 +139,36 @@ impl Layout {
         true
     }
 
+    // 枠に無いタブを出す。操作中の枠が固定なら、固定していない枠の並びの先に出し、
+    // 全部固定なら右に枠を足す（6枠ならそのまま操作中の枠に出す）
+    pub fn show_tab(&mut self, tab: u64) {
+        if self.select(tab) {
+            return;
+        }
+        if !self.active().locked {
+            self.add_tab(tab);
+            return;
+        }
+        let free = self.leaf_order().into_iter().find(|id| self.pane(*id).is_some_and(|p| !p.locked));
+        match free {
+            Some(pane) => {
+                self.active_pane = pane;
+                self.add_tab(tab);
+            }
+            None => {
+                if !self.split(Axis::Row, tab) {
+                    self.add_tab(tab);
+                }
+            }
+        }
+    }
+
+    pub fn toggle_lock(&mut self, pane: u64) {
+        if let Some(p) = self.pane_mut(pane) {
+            p.locked = !p.locked;
+        }
+    }
+
     pub fn focus_pane(&mut self, pane: u64) {
         if self.pane(pane).is_some() {
             self.active_pane = pane;
@@ -151,7 +184,7 @@ impl Layout {
         self.next_pane += 1;
         let target = self.active_pane;
         insert_after(&mut self.root, target, id, axis);
-        self.panes.push(Pane { id, tabs: vec![tab], active: Some(tab) });
+        self.panes.push(Pane { id, tabs: vec![tab], active: Some(tab), locked: false });
         self.active_pane = id;
         true
     }
@@ -245,7 +278,7 @@ impl Layout {
             _ => (Axis::Column, false),
         };
         insert_beside(&mut self.root, target, id, axis, before);
-        self.panes.push(Pane { id, tabs: vec![tab], active: Some(tab) });
+        self.panes.push(Pane { id, tabs: vec![tab], active: Some(tab), locked: false });
         self.active_pane = id;
         let left_empty = source.filter(|s| self.pane(*s).is_some_and(|p| p.tabs.is_empty()));
         if left_empty == Some(target) {
@@ -546,6 +579,26 @@ mod tests {
         assert_eq!(m.panes.len(), 1);
         assert_eq!(m.active_tab(), Some(100));
         assert_eq!(m.root, Node::Leaf(1));
+    }
+
+    #[test]
+    fn 固定した枠には出さず固定していない枠へ出す() {
+        let mut l = layout_with(&[10]);
+        l.split(Axis::Row, 11);
+        l.focus_pane(2);
+        l.toggle_lock(2);
+        l.show_tab(12);
+        assert_eq!(l.pane(1).unwrap().tabs, vec![10, 12]);
+        assert_eq!(l.pane(2).unwrap().tabs, vec![11]);
+    }
+
+    #[test]
+    fn 全部固定なら右に枠を足す() {
+        let mut l = layout_with(&[10]);
+        l.toggle_lock(1);
+        l.show_tab(11);
+        assert_eq!(l.panes.len(), 2);
+        assert_eq!(l.active_tab(), Some(11));
     }
 
     #[test]
