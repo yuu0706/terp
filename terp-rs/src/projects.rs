@@ -163,14 +163,6 @@ pub fn parked(path: &str) -> Vec<Value> {
         .unwrap_or_default()
 }
 
-pub fn set_draft(path: &str, draft: bool) -> anyhow::Result<()> {
-    update(|map| {
-        with_project(map, path, |p| {
-            p.insert("draft".into(), Value::Bool(draft));
-        });
-        Ok(())
-    })
-}
 
 // 既に登録したリポジトリなら、重ねずにそのワークスペースへ移してドラフトに出す
 pub fn add_project(path: &str, workspace: &str) -> anyhow::Result<()> {

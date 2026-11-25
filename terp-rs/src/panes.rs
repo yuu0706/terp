@@ -169,6 +169,7 @@ impl Layout {
         }
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn focus_pane(&mut self, pane: u64) {
         if self.pane(pane).is_some() {
             self.active_pane = pane;

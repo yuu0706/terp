@@ -184,9 +184,6 @@ pub fn remove_worktree(repo: &Path, dir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn current_branch(dir: &Path) -> Option<String> {
-    git(&["branch", "--show-current"], dir).ok().map(|b| b.trim().to_string()).filter(|b| !b.is_empty())
-}
 
 #[cfg(test)]
 mod tests {

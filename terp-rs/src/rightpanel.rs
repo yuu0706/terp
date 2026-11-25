@@ -18,6 +18,7 @@ pub enum PanelKind {
     Files,
     Changes,
     History,
+    Transcript,
 }
 
 pub struct RightPanel {
@@ -43,6 +44,8 @@ pub struct RightPanel {
     file_filter: Option<String>,
     detail: Option<(Commit, Vec<Change>, Option<(String, Diff)>)>,
     loading: bool,
+    // サブエージェントの記録（場所・見出し・読んだ中身）
+    transcript: Option<(PathBuf, String, Vec<crate::transcript::Entry>)>,
     _refresh: Task<()>,
     _subscriptions: Vec<Subscription>,
 }
@@ -148,6 +151,7 @@ impl TerpApp {
             file_filter: None,
             detail: None,
             loading: false,
+            transcript: None,
             _refresh: refresh,
             _subscriptions: subs,
         });
@@ -172,6 +176,7 @@ impl TerpApp {
         };
         match panel.kind {
             PanelKind::History => return self.reload_history(cx),
+            PanelKind::Transcript => return self.reload_transcript(cx),
             PanelKind::Files | PanelKind::Changes => {}
         }
         let dirs: Vec<PathBuf> = std::iter::once(root.clone()).chain(panel.expanded.iter().cloned()).collect();
@@ -205,6 +210,69 @@ impl TerpApp {
             });
         })
         .detach();
+    }
+
+    // サブエージェントの記録を右の面で開く。動いている間は3秒ごとに読み直す
+    pub(crate) fn open_transcript(&mut self, file: PathBuf, title: String, window: &mut Window, cx: &mut Context<Self>) {
+        if self.panel.is_none() {
+            self.toggle_panel(PanelKind::Transcript, window, cx);
+        }
+        if let Some(p) = self.panel.as_mut() {
+            p.kind = PanelKind::Transcript;
+            p.transcript = Some((file, title, Vec::new()));
+        }
+        self.reload_transcript(cx);
+    }
+
+    fn reload_transcript(&mut self, cx: &mut Context<Self>) {
+        let Some(file) = self.panel.as_ref().and_then(|p| p.transcript.as_ref()).map(|t| t.0.clone()) else { return };
+        cx.spawn(async move |this, cx| {
+            let f = file.clone();
+            let entries = cx.background_executor().spawn(async move { crate::transcript::transcript_entries(&f) }).await;
+            let _ = this.update(cx, |app, cx| {
+                if let Some(t) = app.panel.as_mut().and_then(|p| p.transcript.as_mut()).filter(|t| t.0 == file) {
+                    t.2 = entries;
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn render_transcript(&self, panel: &RightPanel, p: &Palette) -> AnyElement {
+        let Some((_, title, entries)) = &panel.transcript else {
+            return div().p_3().text_sm().text_color(p.muted).child("記録を読み込み中").into_any_element();
+        };
+        let mut col = div()
+            .id("transcript")
+            .flex()
+            .flex_col()
+            .gap_1()
+            .size_full()
+            .overflow_y_scroll()
+            .p_2()
+            .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(title.clone()));
+        if entries.is_empty() {
+            col = col.child(div().text_sm().text_color(p.muted).child("記録を待っている"));
+        }
+        for e in entries.iter().rev().take(300).collect::<Vec<_>>().into_iter().rev() {
+            let (label, color) = match e.kind {
+                "tool" => ("道具", p.accent),
+                "result" => ("結果", p.muted),
+                _ => ("話す", p.text),
+            };
+            col = col.child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .gap_2()
+                    .text_xs()
+                    .child(div().w(px(56.0)).flex_none().text_color(p.muted).child(e.time.clone()))
+                    .child(div().w(px(28.0)).flex_none().text_color(color).child(label))
+                    .child(div().flex_1().min_w_0().text_color(if e.kind == "result" { p.muted } else { p.text }).child(e.text.clone())),
+            );
+        }
+        col.into_any_element()
     }
 
     fn reload_history(&mut self, cx: &mut Context<Self>) {
@@ -444,6 +512,7 @@ impl TerpApp {
             PanelKind::Files => self.render_files(panel, p, cx),
             PanelKind::Changes => self.render_changes(panel, p, cx),
             PanelKind::History => self.render_history(panel, p, cx),
+            PanelKind::Transcript => self.render_transcript(panel, p),
         };
         Some(
             div()

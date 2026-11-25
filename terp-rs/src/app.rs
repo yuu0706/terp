@@ -3,10 +3,10 @@ use crate::agent::{AgentState, clean};
 use crate::appearance::{Appearance, hsla};
 use crate::config::{Config, config_path, home_dir};
 use crate::panes::{Axis, Direction, Layout, Node, Side, drop_side};
-use crate::projects::{self, Project, Projects, contains_path};
+use crate::projects::{self, Projects};
 use crate::input::{InputEvent, TextInput};
 use crate::ptyhost::SessionSummary;
-use crate::state::{ClosedTab, SIDEBAR_DEFAULT, SIDEBAR_MAX, SIDEBAR_MIN, UiState};
+use crate::state::{ClosedTab, SIDEBAR_MAX, SIDEBAR_MIN, UiState};
 use crate::terminal::{GridSize, HostClient, Terminal};
 use crate::terminal_view::{Attention, TerminalEvent, TerminalView};
 use gpui::{
@@ -120,13 +120,13 @@ impl Render for DraggedTab {
     }
 }
 
-struct Rename {
+pub(crate) struct Rename {
     id: u64,
     input: Entity<TextInput>,
     _subscription: Subscription,
 }
 
-struct DividerDrag {
+pub(crate) struct DividerDrag {
     workspace: String,
     path: Vec<usize>,
     index: usize,
@@ -253,7 +253,6 @@ pub(crate) struct Palette {
     pub(crate) accent_fill_dim: Hsla,
     pub(crate) accent_fill_work: Hsla,
     pub(crate) card: Hsla,
-    pub(crate) busy: Hsla,
     pub(crate) warning: Hsla,
     pub(crate) success: Hsla,
     pub(crate) info: Hsla,
@@ -290,7 +289,6 @@ pub(crate) fn palette(cx: &App) -> Palette {
         accent_fill_dim: hsla(c.bg.mix(c.accent, c.accent_fill * 12.0 / 22.0), 1.0),
         accent_fill_work: hsla(c.bg.mix(c.accent, c.accent_fill * 12.0 / 22.0), 1.0),
         card: hsla(c.bg_hover, 0.45),
-        busy: hsla(c.accent, 1.0),
         warning: hsla(a.theme.palette[3], 1.0),
         success: hsla(a.theme.palette[2], 1.0),
         info: hsla(a.theme.palette[4], 1.0),

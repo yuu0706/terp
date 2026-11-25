@@ -1249,8 +1249,11 @@ impl TerpApp {
                 "サブエージェント".into()
             };
             let since = s.started.unwrap_or(s.modified);
+            let (file, title) = (s.file.clone(), format!("{} · {}", label, if s.running { "動いている" } else { "終わった" }));
             div()
                 .id(SharedString::from(format!("sub-{id}-{i}")))
+                .hover(|st| st.bg(p.hover))
+                .on_click(cx.listener(move |app, _: &ClickEvent, window, cx| app.open_transcript(file.clone(), title.clone(), window, cx)))
                 .flex()
                 .flex_row()
                 .items_center()

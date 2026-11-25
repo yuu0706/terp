@@ -3,7 +3,7 @@ use crate::app::{Palette, TerpApp};
 use crate::input::{InputEvent, TextInput};
 use gpui::{
     AnyElement, ClickEvent, Context, Entity, Focusable, FontWeight, MouseButton, Pixels, Point, Subscription, Window,
-    anchored, deferred, div, point, prelude::*, px,
+    anchored, deferred, div, prelude::*, px,
 };
 use std::rc::Rc;
 
@@ -380,6 +380,3 @@ impl TerpApp {
     }
 }
 
-pub fn below(position: Point<Pixels>) -> Point<Pixels> {
-    point(position.x, position.y + px(4.0))
-}

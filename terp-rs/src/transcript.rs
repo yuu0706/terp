@@ -459,6 +459,54 @@ pub fn subagents(session_id: &str, config_dir: Option<&Path>) -> Vec<Subagent> {
     out
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct Entry {
+    // text: 話す / tool: 道具 / result: 結果
+    pub kind: &'static str,
+    pub time: String,
+    pub text: String,
+}
+
+// サブエージェントの記録を読み物にする。thinking と user・assistant 以外は出さない
+pub fn transcript_entries(file: &Path) -> Vec<Entry> {
+    let (rows, _) = tail_rows(file, MAX_BYTES);
+    let mut out = Vec::new();
+    for row in rows {
+        let ty = row.get("type").and_then(Value::as_str).unwrap_or("");
+        if ty != "user" && ty != "assistant" {
+            continue;
+        }
+        let time = row.get("timestamp").and_then(Value::as_str).and_then(|t| t.split('T').nth(1)).map(|t| t.chars().take(8).collect()).unwrap_or_default();
+        let content = row.get("message").and_then(|m| m.get("content"));
+        match content {
+            Some(Value::String(t)) => out.push(Entry { kind: "text", time, text: t.trim().to_string() }),
+            Some(Value::Array(blocks)) => {
+                for b in blocks {
+                    match b.get("type").and_then(Value::as_str) {
+                        Some("text") => out.push(Entry { kind: "text", time: time.clone(), text: b.get("text").and_then(Value::as_str).unwrap_or("").trim().to_string() }),
+                        Some("tool_use") => {
+                            let name = b.get("name").and_then(Value::as_str).unwrap_or("");
+                            out.push(Entry { kind: "tool", time: time.clone(), text: describe_tool(name, b.get("input").unwrap_or(&Value::Null)) });
+                        }
+                        Some("tool_result") => {
+                            let text = match b.get("content") {
+                                Some(Value::String(t)) => t.clone(),
+                                Some(Value::Array(a)) => a.iter().filter_map(|x| x.get("text").and_then(Value::as_str)).collect::<Vec<_>>().join("\n"),
+                                _ => String::new(),
+                            };
+                            out.push(Entry { kind: "result", time: time.clone(), text: clip(&text, 400) });
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out.retain(|e| !e.text.is_empty());
+    out
+}
+
 // 経過（「1分未満」「n分」「n時間」「n日」）
 pub fn elapsed_label(since: SystemTime) -> String {
     let s = since.elapsed().map(|d| d.as_secs()).unwrap_or(0);

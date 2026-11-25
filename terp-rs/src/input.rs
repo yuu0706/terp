@@ -153,13 +153,7 @@ impl TextInput {
         cx.notify();
     }
 
-    pub fn set_placeholder(&mut self, text: impl Into<SharedString>) {
-        self.placeholder = text.into();
-    }
 
-    pub fn is_focused(&self, window: &Window) -> bool {
-        self.focus.is_focused(window)
-    }
 
     fn changed(&mut self, cx: &mut Context<Self>) {
         cx.emit(InputEvent::Changed);

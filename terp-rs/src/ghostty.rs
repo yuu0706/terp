@@ -98,7 +98,7 @@ pub fn map(entries: &[(String, String)], theme_exists: impl Fn(&str) -> bool) ->
     let num = |v: &str| v.trim().parse::<f64>().ok().filter(|n| n.is_finite());
     for (key, (orig, value)) in latest {
         let mut skip = |reason: &str| skipped.push((orig.clone(), value.clone(), reason.to_string()));
-        let mut bounded = |name: &str, min: f64, max: f64, changes: &mut Map<String, Value>| match num(&value) {
+        let bounded = |name: &str, min: f64, max: f64, changes: &mut Map<String, Value>| match num(&value) {
             Some(n) => {
                 changes.insert(name.into(), json!(n.clamp(min, max)));
                 None
