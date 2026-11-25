@@ -381,7 +381,11 @@ impl TerpApp {
         match HostClient::connect() {
             Ok((host, sessions)) => {
                 app.host = Some(host);
-                app.restore_sessions(sessions, window, cx);
+                if sessions.is_empty() {
+                    app.restore_from_snapshot(window, cx);
+                } else {
+                    app.restore_sessions(sessions, window, cx);
+                }
             }
             Err(err) => {
                 app.notice = Some(format!("終了後もシェルを残す常駐のプロセスを使えない（{err}）。この窓を閉じるとシェルも終わる"));
@@ -470,6 +474,9 @@ impl TerpApp {
         if self.poll_count % 3 == 0 {
             self.refresh_intel(cx);
         }
+        if self.poll_count % 10 == 0 {
+            self.write_snapshot(cx);
+        }
         // 経過の表示（考え中 1:23 など）を進める
         cx.notify();
     }
@@ -499,9 +506,14 @@ impl TerpApp {
     }
 
     pub(crate) fn spawn_session(&mut self, cwd: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Option<u64> {
+        let workspace = self.workspace();
+        self.spawn_session_in(cwd, workspace, window, cx)
+    }
+
+    fn spawn_session_in(&mut self, cwd: PathBuf, workspace: String, window: &mut Window, cx: &mut Context<Self>) -> Option<u64> {
         let cwd = if cwd.is_dir() { cwd } else { home_dir() };
         let size = GridSize { cols: 80, rows: 24 };
-        let meta = serde_json::json!({ "workspace": self.workspace() });
+        let meta = serde_json::json!({ "workspace": workspace });
         let created = match &self.host {
             Some(host) => Terminal::create_remote(host, &cwd, size, meta),
             None => Terminal::spawn_local(&cwd, size),
@@ -515,8 +527,86 @@ impl TerpApp {
             }
         };
         let view = TerminalView::new(terminal, events, &cwd, cx);
-        let workspace = self.workspace();
         Some(self.add_session(view, workspace, window, cx))
+    }
+
+    // 常駐のプロセスごと消えていたら、控えから同じ場所・名前・所属で開き直し、エージェントの会話を再開する
+    fn restore_from_snapshot(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let saved = crate::snapshot::load();
+        if saved.is_empty() {
+            return;
+        }
+        let configured = cx.global::<Appearance>().config.agents.clone();
+        let agents = crate::agents::detect(&configured, "");
+        let mut to_app: HashMap<u64, u64> = HashMap::new();
+        for s in saved {
+            let workspace = Some(s.workspace.clone())
+                .filter(|w| self.projects.workspaces.iter().any(|x| x.id == *w))
+                .unwrap_or_else(|| self.workspace());
+            let Some(id) = self.spawn_session_in(s.cwd.clone(), workspace.clone(), window, cx) else { continue };
+            if let Some(old) = s.id {
+                to_app.insert(old, id);
+            }
+            let line = crate::snapshot::resume_line(&s, &agents);
+            if let Some(session) = self.session(id) {
+                session.view.update(cx, |v, _| {
+                    v.custom_name = s.custom_name.clone();
+                    v.work_path = s.work_path.clone();
+                    v.bypass = s.bypass && line.is_some();
+                    v.save_meta(&workspace);
+                    if let Some(line) = &line {
+                        v.terminal.write(format!("{line}\r").as_bytes());
+                    }
+                });
+            }
+        }
+        for (workspace, saved) in self.ui.layouts.clone() {
+            let mapped = saved.map_tabs(|t| to_app.get(&t).copied());
+            if !mapped.all_tabs().is_empty() {
+                self.layouts.insert(workspace, mapped);
+            }
+        }
+        let placed: Vec<u64> = self.layouts.values().flat_map(|l| l.all_tabs()).collect();
+        for s in &self.sessions {
+            if !placed.contains(&s.id) {
+                self.layouts.entry(s.workspace.clone()).or_default().add_tab(s.id);
+            }
+        }
+    }
+
+    // 開き直すための控えと、会話の履歴を書く
+    fn write_snapshot(&mut self, cx: &App) {
+        let saved: Vec<crate::snapshot::Saved> = self
+            .sessions
+            .iter()
+            .map(|s| {
+                let v = s.view.read(cx);
+                let program = v.process.as_ref().map(|p| p.name.clone()).unwrap_or_default();
+                let agent = (v.is_agent() && (program == "claude" || program == "codex")).then(|| program.clone());
+                let (session_id, config_dir) = match (&v.agent_session, agent.as_deref()) {
+                    (Some(a), Some("claude")) => (a.id.clone(), a.config_dir.clone()),
+                    (Some(a), Some("codex")) => (a.file.as_deref().and_then(crate::snapshot::codex_id), None),
+                    _ => (None, None),
+                };
+                crate::snapshot::Saved {
+                    id: v.terminal.remote_id(),
+                    cwd: v.cwd(),
+                    workspace: s.workspace.clone(),
+                    custom_name: v.custom_name.clone(),
+                    agent_title: v.agent_title.clone(),
+                    work_path: v.work_path.clone(),
+                    agent: agent.filter(|_| session_id.is_some()),
+                    agent_session: session_id,
+                    config_dir,
+                    bypass: v.bypass,
+                }
+            })
+            .collect();
+        if let Err(err) = crate::snapshot::save(&saved) {
+            self.notice = Some(format!("開き直すための控えを書けない: {err}"));
+        }
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0);
+        let _ = crate::snapshot::record_history(&saved, now);
     }
 
     fn add_session(&mut self, view: Entity<TerminalView>, workspace: String, window: &mut Window, cx: &mut Context<Self>) -> u64 {

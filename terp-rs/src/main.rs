@@ -16,6 +16,7 @@ mod projects;
 mod ptyhost;
 mod search;
 mod sidebar;
+mod snapshot;
 mod state;
 mod terminal;
 mod terminal_view;
