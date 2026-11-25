@@ -186,6 +186,8 @@ fn set_menus(cx: &mut App) {
             MenuItem::action("変更の一覧", ToggleChanges),
             MenuItem::action("履歴", ToggleHistory),
             MenuItem::separator(),
+            MenuItem::action("ターミナルの表示を作り直す", RedrawTerminal),
+            MenuItem::separator(),
             MenuItem::action("文字を大きく", FontBigger),
             MenuItem::action("文字を小さく", FontSmaller),
             MenuItem::action("文字を元の大きさに", FontReset),

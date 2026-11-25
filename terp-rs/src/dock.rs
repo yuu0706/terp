@@ -28,6 +28,14 @@ pub fn set_blur_radius(radius: u32) {
     }
 }
 
+// 透かすかぼかすときは窓の影を切る（透けた縁に影が浮いて見えるため）。不透明なら戻す
+pub fn set_shadow(on: bool) {
+    let Some(mtm) = MainThreadMarker::new() else { return };
+    for window in NSApplication::sharedApplication(mtm).windows().iter() {
+        window.setHasShadow(on);
+    }
+}
+
 // ファイルやフォルダをゴミ箱へ移す（Finder のゴミ箱から戻せる）
 pub fn trash(path: &std::path::Path) -> anyhow::Result<()> {
     use objc2_foundation::{NSFileManager, NSURL};

@@ -22,6 +22,7 @@ pub struct Overview {
     // 開いたときの状態で並びを決め、開いている間は動かさない
     rank: HashMap<u64, u8>,
     tiles: Rc<RefCell<Vec<(u64, Bounds<Pixels>)>>>,
+    history: Vec<crate::snapshot::HistoryEntry>,
     _subscription: Subscription,
     _refresh: Task<()>,
 }
@@ -133,6 +134,7 @@ impl TerpApp {
             tab,
             rank,
             tiles: Rc::default(),
+            history: crate::snapshot::load_history(),
             _subscription: subscription,
             _refresh: refresh,
         });
@@ -402,11 +404,118 @@ impl TerpApp {
                     .text_color(p.text)
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .child(header)
-                    .child(body),
+                    .child(div().flex().flex_row().flex_1().min_h_0().child(body).child(self.render_history_column(o, &query, p, cx))),
             )
             .with_priority(1)
             .into_any_element(),
         )
+    }
+
+    // エージェントの会話の履歴の列。押すと動いている端末へ、無ければ同じ場所で会話を再開する
+    fn render_history_column(&self, o: &Overview, query: &str, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
+        let running: HashMap<String, u64> = self
+            .sessions
+            .iter()
+            .filter_map(|s| {
+                let v = s.view.read(cx);
+                let a = v.agent_session.as_ref()?;
+                let id = a.id.clone().or_else(|| a.file.as_deref().and_then(crate::snapshot::codex_id))?;
+                Some((id, s.id))
+            })
+            .collect();
+        let needle = query.trim().to_lowercase();
+        let entries: Vec<&crate::snapshot::HistoryEntry> = o
+            .history
+            .iter()
+            .filter(|e| {
+                needle.is_empty()
+                    || [e.title.as_str(), e.name.as_str(), &e.cwd.display().to_string(), e.agent.as_str()].iter().any(|v| v.to_lowercase().contains(&needle))
+            })
+            .collect();
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0);
+        let mut col = div()
+            .id("overview-history")
+            .w(px(320.0))
+            .flex_none()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .overflow_y_scroll()
+            .pr_4()
+            .pb_4()
+            .child(div().text_base().font_weight(FontWeight::SEMIBOLD).child("会話の履歴"));
+        if o.history.is_empty() {
+            col = col.child(div().text_xs().text_color(p.muted).child("まだ履歴はない。terp で動かした claude・codex の会話がここに残る"));
+        } else if entries.is_empty() {
+            col = col.child(div().text_xs().text_color(p.muted).child("合う会話はない"));
+        }
+        for (i, e) in entries.into_iter().take(200).enumerate() {
+            let title = if !e.title.is_empty() {
+                e.title.clone()
+            } else if !e.name.is_empty() {
+                e.name.clone()
+            } else {
+                "（題名なし）".into()
+            };
+            let place = self
+                .projects
+                .projects
+                .iter()
+                .filter(|p| crate::projects::contains_path(&p.path, &e.cwd.display().to_string()))
+                .max_by_key(|p| p.path.len())
+                .map(|p| p.name().to_string())
+                .unwrap_or_else(|| e.cwd.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
+            let open = running.get(&e.session_id).copied();
+            let entry = e.clone();
+            let (agent, sid) = (e.agent.clone(), e.session_id.clone());
+            col = col.child(
+                div()
+                    .id(("hist-entry", i))
+                    .group(SharedString::from(format!("hist-{i}")))
+                    .flex()
+                    .flex_col()
+                    .px_2()
+                    .py_1()
+                    .rounded_md()
+                    .hover(|s| s.bg(p.hover))
+                    .on_click(cx.listener(move |app, _: &ClickEvent, window, cx| {
+                        app.close_overview(window, cx);
+                        match open {
+                            Some(id) => app.select(id, window, cx),
+                            None => app.resume_history(&entry, window, cx),
+                        }
+                    }))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_1()
+                            .text_sm()
+                            .child(div().flex_1().overflow_hidden().text_ellipsis().whitespace_nowrap().child(title))
+                            .child(
+                                crate::ui::icon_button(("hist-forget", i), "close", "履歴から消す（記録そのものは消さない）", p.muted, p.active, p.text)
+                                    .invisible()
+                                    .group_hover(SharedString::from(format!("hist-{i}")), |s| s.visible())
+                                    .on_click(cx.listener(move |app, _: &ClickEvent, _, cx| {
+                                        cx.stop_propagation();
+                                        let _ = crate::snapshot::forget_history(&agent, &sid);
+                                        if let Some(o) = app.overview.as_mut() {
+                                            o.history = crate::snapshot::load_history();
+                                        }
+                                        cx.notify();
+                                    })),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(p.muted)
+                            .child(format!("{} · {place} · {}{}", e.agent, crate::snapshot::history_time(e.last_used, now), if open.is_some() { " · 開いている" } else { "" })),
+                    ),
+            );
+        }
+        col.into_any_element()
     }
 
     #[allow(clippy::too_many_arguments)]

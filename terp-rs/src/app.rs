@@ -70,6 +70,7 @@ actions!(
         ToggleFiles,
         ToggleChanges,
         ToggleHistory,
+        RedrawTerminal,
     ]
 );
 
@@ -191,6 +192,7 @@ pub fn apply_blur(cx: &App) {
     let config = &cx.global::<Appearance>().config;
     let radius = if config.background_opacity < 1.0 { config.background_blur.radius() } else { 0 };
     crate::dock::set_blur_radius(radius);
+    crate::dock::set_shadow(config.background_opacity >= 1.0);
 }
 
 fn mtime(path: &Path) -> Option<SystemTime> {
@@ -601,6 +603,24 @@ impl TerpApp {
                 self.layouts.entry(s.workspace.clone()).or_default().add_tab(s.id);
             }
         }
+    }
+
+    // 履歴の会話を、同じ場所の新しい端末で再開する
+    pub(crate) fn resume_history(&mut self, e: &crate::snapshot::HistoryEntry, window: &mut Window, cx: &mut Context<Self>) {
+        let configured = cx.global::<Appearance>().config.agents.clone();
+        let agents = crate::agents::detect(&configured, "");
+        let saved = crate::snapshot::Saved {
+            cwd: e.cwd.clone(),
+            agent: Some(e.agent.clone()),
+            agent_session: Some(e.session_id.clone()),
+            config_dir: e.config_dir.clone(),
+            ..Default::default()
+        };
+        let Some(line) = crate::snapshot::resume_line(&saved, &agents) else { return };
+        if let Some(ws) = e.workspace.clone().filter(|w| self.projects.workspaces.iter().any(|x| x.id == *w)) {
+            self.set_workspace(&ws, window, cx);
+        }
+        self.run_in_new_terminal(e.cwd.clone(), line, false, window, cx);
     }
 
     // 開き直すための控えと、会話の履歴を書く
@@ -1903,6 +1923,14 @@ impl Render for TerpApp {
             .on_action(cx.listener(Self::open_config))
             .on_action(cx.listener(Self::reopen_closed))
             .on_action(cx.listener(|app, _: &OpenSettings, w, cx| app.open_settings(w, cx)))
+            .on_action(cx.listener(|app, _: &RedrawTerminal, _, cx| {
+                if let Some(s) = app.active_id().and_then(|id| app.session(id)) {
+                    s.view.update(cx, |v, cx| {
+                        v.terminal.redraw();
+                        cx.notify();
+                    });
+                }
+            }))
             .on_action(cx.listener(|app, _: &ToggleFiles, w, cx| app.toggle_panel(crate::rightpanel::PanelKind::Files, w, cx)))
             .on_action(cx.listener(|app, _: &ToggleChanges, w, cx| app.toggle_panel(crate::rightpanel::PanelKind::Changes, w, cx)))
             .on_action(cx.listener(|app, _: &ToggleHistory, w, cx| app.toggle_panel(crate::rightpanel::PanelKind::History, w, cx)))
