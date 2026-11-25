@@ -9,6 +9,7 @@ mod panes;
 mod projects;
 mod ptyhost;
 mod search;
+mod state;
 mod terminal;
 mod terminal_view;
 mod tooltip;
@@ -64,6 +65,7 @@ fn shortcuts() -> Vec<(&'static str, &'static str, Box<dyn Action>)> {
         ("workspace-next", "Control+Command+]", Box::new(WorkspaceNext)),
         ("workspace-prev", "Control+Command+[", Box::new(WorkspacePrev)),
         ("toggle-sidebar", "Command+B", Box::new(ToggleSidebar)),
+        ("reopen", "Command+Shift+T", Box::new(ReopenClosed)),
         ("font-bigger", "Command+=", Box::new(FontBigger)),
         ("font-smaller", "Command+-", Box::new(FontSmaller)),
         ("font-reset", "Command+0", Box::new(FontReset)),
@@ -113,6 +115,8 @@ fn set_menus(cx: &mut App) {
             MenuItem::action("新しいターミナル", NewTerminal),
             MenuItem::action("右に分割", SplitRight),
             MenuItem::action("タブを閉じる", CloseTab),
+            MenuItem::action("閉じたタブを開き直す", ReopenClosed),
+            MenuItem::action("名前を変える", RenameTab),
             MenuItem::separator(),
             MenuItem::action("画面を消去", Clear),
             MenuItem::separator(),

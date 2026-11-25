@@ -299,6 +299,21 @@ impl Terminal {
         Terminal { term, sink, backend, size, window_size, wakeup_pending, info }
     }
 
+    // 常駐のプロセスでのシェルの番号。開き直しても変わらない
+    pub fn remote_id(&self) -> Option<u64> {
+        match &self.backend {
+            Backend::Remote { id, .. } => Some(*id),
+            Backend::Local { .. } => None,
+        }
+    }
+
+    // 常駐のプロセスに、開き直したときに戻す情報（ワークスペース・名前）を預ける
+    pub fn set_meta(&self, meta: &serde_json::Value) {
+        if let Backend::Remote { client, id } = &self.backend {
+            client.send(crate::ptyhost::Kind::SetMeta, *id, meta.to_string().as_bytes());
+        }
+    }
+
     pub fn clear_wakeup(&self) {
         self.wakeup_pending.store(false, Ordering::Release);
     }

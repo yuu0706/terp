@@ -1,7 +1,8 @@
 // 画面の分割。枠（pane）ごとにタブの並びを持ち、枠を縦横の入れ子で並べる。
+use serde::{Deserialize, Serialize};
 pub const MAX_PANES: usize = 6;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Axis {
     // 左右に並べる
     Row,
@@ -34,20 +35,20 @@ pub fn drop_side(x: f32, y: f32) -> Side {
     if sides[0].1 < 0.25 { sides[0].0 } else { Side::Center }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Node {
     Leaf(u64),
     Split { axis: Axis, children: Vec<Node>, sizes: Vec<f32> },
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Pane {
     pub id: u64,
     pub tabs: Vec<u64>,
     pub active: Option<u64>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Layout {
     pub root: Node,
     pub panes: Vec<Pane>,
@@ -88,6 +89,29 @@ impl Layout {
 
     pub fn pane_of(&self, tab: u64) -> Option<u64> {
         self.panes.iter().find(|p| p.tabs.contains(&tab)).map(|p| p.id)
+    }
+
+    // タブの番号を付け替える（開き直したときの番号へ）。対応の無いタブは除き、空いた枠は畳む
+    pub fn map_tabs(&self, map: impl Fn(u64) -> Option<u64>) -> Layout {
+        let mut l = self.clone();
+        for p in &mut l.panes {
+            p.tabs = p.tabs.iter().filter_map(|t| map(*t)).collect();
+            p.tabs.dedup();
+            p.active = p.active.and_then(&map).filter(|a| p.tabs.contains(a)).or_else(|| p.tabs.last().copied());
+        }
+        let empty: Vec<u64> = l.panes.iter().filter(|p| p.tabs.is_empty()).map(|p| p.id).collect();
+        for id in empty {
+            l.collapse_empty(Some(id));
+        }
+        if l.pane(l.active_pane).is_none() {
+            l.active_pane = l.panes[0].id;
+        }
+        l.next_pane = l.panes.iter().map(|p| p.id).max().unwrap_or(0) + 1;
+        l
+    }
+
+    pub fn all_tabs(&self) -> Vec<u64> {
+        self.panes.iter().flat_map(|p| p.tabs.iter().copied()).collect()
     }
 
     // 枠に表示中のタブ
@@ -512,6 +536,16 @@ mod tests {
         assert_eq!(l.move_tab(10, 1, Side::Right), Some(1));
         assert_eq!(l.panes.len(), 2);
         assert_eq!(l.visible(), vec![10]);
+    }
+
+    #[test]
+    fn 開き直しで番号を付け替え消えたタブの枠は畳む() {
+        let mut l = layout_with(&[10]);
+        l.split(Axis::Row, 11);
+        let m = l.map_tabs(|t| (t == 10).then_some(100));
+        assert_eq!(m.panes.len(), 1);
+        assert_eq!(m.active_tab(), Some(100));
+        assert_eq!(m.root, Node::Leaf(1));
     }
 
     #[test]

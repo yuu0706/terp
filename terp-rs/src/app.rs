@@ -4,7 +4,9 @@ use crate::appearance::{Appearance, hsla};
 use crate::config::{Config, config_path, home_dir};
 use crate::panes::{Axis, Direction, Layout, Node, Side, drop_side};
 use crate::projects::{self, Project, Projects, contains_path};
+use crate::input::{InputEvent, TextInput};
 use crate::ptyhost::SessionSummary;
+use crate::state::{ClosedTab, SIDEBAR_DEFAULT, SIDEBAR_MAX, SIDEBAR_MIN, UiState};
 use crate::terminal::{GridSize, HostClient, Terminal};
 use crate::terminal_view::{Attention, TerminalEvent, TerminalView};
 use gpui::{
@@ -54,6 +56,8 @@ actions!(
         WorkspaceNext,
         WorkspacePrev,
         ToggleSidebar,
+        ReopenClosed,
+        RenameTab,
         FontBigger,
         FontSmaller,
         FontReset,
@@ -61,7 +65,6 @@ actions!(
     ]
 );
 
-const SIDEBAR_WIDTH: f32 = 248.0;
 const TAB_BAR_HEIGHT: f32 = 38.0;
 const DIVIDER: f32 = 4.0;
 // 信号機のボタン（閉じる・しまう・広げる）を避ける幅
@@ -100,6 +103,12 @@ impl Render for DraggedTab {
     }
 }
 
+struct Rename {
+    id: u64,
+    input: Entity<TextInput>,
+    _subscription: Subscription,
+}
+
 struct DividerDrag {
     workspace: String,
     path: Vec<usize>,
@@ -116,7 +125,12 @@ pub struct TerpApp {
     recent: Vec<u64>,
     projects: Projects,
     sidebar: bool,
+    sidebar_width: f32,
+    sidebar_drag: Option<(f32, f32)>,
     font_delta: f32,
+    ui: UiState,
+    saved_ui: Option<UiState>,
+    rename: Option<Rename>,
     config_mtime: Option<SystemTime>,
     notice: Option<String>,
     dock_count: usize,
@@ -244,6 +258,8 @@ impl TerpApp {
             });
             cx.activate(true);
         });
+        let ui = UiState::load();
+        load_appearance(ui.font_delta as f32, cx);
         let mut app = TerpApp {
             focus: cx.focus_handle(),
             sessions: Vec::new(),
@@ -251,8 +267,13 @@ impl TerpApp {
             layouts: HashMap::new(),
             recent: Vec::new(),
             projects: Projects::load(),
-            sidebar: true,
-            font_delta: 0.0,
+            sidebar: !ui.sidebar_hidden,
+            sidebar_width: ui.sidebar_width,
+            sidebar_drag: None,
+            font_delta: ui.font_delta as f32,
+            saved_ui: Some(ui.clone()),
+            ui,
+            rename: None,
             config_mtime: mtime(&config_path()),
             notice: None,
             dock_count: 0,
@@ -337,6 +358,7 @@ impl TerpApp {
             }
         }
         self.update_dock(cx);
+        self.persist(cx);
         // 経過の表示（考え中 1:23 など）を進める
         cx.notify();
     }
@@ -390,7 +412,7 @@ impl TerpApp {
         let id = self.next_id;
         self.next_id += 1;
         let events = cx.subscribe_in(&view, window, move |app, _, event, window, cx| match event {
-            TerminalEvent::Exited => app.close(id, window, cx),
+            TerminalEvent::Exited => app.close(id, false, window, cx),
             TerminalEvent::Changed => cx.notify(),
             TerminalEvent::Attention { kind, message } => app.on_attention(id, *kind, message.clone(), window, cx),
         });
@@ -404,6 +426,7 @@ impl TerpApp {
     // 前に開いていた端末（PTY ホストに残っているシェル）へつなぎ直し、ワークスペースごとのタブに戻す
     fn restore_sessions(&mut self, sessions: Vec<SessionSummary>, window: &mut Window, cx: &mut Context<Self>) {
         let Some(host) = self.host.clone() else { return };
+        let mut restored = Vec::new();
         for summary in sessions {
             let workspace = summary
                 .meta
@@ -414,8 +437,122 @@ impl TerpApp {
                 .unwrap_or_else(|| self.workspace());
             let (terminal, events) = Terminal::attach_remote(&host, summary.id, summary.size);
             let view = TerminalView::new(terminal, events, &summary.cwd, cx);
+            let name = summary.meta.get("name").and_then(|n| n.as_str()).map(String::from);
+            view.update(cx, |view, _| view.custom_name = name);
             let id = self.add_session(view, workspace.clone(), window, cx);
-            self.layouts.entry(workspace).or_default().add_tab(id);
+            restored.push((summary.id, id, workspace));
+        }
+        // 前の枠の配置に戻し、配置に無い端末は所属のワークスペースの今の枠に足す
+        let to_app: HashMap<u64, u64> = restored.iter().map(|(host, app, _)| (*host, *app)).collect();
+        for (workspace, saved) in self.ui.layouts.clone() {
+            if !self.projects.workspaces.iter().any(|w| w.id == workspace) {
+                continue;
+            }
+            let mapped = saved.map_tabs(|t| to_app.get(&t).copied());
+            if !mapped.all_tabs().is_empty() {
+                self.layouts.insert(workspace, mapped);
+            }
+        }
+        for (_, id, workspace) in restored {
+            let layout = self.layouts.entry(workspace).or_default();
+            if !layout.all_tabs().contains(&id) {
+                layout.add_tab(id);
+            }
+        }
+    }
+
+    // 画面の控えを今の状態にし、変わっていれば書く
+    fn persist(&mut self, cx: &App) {
+        let to_host: HashMap<u64, u64> =
+            self.sessions.iter().filter_map(|s| s.view.read(cx).terminal.remote_id().map(|h| (s.id, h))).collect();
+        self.ui.font_delta = self.font_delta as i32;
+        self.ui.sidebar_hidden = !self.sidebar;
+        self.ui.sidebar_width = self.sidebar_width;
+        self.ui.layouts = self
+            .layouts
+            .iter()
+            .map(|(ws, l)| (ws.clone(), l.map_tabs(|t| to_host.get(&t).copied())))
+            .filter(|(_, l)| !l.all_tabs().is_empty())
+            .collect();
+        if self.saved_ui.as_ref() != Some(&self.ui) {
+            match self.ui.save() {
+                Ok(()) => self.saved_ui = Some(self.ui.clone()),
+                Err(err) => self.notice = Some(format!("画面の控えを書けない: {err}")),
+            }
+        }
+    }
+
+    fn reopen_closed(&mut self, _: &ReopenClosed, window: &mut Window, cx: &mut Context<Self>) {
+        if self.ui.closed.is_empty() {
+            return;
+        }
+        let tab = self.ui.closed.remove(0);
+        if tab.workspace != self.workspace() && self.projects.workspaces.iter().any(|w| w.id == tab.workspace) {
+            self.set_workspace(&tab.workspace, window, cx);
+        }
+        if let Some(id) = self.spawn_session(tab.cwd, window, cx) {
+            if tab.name.is_some() {
+                self.set_name(id, tab.name, cx);
+            }
+            self.layout_mut().add_tab(id);
+            self.select(id, window, cx);
+        }
+    }
+
+    fn set_name(&mut self, id: u64, name: Option<String>, cx: &mut Context<Self>) {
+        let Some(session) = self.session(id) else { return };
+        let workspace = session.workspace.clone();
+        let name = name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty());
+        session.view.update(cx, |view, cx| {
+            view.custom_name = name.clone();
+            let mut meta = serde_json::json!({ "workspace": workspace });
+            if let Some(name) = &name {
+                meta["name"] = serde_json::Value::String(name.clone());
+            }
+            view.terminal.set_meta(&meta);
+            cx.notify();
+        });
+        cx.notify();
+    }
+
+    fn start_rename(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(session) = self.session(id) else { return };
+        let current = session.view.read(cx).custom_name.clone().unwrap_or_else(|| session.view.read(cx).display_name());
+        let input = cx.new(|cx| {
+            let mut input = TextInput::new("名前（空にすると自動の名前に戻す）", cx);
+            input.set_text(&current, cx);
+            input.select_all_text(cx);
+            input
+        });
+        let subscription = cx.subscribe_in(&input, window, move |app, input, event, window, cx| match event {
+            InputEvent::Submit { .. } => {
+                let text = input.read(cx).text().to_string();
+                app.rename = None;
+                app.set_name(id, Some(text), cx);
+                app.select(id, window, cx);
+            }
+            InputEvent::Cancel => {
+                app.rename = None;
+                app.select(id, window, cx);
+            }
+            _ => {}
+        });
+        window.focus(&input.focus_handle(cx), cx);
+        self.rename = Some(Rename { id, input, _subscription: subscription });
+        cx.notify();
+    }
+
+    fn rename_active(&mut self, _: &RenameTab, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(id) = self.active_id() {
+            self.start_rename(id, window, cx);
+        }
+    }
+
+    // 名前の欄。名前を変えている端末なら入力欄を、そうでなければ名前を出す
+    fn name_label(&self, id: u64, name: String) -> AnyElement {
+        match self.rename.as_ref().filter(|r| r.id == id) {
+            Some(r) => div().flex_1().min_w(px(80.0)).child(r.input.clone()).into_any_element(),
+            None => div().flex_1().overflow_hidden().text_ellipsis().whitespace_nowrap().child(name).into_any_element(),
         }
     }
 
@@ -468,8 +605,16 @@ impl TerpApp {
         cx.notify();
     }
 
-    fn close(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
+    // remember なら ⇧⌘T で開き直せるよう覚える（シェルの exit で終わった端末は覚えない）
+    fn close(&mut self, id: u64, remember: bool, window: &mut Window, cx: &mut Context<Self>) {
         let Some(workspace) = self.session(id).map(|s| s.workspace.clone()) else { return };
+        if remember && let Some(session) = self.session(id) {
+            let view = session.view.read(cx);
+            self.ui.push_closed(ClosedTab { cwd: view.cwd(), name: view.custom_name.clone(), workspace: workspace.clone() });
+        }
+        if self.rename.as_ref().is_some_and(|r| r.id == id) {
+            self.rename = None;
+        }
         // タブを閉じたときは、PTY ホストのシェルも終わらせる
         if let Some(session) = self.session(id) {
             session.view.update(cx, |view, _| view.terminal.kill());
@@ -610,7 +755,7 @@ impl TerpApp {
 
     fn close_tab(&mut self, _: &CloseTab, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(id) = self.active_id() {
-            self.close(id, window, cx);
+            self.close(id, true, window, cx);
         } else {
             window.remove_window();
         }
@@ -670,8 +815,10 @@ impl TerpApp {
         groups
     }
 
+    // 設定の大きさからの差。文字は 6〜40pt に収める
     fn set_font_delta(&mut self, delta: f32, window: &mut Window, cx: &mut Context<Self>) {
-        self.font_delta = delta;
+        let base = cx.global::<Appearance>().config.font_size;
+        self.font_delta = delta.clamp(6.0 - base, 40.0 - base).round();
         self.reload_appearance(window, cx);
     }
 
@@ -685,6 +832,15 @@ impl TerpApp {
     }
 
     fn on_drag_move(&mut self, event: &MouseMoveEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        if let Some((start, width)) = self.sidebar_drag {
+            if event.pressed_button != Some(MouseButton::Left) {
+                self.sidebar_drag = None;
+            } else {
+                self.sidebar_width = (width + f32::from(event.position.x) - start).clamp(SIDEBAR_MIN, SIDEBAR_MAX).round();
+            }
+            cx.notify();
+            return;
+        }
         let Some(drag) = self.drag.as_mut() else { return };
         if event.pressed_button != Some(MouseButton::Left) {
             self.drag = None;
@@ -707,7 +863,7 @@ impl TerpApp {
     }
 
     fn on_drag_end(&mut self, _: &MouseUpEvent, _window: &mut Window, cx: &mut Context<Self>) {
-        if self.drag.take().is_some() || self.drop_hint.take().is_some() {
+        if self.drag.take().is_some() || self.drop_hint.take().is_some() || self.sidebar_drag.take().is_some() {
             cx.notify();
         }
     }
@@ -884,6 +1040,7 @@ impl TerpApp {
             let view = session.view.read(cx);
             let selected = pane.active == Some(id);
             let label = format!("{}  {}", index + 1, view.display_name());
+            let name = self.name_label(id, label);
             let state = view.agent_state();
             let dot = status_dot(state, view.unseen_bell, p);
             let tip = view.agent.text(now);
@@ -903,7 +1060,13 @@ impl TerpApp {
                     .when(selected, |d| d.bg(if layout.active_pane == pane_id { p.accent_fill } else { p.accent_fill_dim }))
                     .when(!selected, |d| d.hover(|s| s.bg(p.hover)))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .on_click(cx.listener(move |app, _: &ClickEvent, window, cx| app.select(id, window, cx)))
+                    .on_click(cx.listener(move |app, event: &ClickEvent, window, cx| {
+                        if event.click_count() == 2 {
+                            app.start_rename(id, window, cx);
+                        } else {
+                            app.select(id, window, cx);
+                        }
+                    }))
                     .on_drag(DraggedTab { id, label: view.display_name() }, |tab, _, _, cx| cx.new(|_| tab.clone()))
                     .drag_over::<DraggedTab>(move |s, _, _, _| s.border_l_2().border_color(accent))
                     .on_drop(cx.listener(move |app, dragged: &DraggedTab, window, cx| {
@@ -912,7 +1075,7 @@ impl TerpApp {
                         app.select(dragged.id, window, cx);
                     }))
                     .when_some(dot, |d, dot| d.child(dot))
-                    .child(div().overflow_hidden().text_ellipsis().whitespace_nowrap().child(label))
+                    .child(name)
                     .when(!tip.is_empty() && state == AgentState::Working, |d| {
                         d.child(div().flex_none().text_xs().text_color(p.muted).child(tip.trim_start_matches("考え中 ").to_string()))
                     })
@@ -925,7 +1088,7 @@ impl TerpApp {
                             .hover(|s| s.bg(p.active).text_color(p.text))
                             .on_click(cx.listener(move |app, _: &ClickEvent, window, cx| {
                                 cx.stop_propagation();
-                                app.close(id, window, cx);
+                                app.close(id, true, window, cx);
                             }))
                             .child("×"),
                     ),
@@ -1032,7 +1195,13 @@ impl TerpApp {
             .when(selected, |d| d.bg(p.accent_fill))
             .when(!selected && visible, |d| d.bg(p.accent_fill_dim))
             .when(!selected, |d| d.hover(|s| s.bg(p.hover)))
-            .on_click(cx.listener(move |app, _: &ClickEvent, window, cx| app.select(id, window, cx)))
+            .on_click(cx.listener(move |app, event: &ClickEvent, window, cx| {
+                if event.click_count() == 2 {
+                    app.start_rename(id, window, cx);
+                } else {
+                    app.select(id, window, cx);
+                }
+            }))
             .on_drag(DraggedTab { id, label: view.display_name() }, |tab, _, _, cx| cx.new(|_| tab.clone()))
             .child(
                 div()
@@ -1042,7 +1211,7 @@ impl TerpApp {
                     .gap_1()
                     .text_sm()
                     .text_color(p.text)
-                    .child(div().flex_1().overflow_hidden().text_ellipsis().whitespace_nowrap().child(view.display_name()))
+                    .child(self.name_label(id, view.display_name()))
                     .when_some(dot, |d, dot| d.child(dot)),
             )
             .child(div().text_xs().text_color(p.muted).overflow_hidden().text_ellipsis().whitespace_nowrap().child(detail))
@@ -1124,12 +1293,35 @@ impl TerpApp {
             }
         }
 
+        let handle = div()
+            .id("sidebar-resize")
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .right(px(-3.0))
+            .w(px(6.0))
+            .cursor_col_resize()
+            .when(self.sidebar_drag.is_some(), |d| d.bg(p.accent.opacity(0.6)))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|app, event: &MouseDownEvent, _, cx| {
+                    cx.stop_propagation();
+                    if event.click_count == 2 {
+                        app.sidebar_width = SIDEBAR_DEFAULT;
+                    } else {
+                        app.sidebar_drag = Some((f32::from(event.position.x), app.sidebar_width));
+                    }
+                    cx.notify();
+                }),
+            );
         div()
+            .relative()
             .flex()
             .flex_col()
-            .w(px(SIDEBAR_WIDTH))
+            .w(px(self.sidebar_width))
             .flex_none()
             .h_full()
+            .child(handle)
             .bg(p.bg)
             .border_r_1()
             .border_color(p.border)
@@ -1185,6 +1377,8 @@ impl Render for TerpApp {
             .on_action(cx.listener(Self::recent_tab))
             .on_action(cx.listener(Self::next_attention))
             .on_action(cx.listener(Self::open_config))
+            .on_action(cx.listener(Self::reopen_closed))
+            .on_action(cx.listener(Self::rename_active))
             .on_action(cx.listener(|app, _: &NextTab, w, cx| app.cycle_tab(1, w, cx)))
             .on_action(cx.listener(|app, _: &PrevTab, w, cx| app.cycle_tab(-1, w, cx)))
             .on_action(cx.listener(|app, _: &PaneLeft, w, cx| app.focus_neighbor(Direction::Left, w, cx)))

@@ -69,6 +69,8 @@ pub struct TerminalView {
     pub unseen_bell: bool,
     pub agent: AgentStatus,
     pub agent_title: Option<String>,
+    // ダブルクリックで付けた名前
+    pub custom_name: Option<String>,
     title_working: bool,
     marked_text: Option<String>,
     layout: Layout,
@@ -102,6 +104,7 @@ impl TerminalView {
                 unseen_bell: false,
                 agent: AgentStatus::default(),
                 agent_title: None,
+                custom_name: None,
                 title_working: false,
                 marked_text: None,
                 layout: Layout::default(),
@@ -218,20 +221,21 @@ impl TerminalView {
         self.unseen_bell = false;
     }
 
-    // 一覧とタブに出す名前。エージェントの会話の題名を優先する
+    // 一覧とタブに出す名前。付けた名前 > エージェントなどが出した題名 > 作業場所のフォルダ名の順。
+    // 題名は前面がシェルでないときだけ使う（シェルの題名は作業場所の繰り返しで、見分けの役に立たない）
     pub fn display_name(&self) -> String {
-        if self.is_agent()
-            && let Some(title) = &self.agent_title
-        {
-            return title.clone();
+        if let Some(name) = self.custom_name.as_ref().filter(|n| !n.trim().is_empty()) {
+            return name.clone();
         }
-        if let Some(title) = &self.title {
-            return title.clone();
+        if self.is_agent() {
+            if let Some(title) = &self.agent_title {
+                return title.clone();
+            }
+            if let Some(title) = self.title.as_ref().map(|t| agent::parse_title(t)).and_then(|t| t.text) {
+                return title;
+            }
         }
-        match &self.process {
-            Some(p) => p.name.clone(),
-            None => "ターミナル".into(),
-        }
+        folder_name(&self.cwd())
     }
 
     // Finder などから落としたパスを、打ったのと同じように送る
@@ -1024,6 +1028,14 @@ impl Element for TerminalElement {
             }
         });
     }
+}
+
+// 作業場所のフォルダ名。ホームは「ターミナル」と出す（「~」だけでは何の行か分かりにくい）
+pub fn folder_name(cwd: &Path) -> String {
+    if cwd == crate::config::home_dir() || cwd.as_os_str().is_empty() || cwd == Path::new("/") {
+        return "ターミナル".into();
+    }
+    cwd.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "ターミナル".into())
 }
 
 pub fn escape_path(path: &str) -> String {
