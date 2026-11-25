@@ -12,6 +12,25 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 pub const PROTOCOL: u32 = 1;
+
+// 実行ファイルの版。アプリを入れ替えた後も古い常駐のプロセスが動き続けていないかを見分ける
+pub fn build_id() -> String {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| std::fs::metadata(exe).ok())
+        .map(|m| {
+            let t = m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs()).unwrap_or(0);
+            format!("{}-{t}", m.len())
+        })
+        .unwrap_or_default()
+}
+
+// 挨拶の返事: 取り決めの版（4バイト）と、JSON の { build, pid }
+pub fn hello_payload() -> Vec<u8> {
+    let mut out = PROTOCOL.to_le_bytes().to_vec();
+    out.extend(serde_json::json!({ "build": build_id(), "pid": std::process::id() }).to_string().into_bytes());
+    out
+}
 // つなぎ直したときに画面を作り直すため、出力の末尾をこの大きさまで残す
 const REPLAY_LIMIT: usize = 2 * 1024 * 1024;
 // シェルもつなぐ相手も無い状態がこの時間続いたら終わる
@@ -263,7 +282,7 @@ fn reply(writer: &Arc<Mutex<UnixStream>>, kind: Kind, id: u64, payload: &[u8]) {
 
 fn handle(state: &Arc<Mutex<HostState>>, client: u64, writer: &Arc<Mutex<UnixStream>>, frame: Frame) {
     match frame.kind {
-        Kind::Hello => reply(writer, Kind::HelloOk, 0, &PROTOCOL.to_le_bytes()),
+        Kind::Hello => reply(writer, Kind::HelloOk, 0, &hello_payload()),
         Kind::List => {
             let s = state.lock().unwrap();
             let mut list: Vec<SessionSummary> =

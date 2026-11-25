@@ -72,6 +72,7 @@ actions!(
         ToggleHistory,
         RedrawTerminal,
         ToggleLock,
+        ReplaceHost,
     ]
 );
 
@@ -168,6 +169,10 @@ pub struct TerpApp {
     pub(crate) visits: HashMap<u64, Vec<Instant>>,
     pub(crate) current_visit: Option<(u64, Instant)>,
     pub(crate) offers: crate::offers::Offers,
+    // 常駐のプロセスが古い版のまま動いている（入れ替えの案内を出す）
+    pub(crate) host_outdated: bool,
+    // 常駐のプロセスを入れ替えている間は、控えを書かない
+    pub(crate) replacing: bool,
     // 右下に数秒出す知らせ
     pub(crate) toast: Option<(String, Instant)>,
     // 閉じた許可のカード（同じ画面の間は出し直さない）
@@ -416,6 +421,8 @@ impl TerpApp {
             visits: HashMap::new(),
             current_visit: None,
             offers: Default::default(),
+            host_outdated: false,
+            replacing: false,
             toast: None,
             dismissed_prompts: HashMap::new(),
             poll_count: 0,
@@ -426,6 +433,7 @@ impl TerpApp {
         };
         match HostClient::connect() {
             Ok((host, sessions)) => {
+                app.host_outdated = host.outdated() && !sessions.is_empty();
                 app.host = Some(host);
                 if sessions.is_empty() {
                     app.restore_from_snapshot(window, cx);
@@ -701,6 +709,9 @@ impl TerpApp {
 
     // 開き直すための控えと、会話の履歴を書く
     fn write_snapshot(&mut self, cx: &App) {
+        if self.replacing {
+            return;
+        }
         let ids: Vec<u64> = self.sessions.iter().map(|s| s.id).collect();
         let saved: Vec<crate::snapshot::Saved> = ids.into_iter().filter_map(|id| self.saved_of(id, cx)).collect();
         if let Err(err) = crate::snapshot::save(&saved) {
@@ -772,6 +783,9 @@ impl TerpApp {
 
     // 画面の控えを今の状態にし、変わっていれば書く
     pub(crate) fn persist(&mut self, cx: &App) {
+        if self.replacing {
+            return;
+        }
         let to_host: HashMap<u64, u64> =
             self.sessions.iter().filter_map(|s| s.view.read(cx).terminal.remote_id().map(|h| (s.id, h))).collect();
         self.ui.font_delta = self.font_delta as i32;
@@ -1291,6 +1305,154 @@ impl TerpApp {
             3..5 => Some(p.accent.opacity(0.10)),
             _ => Some(p.accent.opacity(0.18)),
         }
+    }
+
+    // 常駐のプロセスを入れ替える前の確認。会話を再開できるものと、できないものを並べる
+    fn replace_host_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let ids: Vec<u64> = self.sessions.iter().map(|s| s.id).collect();
+        let mut resume = Vec::new();
+        let mut missing = Vec::new();
+        for id in &ids {
+            let Some(saved) = self.saved_of(*id, cx) else { continue };
+            let view = self.session(*id).map(|s| s.view.read(cx));
+            let name = view.map(|v| v.display_name()).unwrap_or_default();
+            let agent = view.is_some_and(|v| v.is_agent());
+            if saved.agent_session.is_some() {
+                resume.push(name);
+            } else if agent {
+                missing.push(name);
+            }
+        }
+        let mut body = vec![format!(
+            "ターミナル {} 枚を、同じ作業場所・名前・ワークスペースで開き直します。画面に出ていた過去の出力と、返答を書いている途中の処理は戻りません。",
+            ids.len()
+        )];
+        if !resume.is_empty() {
+            body.push(format!("会話を再開する（{}）: {}", resume.len(), resume.join("、")));
+        }
+        if !missing.is_empty() {
+            body.push(format!("会話の ID が見つからない（{}）。止めて、同じ場所でシェルだけ開き直す: {}", missing.len(), missing.join("、")));
+        }
+        let spec = crate::overlay::DialogSpec {
+            title: "常駐のプロセスを入れ替えますか？".into(),
+            body,
+            fields: Vec::new(),
+            choice: None,
+            confirm: if missing.is_empty() { "入れ替える".into() } else { "会話を再開せずに入れ替える".into() },
+            danger: false,
+            blocked: None,
+        };
+        self.open_dialog(
+            spec,
+            std::rc::Rc::new(|app, _, _, window, cx| {
+                app.replace_host(window, cx);
+                Ok(())
+            }),
+            window,
+            cx,
+        );
+    }
+
+    // 控えを書き切ってから古い常駐のプロセスを終わらせ、新しい版で開き直して会話を再開する
+    fn replace_host(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(host) = self.host.clone() else { return };
+        self.persist(cx);
+        self.write_snapshot(cx);
+        self.replacing = true;
+        self.host_outdated = false;
+        host.terminate();
+        cx.spawn_in(window, async move |this, cx| {
+            // ソケットのファイルが消えるまで最大10秒待つ
+            for _ in 0..50 {
+                if !host.socket.exists() {
+                    break;
+                }
+                cx.background_executor().timer(Duration::from_millis(200)).await;
+            }
+            let _ = this.update_in(cx, |app, window, cx| {
+                app.sessions.clear();
+                app.layouts.clear();
+                app.recent.clear();
+                app.host = None;
+                match HostClient::connect() {
+                    Ok((host, _)) => {
+                        app.host = Some(host);
+                        app.restore_from_snapshot(window, cx);
+                    }
+                    Err(err) => app.notice = Some(format!("常駐のプロセスを始められない: {err}")),
+                }
+                app.replacing = false;
+                match app.active_id() {
+                    Some(id) => app.select(id, window, cx),
+                    None => app.open_terminal(home_dir(), window, cx),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn render_host_offer(&self, p: &Palette, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.host_outdated {
+            return None;
+        }
+        Some(
+            div()
+                .id("host-offer")
+                .occlude()
+                .absolute()
+                .right(px(16.0))
+                .top(px(48.0))
+                .w(px(360.0))
+                .flex()
+                .flex_col()
+                .gap_2()
+                .p_3()
+                .rounded_lg()
+                .border_1()
+                .border_color(p.warning)
+                .bg(p.solid_bg)
+                .shadow_lg()
+                .text_color(p.text)
+                .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child("シェルを持つ常駐のプロセスが古い版のまま動いています"))
+                .child(div().text_sm().text_color(p.muted).child("入れ替えると、ターミナルを同じ状態で開き直し、claude・codex の会話を再開します。"))
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .justify_end()
+                        .gap_2()
+                        .child(
+                            div()
+                                .id("host-later")
+                                .px_3()
+                                .py_1()
+                                .rounded_md()
+                                .border_1()
+                                .border_color(p.border)
+                                .text_sm()
+                                .hover(|s| s.bg(p.hover))
+                                .on_click(cx.listener(|app, _: &ClickEvent, _, cx| {
+                                    app.host_outdated = false;
+                                    cx.notify();
+                                }))
+                                .child("今はしない"),
+                        )
+                        .child(
+                            div()
+                                .id("host-replace")
+                                .px_3()
+                                .py_1()
+                                .rounded_md()
+                                .bg(p.accent)
+                                .text_color(p.on_accent)
+                                .text_sm()
+                                .on_click(cx.listener(|app, _: &ClickEvent, window, cx| app.replace_host_dialog(window, cx)))
+                                .child("入れ替える…"),
+                        ),
+                )
+                .into_any_element(),
+        )
     }
 
     pub(crate) fn show_toast(&mut self, text: String, cx: &mut Context<Self>) {
@@ -2032,6 +2194,7 @@ impl Render for TerpApp {
             .on_action(cx.listener(Self::open_config))
             .on_action(cx.listener(Self::reopen_closed))
             .on_action(cx.listener(|app, _: &OpenSettings, w, cx| app.open_settings(w, cx)))
+            .on_action(cx.listener(|app, _: &ReplaceHost, w, cx| app.replace_host_dialog(w, cx)))
             .on_action(cx.listener(|app, _: &ToggleLock, _, cx| {
                 let pane = app.layout().map(|l| l.active_pane);
                 if let Some(pane) = pane {
@@ -2105,6 +2268,7 @@ impl Render for TerpApp {
             .children(self.render_settings(&p, cx))
             .children(self.render_permission_cards(&p, cx))
             .children(self.render_offer(&p, cx))
+            .children(self.render_host_offer(&p, cx))
             .children(self.render_toast(&p))
             .children(self.render_menu(&p, cx))
             .children(self.render_dialog(&p, cx))

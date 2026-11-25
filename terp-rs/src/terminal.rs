@@ -408,6 +408,10 @@ impl Drop for Terminal {
 // ---- PTY ホストへのつなぎ ----
 
 pub struct HostClient {
+    // 常駐のプロセスの実行ファイルの版（古い版は空）と pid
+    pub build: String,
+    pub pid: Option<i32>,
+    pub socket: PathBuf,
     writer: Mutex<UnixStream>,
     routes: Mutex<HashMap<u64, Sender<Incoming>>>,
     pending: Mutex<HashMap<u64, Sender<u64>>>,
@@ -415,6 +419,25 @@ pub struct HostClient {
 }
 
 impl HostClient {
+    // 自分と違う版の実行ファイルで動いている
+    pub fn outdated(&self) -> bool {
+        self.build != ptyhost::build_id()
+    }
+
+    // 常駐のプロセスを終わらせる（中のシェルもすべて終わる）。古い版は pid を返さないため、ソケットを開いているものから探す
+    pub fn terminate(&self) {
+        let pid = self.pid.or_else(|| {
+            let mut cmd = std::process::Command::new("/usr/sbin/lsof");
+            cmd.args(["-t", &self.socket.display().to_string()]);
+            let out = crate::git::run_with_timeout(&mut cmd, None, Duration::from_secs(5)).ok()?;
+            let me = std::process::id() as i32;
+            String::from_utf8_lossy(&out.stdout).lines().filter_map(|l| l.trim().parse::<i32>().ok()).find(|p| *p != me)
+        });
+        if let Some(pid) = pid {
+            unsafe { libc::kill(pid, libc::SIGTERM) };
+        }
+    }
+
     // ホストへつなぐ。いなければ起動して待つ。残っているシェルの一覧も返す
     pub fn connect() -> anyhow::Result<(Arc<HostClient>, Vec<SessionSummary>)> {
         Self::connect_to(&ptyhost::socket_path(), true)
@@ -447,12 +470,19 @@ impl HostClient {
         if hello.kind != Kind::HelloOk || version != ptyhost::PROTOCOL {
             anyhow::bail!("常駐のプロセスの版が違う（{version}）");
         }
+        // 古い常駐のプロセスは版と pid を返さない
+        let info: serde_json::Value = hello.payload.get(4..).and_then(|b| serde_json::from_slice(b).ok()).unwrap_or(serde_json::Value::Null);
+        let host_build = info.get("build").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let host_pid = info.get("pid").and_then(|v| v.as_u64()).map(|p| p as i32);
         write_frame(&mut writer, Kind::List, 0, &[])?;
         let list = read_frame(&mut reader)?;
         let sessions: Vec<SessionSummary> = serde_json::from_slice(&list.payload).unwrap_or_default();
         reader.set_read_timeout(None)?;
 
         let client = Arc::new(HostClient {
+            build: host_build,
+            pid: host_pid,
+            socket: socket.to_path_buf(),
             writer: Mutex::new(writer),
             routes: Mutex::new(HashMap::new()),
             pending: Mutex::new(HashMap::new()),
