@@ -16,6 +16,7 @@ mod overlay;
 mod overview;
 mod panes;
 mod permission;
+mod pets;
 mod projects;
 mod rightpanel;
 mod ptyhost;

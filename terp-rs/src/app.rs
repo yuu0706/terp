@@ -161,6 +161,7 @@ pub struct TerpApp {
     pub(crate) overview_tab_memory: Option<String>,
     pub(crate) settings: Option<crate::settings::Settings>,
     pub(crate) panel: Option<crate::rightpanel::RightPanel>,
+    pub(crate) pets: crate::pets::Pets,
     // 右下に数秒出す知らせ
     pub(crate) toast: Option<(String, Instant)>,
     // 閉じた許可のカード（同じ画面の間は出し直さない）
@@ -384,6 +385,7 @@ impl TerpApp {
             overview_tab_memory: None,
             settings: None,
             panel: None,
+            pets: Default::default(),
             toast: None,
             dismissed_prompts: HashMap::new(),
             poll_count: 0,
@@ -481,6 +483,7 @@ impl TerpApp {
         }
         self.update_dock(cx);
         self.persist(cx);
+        self.update_pets(window, cx);
         self.poll_count += 1;
         if self.poll_count % 5 == 0 {
             self.refresh_repos(cx);
@@ -1667,6 +1670,7 @@ impl TerpApp {
         let rect = layout.rects().into_iter().find(|(id, _)| *id == pane_id).map(|(_, r)| r);
         let at_top = rect.is_some_and(|r| r.y < 1e-4);
         let at_left = rect.is_some_and(|r| r.x < 1e-4);
+        let at_right = rect.is_some_and(|r| r.x + r.w > 1.0 - 1e-4);
         let pane_active = layout.active_pane == pane_id && layout.panes.len() > 1;
         let now = Instant::now();
         let accent = p.accent;
@@ -1769,6 +1773,7 @@ impl TerpApp {
         }
         // 操作中の枠にだけ、新しいタブのプルダウンとメインのエージェントのボタンを出す
         let main_agent = self.main_agent(cx);
+        let pets = if at_top && at_right { self.render_pets(p, cx) } else { None };
         let bar = bar
             .when(layout.active_pane == pane_id, |bar| {
                 bar.child(
@@ -1802,6 +1807,10 @@ impl TerpApp {
                 })
             });
 
+        let bar = match pets {
+            Some(pets) => bar.child(pets),
+            None => bar,
+        };
         let hint = self.drop_hint.filter(|(id, _)| *id == pane_id).map(|(_, side)| side);
         let content: AnyElement = match pane.active.and_then(|id| self.session(id)) {
             Some(session) => div().size_full().bg(p.term_bg).child(session.view.clone()).into_any_element(),
