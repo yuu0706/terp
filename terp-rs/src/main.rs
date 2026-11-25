@@ -2,6 +2,7 @@ mod agent;
 mod agents;
 mod app;
 mod assets;
+mod assist;
 mod appearance;
 mod config;
 mod dock;
@@ -15,6 +16,7 @@ mod panes;
 mod projects;
 mod ptyhost;
 mod search;
+mod settings;
 mod sidebar;
 mod snapshot;
 mod state;
@@ -35,10 +37,15 @@ use terminal_view::{Clear, Copy, Find, FindNext, Paste, SelectAll};
 
 actions!(terp_app, [Quit, Hide, HideOthers, ShowAll, Minimize, ToggleFullScreen]);
 
+// 近道の id と既定のキー（設定の画面で使う）
+pub fn shortcut_defaults() -> Vec<(&'static str, &'static str)> {
+    shortcuts().into_iter().map(|(id, key, _)| (id, key)).collect()
+}
+
 // 近道の一覧。id は Electron 版の設定（keybindings）と同じ名前にする
 fn shortcuts() -> Vec<(&'static str, &'static str, Box<dyn Action>)> {
     vec![
-        ("settings", "Command+,", Box::new(OpenConfig)),
+        ("settings", "Command+,", Box::new(OpenSettings)),
         ("new", "Command+T", Box::new(NewTerminal)),
         ("split-right", "Command+\\", Box::new(SplitRight)),
         ("next-attention", "Command+Shift+J", Box::new(NextAttention)),
@@ -116,6 +123,7 @@ pub fn bind_keys(cx: &mut App) {
 fn set_menus(cx: &mut App) {
     cx.set_menus([
         Menu::new("terp").items([
+            MenuItem::action("設定…", OpenSettings),
             MenuItem::action("設定ファイルを開く", OpenConfig),
             MenuItem::separator(),
             MenuItem::action("terp を隠す", Hide),

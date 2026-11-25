@@ -66,6 +66,7 @@ actions!(
         FontSmaller,
         FontReset,
         OpenConfig,
+        OpenSettings,
     ]
 );
 
@@ -155,6 +156,7 @@ pub struct TerpApp {
     pub(crate) agents: Vec<crate::agents::Agent>,
     pub(crate) overview: Option<crate::overview::Overview>,
     pub(crate) overview_tab_memory: Option<String>,
+    pub(crate) settings: Option<crate::settings::Settings>,
     pub(crate) poll_count: u64,
     pub(crate) intel_running: bool,
     pub(crate) expanded_subagents: std::collections::HashSet<u64>,
@@ -372,6 +374,7 @@ impl TerpApp {
             agents: Vec::new(),
             overview: None,
             overview_tab_memory: None,
+            settings: None,
             poll_count: 0,
             intel_running: false,
             expanded_subagents: Default::default(),
@@ -1159,7 +1162,7 @@ impl TerpApp {
     }
 
     pub(crate) fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.open_config(&OpenConfig, window, cx);
+        self.open_settings_screen(window, cx);
     }
 
     // 操作中の端末へ入力を戻す
@@ -1281,7 +1284,7 @@ impl TerpApp {
         self.reload_appearance(window, cx);
     }
 
-    fn open_config(&mut self, _: &OpenConfig, _window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn open_config(&mut self, _: &OpenConfig, _window: &mut Window, cx: &mut Context<Self>) {
         let path = config_path();
         if !path.exists() {
             let _ = std::fs::create_dir_all(crate::config::config_dir());
@@ -1691,6 +1694,7 @@ impl Render for TerpApp {
             .on_action(cx.listener(Self::next_attention))
             .on_action(cx.listener(Self::open_config))
             .on_action(cx.listener(Self::reopen_closed))
+            .on_action(cx.listener(|app, _: &OpenSettings, w, cx| app.open_settings(w, cx)))
             .on_action(cx.listener(|app, _: &ToggleOverview, w, cx| app.toggle_overview(w, cx)))
             .on_action(cx.listener(|app, _: &RecentTabBack, _, cx| app.cycle_overview_tab(-1, cx)))
             .on_action(cx.listener(|app, _: &NewWork, w, cx| app.new_work_dialog(None, w, cx)))
@@ -1743,6 +1747,7 @@ impl Render for TerpApp {
                     }),
             )
             .children(self.render_overview(&p, window, cx))
+            .children(self.render_settings(&p, cx))
             .children(self.render_menu(&p, cx))
             .children(self.render_dialog(&p, cx))
     }
