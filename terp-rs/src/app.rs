@@ -505,6 +505,7 @@ impl TerpApp {
             TerminalEvent::Exited => app.close(id, false, window, cx),
             TerminalEvent::Changed => cx.notify(),
             TerminalEvent::Attention { kind, message } => app.on_attention(id, *kind, message.clone(), window, cx),
+            TerminalEvent::OpenLink(target) => app.open_link(id, target.clone(), cx),
         });
         // 端末を押して入力を移したら、その枠とタブを選ぶ
         let focus_handle = view.read(cx).focus_handle(cx);
@@ -846,6 +847,29 @@ impl TerpApp {
                 view.terminal.write(format!("{line}\r").as_bytes());
                 cx.notify();
             });
+        }
+    }
+
+    // URL は既定のブラウザ、ファイルは外部のエディタ、フォルダは Finder で開く
+    fn open_link(&mut self, id: u64, target: crate::links::Target, cx: &mut Context<Self>) {
+        if let crate::links::Target::Url(url) = &target {
+            cx.open_url(url);
+            return;
+        }
+        let Some(session) = self.session(id) else { return };
+        let cwd = session.view.read(cx).cwd();
+        let root = self.placement(id, cx).map(|(_, w)| w);
+        match crate::links::resolve(&target, &cwd, root.as_deref(), &home_dir()) {
+            Some(r) if r.directory => cx.open_with_system(&r.path),
+            Some(r) => {
+                let editor = cx.global::<Appearance>().config.editor.clone();
+                let path = crate::git::login_env().get("PATH").cloned().unwrap_or_default();
+                crate::links::open_file(&r, &editor, &path);
+            }
+            None => {
+                self.notice = Some("リンクのファイルが見つからない".into());
+                cx.notify();
+            }
         }
     }
 

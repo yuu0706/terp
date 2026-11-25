@@ -49,10 +49,20 @@ pub enum TerminalEvent {
     Exited,
     // 応答の終わり・許可待ち・ベル。通知を出すかは親が決める
     Attention { kind: Attention, message: String },
+    // ⌘クリックか右クリックで押したリンク。開き先は親が決める（作業の一番上からも探すため）
+    OpenLink(crate::links::Target),
+}
+
+#[derive(Clone, PartialEq)]
+struct HoverLink {
+    // 行と桁の範囲（折り返しで複数の行にまたがる）
+    cells: Vec<(i32, usize, usize)>,
+    target: crate::links::Target,
 }
 
 #[derive(Clone, Copy, Default)]
 struct Layout {
+    bounds_origin: Point<Pixels>,
     origin: Point<Pixels>,
     cell_width: Pixels,
     line_height: Pixels,
@@ -89,6 +99,7 @@ pub struct TerminalView {
     scroll_remainder: f32,
     replaying: bool,
     search: Option<Search>,
+    hover_link: Option<HoverLink>,
     _events: Task<()>,
 }
 
@@ -130,6 +141,7 @@ impl TerminalView {
                 scroll_remainder: 0.0,
                 replaying: false,
                 search: None,
+                hover_link: None,
                 _events: task,
             }
         })
@@ -478,6 +490,37 @@ impl TerminalView {
         cx.notify();
     }
 
+    // 指を置いているリンクの下に、開き方を出す
+    fn render_link_hint(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        let link = self.hover_link.as_ref()?;
+        let chrome = cx.global::<Appearance>().chrome.clone();
+        let l = self.layout;
+        let offset = self.terminal.term.lock().grid().display_offset() as i32;
+        let (line, col, _) = *link.cells.last()?;
+        let row = line + offset + 1;
+        let x = l.origin.x - l.bounds_origin.x + l.cell_width * col as f32;
+        let mut y = l.origin.y - l.bounds_origin.y + l.line_height * row as f32 + px(2.0);
+        if row as usize >= l.rows {
+            y = l.origin.y - l.bounds_origin.y + l.line_height * (row - 2) as f32 - px(22.0);
+        }
+        Some(
+            div()
+                .absolute()
+                .left(x)
+                .top(y)
+                .px_2()
+                .py(px(2.0))
+                .rounded_md()
+                .border_1()
+                .border_color(hsla(chrome.border, 1.0))
+                .bg(hsla(chrome.bg_active, 1.0))
+                .text_color(hsla(chrome.text, 1.0))
+                .text_xs()
+                .child("⌘クリックか右クリックで開く")
+                .into_any_element(),
+        )
+    }
+
     fn render_search(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
         let search = self.search.as_ref()?;
         let chrome = cx.global::<Appearance>().chrome.clone();
@@ -561,8 +604,77 @@ impl TerminalView {
         !mods.shift && self.mode().intersects(TermMode::MOUSE_MODE)
     }
 
+    // 折り返しでつながった1行の文字と、各文字の行・桁
+    fn logical_line(&self, line: Line) -> (String, Vec<(i32, usize, usize)>) {
+        let term = self.terminal.term.lock();
+        let grid = term.grid();
+        let cols = grid.columns();
+        let top = term.topmost_line();
+        let bottom = term.bottommost_line();
+        if line < top || line > bottom {
+            return (String::new(), Vec::new());
+        }
+        let wrapped = |l: Line| l >= top && l <= bottom && grid[l][Column(cols - 1)].flags.contains(Flags::WRAPLINE);
+        let mut first = line;
+        while first > top && wrapped(first - 1) {
+            first = first - 1;
+        }
+        let mut last = line;
+        while last < bottom && wrapped(last) {
+            last = last + 1;
+        }
+        let mut text = String::new();
+        let mut cells = Vec::new();
+        let mut l = first;
+        while l <= last {
+            for col in 0..cols {
+                let cell = &grid[l][Column(col)];
+                if cell.flags.contains(Flags::WIDE_CHAR_SPACER) || cell.flags.contains(Flags::LEADING_WIDE_CHAR_SPACER) {
+                    continue;
+                }
+                let width = if cell.flags.contains(Flags::WIDE_CHAR) { 2 } else { 1 };
+                text.push(cell.c);
+                cells.push((l.0, col, col + width));
+            }
+            l = l + 1;
+        }
+        (text, cells)
+    }
+
+    fn link_at(&self, position: Point<Pixels>) -> Option<HoverLink> {
+        let offset = self.terminal.term.lock().grid().display_offset();
+        let (point, _) = self.grid_point(position, offset);
+        let (text, cells) = self.logical_line(point.line);
+        let at = cells.iter().position(|(l, from, to)| *l == point.line.0 && (*from..*to).contains(&point.column.0))?;
+        let found = crate::links::find(&text).into_iter().find(|f| (f.start..f.end).contains(&at))?;
+        // 行ごとの桁の範囲にまとめる
+        let mut spans: Vec<(i32, usize, usize)> = Vec::new();
+        for (l, from, to) in &cells[found.start..found.end.min(cells.len())] {
+            match spans.last_mut() {
+                Some((sl, _, end)) if sl == l => *end = *to,
+                _ => spans.push((*l, *from, *to)),
+            }
+        }
+        Some(HoverLink { cells: spans, target: found.target })
+    }
+
+    fn update_hover(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
+        let hover = self.link_at(position);
+        if hover != self.hover_link {
+            self.hover_link = hover;
+            cx.notify();
+        }
+    }
+
     fn on_mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         window.focus(&self.focus, cx);
+        // ⌘クリックか右クリックでリンクを開く。リンクの外の右クリックは止めない
+        if (event.button == MouseButton::Left && event.modifiers.platform) || event.button == MouseButton::Right {
+            if let Some(link) = self.link_at(event.position) {
+                cx.emit(TerminalEvent::OpenLink(link.target));
+                return;
+            }
+        }
         if self.uses_mouse(&event.modifiers) {
             let button = match event.button {
                 MouseButton::Left => 0,
@@ -592,6 +704,9 @@ impl TerminalView {
     }
 
     fn on_mouse_move(&mut self, event: &MouseMoveEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        if event.pressed_button.is_none() {
+            self.update_hover(event.position, cx);
+        }
         if !self.selecting || event.pressed_button != Some(MouseButton::Left) {
             return;
         }
@@ -692,6 +807,7 @@ impl Render for TerminalView {
             .on_scroll(cx.listener(Self::on_scroll))
             .relative()
             .child(TerminalElement { view: cx.entity() })
+            .children(self.render_link_hint(cx))
             .children(self.render_search(cx))
     }
 }
@@ -865,7 +981,7 @@ impl Element for TerminalElement {
         let origin = bounds.origin + padding;
         let cols = (((bounds.size.width - padding.x * 2.0) / cell_width).floor() as usize).max(2);
         let rows = (((bounds.size.height - padding.y * 2.0) / line_height).floor() as usize).max(1);
-        let layout = Layout { origin, cell_width, line_height, cols, rows };
+        let layout = Layout { bounds_origin: bounds.origin, origin, cell_width, line_height, cols, rows };
 
         let focused = self.view.read(cx).focus.is_focused(window);
         let marked = self.view.read(cx).marked_text.clone();
@@ -988,6 +1104,18 @@ impl Element for TerminalElement {
         }
         flush_text(&mut run, &mut texts, Some(cell_width));
         flush_bg(&mut bg_run, &mut quads);
+
+        // 指を置いているリンクの下線
+        if let Some(link) = &view.hover_link {
+            let color = hsla(accent, 1.0);
+            for (line, from, to) in &link.cells {
+                let row = line + display_offset;
+                if (0..rows as i32).contains(&row) {
+                    let o = cell_origin(row, *from);
+                    quads.push(fill(Bounds::new(point(o.x, o.y + line_height - px(1.5)), size(cell_width * (to - from) as f32, px(1.0))), color));
+                }
+            }
+        }
 
         // 探している文字の当たり。選んでいる当たりは強調色で示す
         if let Some(search) = &view.search {
