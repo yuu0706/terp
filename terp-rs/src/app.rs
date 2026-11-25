@@ -188,11 +188,31 @@ pub fn background_appearance(cx: &App) -> WindowBackgroundAppearance {
     if config.background_opacity >= 1.0 { WindowBackgroundAppearance::Opaque } else { WindowBackgroundAppearance::Transparent }
 }
 
+// Dock のアイコンをテーマの色で描く。上下の背景が同じなら下を少し暗くする
+pub fn apply_dock_icon(cx: &App) {
+    let a = cx.global::<Appearance>();
+    if !a.config.themed_icon {
+        crate::dock::set_dock_icon(None);
+        return;
+    }
+    let c = &a.chrome;
+    let hex = |r: crate::config::Rgb| format!("#{:02x}{:02x}{:02x}", r.0, r.1, r.2);
+    let top = c.term_bg;
+    let mut bottom = c.bg;
+    if bottom == top {
+        let dim = |v: u8| v.saturating_sub(((v as f32 * 0.1).round() as u8).max(1));
+        bottom = crate::config::Rgb(dim(top.0), dim(top.1), dim(top.2));
+    }
+    let svg = crate::dock::icon_svg(&hex(top), &hex(bottom), &hex(c.accent), &hex(c.text_muted), &hex(c.text));
+    crate::dock::set_dock_icon(Some(&svg));
+}
+
 pub fn apply_blur(cx: &App) {
     let config = &cx.global::<Appearance>().config;
     let radius = if config.background_opacity < 1.0 { config.background_blur.radius() } else { 0 };
     crate::dock::set_blur_radius(radius);
     crate::dock::set_shadow(config.background_opacity >= 1.0);
+    apply_dock_icon(cx);
 }
 
 fn mtime(path: &Path) -> Option<SystemTime> {

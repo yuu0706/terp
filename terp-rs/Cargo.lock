@@ -4719,6 +4719,7 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "portable-pty",
  "regex",
+ "resvg",
  "rust-embed",
  "serde",
  "serde_json",
