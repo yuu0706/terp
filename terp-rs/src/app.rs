@@ -59,6 +59,7 @@ actions!(
         ReopenClosed,
         RenameTab,
         ToggleOverview,
+        OpenFloating,
         RecentTabBack,
         NewWork,
         AddRepository,
@@ -139,6 +140,8 @@ pub struct TerpApp {
     pub(crate) focus: FocusHandle,
     pub(crate) sessions: Vec<Session>,
     pub(crate) files: Vec<crate::filetabs::FileTab>,
+    // 小さい別の窓に出している端末
+    pub(crate) floating: Vec<crate::floating::Floating>,
     pub(crate) next_id: u64,
     pub(crate) layouts: HashMap<String, Layout>,
     pub(crate) recent: Vec<u64>,
@@ -449,6 +452,7 @@ impl TerpApp {
             focus: cx.focus_handle(),
             sessions: Vec::new(),
             files: Vec::new(),
+            floating: Vec::new(),
             next_id: 1,
             layouts: HashMap::new(),
             recent: Vec::new(),
@@ -556,6 +560,9 @@ impl TerpApp {
     }
 
     pub(crate) fn is_visible(&self, id: u64) -> bool {
+        if self.floating_of(id).is_some() {
+            return true;
+        }
         self.session(id).is_some_and(|s| s.workspace == self.workspace())
             && self.layout().is_some_and(|l| l.visible().contains(&id))
     }
@@ -913,6 +920,16 @@ impl TerpApp {
                 layout.add_tab(id);
             }
         }
+        // 小さい窓に出していた端末は、窓も同じ位置と大きさで開き直す（主の窓ができてから開く）
+        let floating: Vec<(u64, crate::floating::SavedFloating)> =
+            self.ui.floating.iter().filter_map(|f| to_app.get(&f.key).map(|id| (*id, f.clone()))).collect();
+        if !floating.is_empty() {
+            cx.defer_in(window, move |app, window, cx| {
+                for (id, saved) in floating {
+                    app.open_floating(id, Some(&saved), saved.pinned, window, cx);
+                }
+            });
+        }
     }
 
     // 画面の控えを今の状態にし、変わっていれば書く
@@ -923,6 +940,7 @@ impl TerpApp {
         let mut to_host: HashMap<u64, u64> =
             self.sessions.iter().filter_map(|s| s.view.read(cx).terminal.remote_id().map(|h| (s.id, h))).collect();
         // ファイルのタブは、シェルの番号と重ならない大きな番号で枠の並びに残す
+        self.ui.floating = self.saved_floating(&to_host, cx);
         self.ui.files = self
             .files
             .iter()
@@ -1050,6 +1068,11 @@ impl TerpApp {
     }
 
     pub(crate) fn select(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
+        // 小さい窓に出している端末は、その窓を前に出す
+        if let Some(handle) = self.floating_of(id).map(|f| f.window) {
+            let _ = handle.update(cx, |_, w, _| w.activate_window());
+            return;
+        }
         if self.file_tab(id).is_some() {
             return self.select_file(id, window, cx);
         }
@@ -1113,6 +1136,7 @@ impl TerpApp {
         if self.rename.as_ref().is_some_and(|r| r.id == id) {
             self.rename = None;
         }
+        self.drop_floating(id, cx);
         // タブを閉じたときは、PTY ホストのシェルも終わらせる
         if let Some(session) = self.session(id) {
             session.view.update(cx, |view, _| view.terminal.kill());
@@ -2402,6 +2426,7 @@ impl Render for TerpApp {
             .on_mouse_move(cx.listener(Self::on_drag_move))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_drag_end))
             .on_action(cx.listener(Self::new_terminal))
+            .on_action(cx.listener(|app, _: &OpenFloating, window, cx| app.open_new_floating(window, cx)))
             .on_action(cx.listener(Self::split_right))
             .on_action(cx.listener(Self::close_tab))
             .on_action(cx.listener(Self::recent_tab))
@@ -2476,7 +2501,7 @@ impl Render for TerpApp {
                     .h_full()
                     .bg(p.term_bg)
                     .child(self.render_topbar(&p, cx))
-                    .child(div().flex_1().min_h_0().flex().px_2().pb_2().child(panes))
+                    .child(div().flex_1().min_h_0().flex().px_2().pb_2().relative().child(panes).child(self.render_floating_button(&p, cx)))
                     .when_some(error, |d, error| {
                         d.child(div().flex_none().px_3().py_1().text_xs().bg(p.active).text_color(p.warning).child(error))
                     }),

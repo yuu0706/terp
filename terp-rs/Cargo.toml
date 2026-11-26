@@ -20,6 +20,7 @@ unicode-width = "0.2"
 rust-embed = "8"
 regex = "1"
 resvg = "0.46"
+raw-window-handle = "0.6"
 pulldown-cmark = { version = "0.12", default-features = false }
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
 objc2 = "0.6"

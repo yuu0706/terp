@@ -4731,6 +4731,7 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "portable-pty",
  "pulldown-cmark",
+ "raw-window-handle",
  "regex",
  "resvg",
  "rust-embed",

@@ -132,6 +132,7 @@ fn local_date(time: std::time::SystemTime) -> String {
 // 近道の id と、画面に出す名前・区分
 pub const SHORTCUT_LABELS: &[(&str, &str, &str)] = &[
     ("new", "新しいターミナル", "ターミナル"),
+    ("floating", "小さい窓のターミナル", "ターミナル"),
     ("split-right", "右に分割", "ターミナル"),
     ("close", "タブを閉じる", "ターミナル"),
     ("reopen", "閉じたタブを開き直す", "ターミナル"),
