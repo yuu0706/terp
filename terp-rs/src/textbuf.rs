@@ -11,6 +11,22 @@ struct Edit {
     before: (Range<usize>, bool),
     after: (Range<usize>, bool),
     time: Instant,
+    // 複数のカーソルで一度に書き換えたものは同じ番号にし、まとめて取り消す
+    group: u64,
+}
+
+// 2つ目以降のカーソル
+#[derive(Clone, Debug, PartialEq)]
+pub struct Cursor {
+    pub range: Range<usize>,
+    pub reversed: bool,
+    preferred_col: Option<usize>,
+}
+
+impl Cursor {
+    pub fn head(&self) -> usize {
+        if self.reversed { self.range.start } else { self.range.end }
+    }
 }
 
 pub struct TextBuffer {
@@ -26,6 +42,9 @@ pub struct TextBuffer {
     pub version: u64,
     pub crlf: bool,
     indent_unit: String,
+    pub extra: Vec<Cursor>,
+    group: u64,
+    group_active: Option<u64>,
 }
 
 // 続けて打った字は、1秒以内なら1回の取り消しにまとめる
@@ -62,7 +81,21 @@ impl TextBuffer {
         let crlf = text.contains("\r\n");
         let text = text.replace("\r\n", "\n");
         let indent_unit = detect_indent(&text);
-        TextBuffer { line_starts: line_starts(&text), text, selected: 0..0, reversed: false, preferred_col: None, undo: Vec::new(), redo: Vec::new(), version: 0, crlf, indent_unit }
+        TextBuffer {
+            line_starts: line_starts(&text),
+            text,
+            selected: 0..0,
+            reversed: false,
+            preferred_col: None,
+            undo: Vec::new(),
+            redo: Vec::new(),
+            version: 0,
+            crlf,
+            indent_unit,
+            extra: Vec::new(),
+            group: 0,
+            group_active: None,
+        }
     }
 
     pub fn text(&self) -> &str {
@@ -280,8 +313,19 @@ impl TextBuffer {
         self.version += 1;
         self.redo.clear();
         let now = Instant::now();
-        let edit = Edit { at: range.start, removed, inserted: text, before, after: (self.selected.clone(), false), time: now };
-        if let Some(last) = self.undo.last_mut()
+        let group = match self.group_active {
+            Some(g) => g,
+            None => {
+                self.group += 1;
+                self.group
+            }
+        };
+        let edit = Edit { at: range.start, removed, inserted: text, before, after: (self.selected.clone(), false), time: now, group };
+        let n = self.undo.len();
+        let last_alone = n >= 1 && (n < 2 || self.undo[n - 2].group != self.undo[n - 1].group);
+        if last_alone
+            && self.group_active.is_none()
+            && let Some(last) = self.undo.last_mut()
             && now.duration_since(last.time) < MERGE_WINDOW
             && last.removed.is_empty()
             && edit.removed.is_empty()
@@ -382,25 +426,203 @@ impl TextBuffer {
     }
 
     pub fn undo(&mut self) -> bool {
-        let Some(edit) = self.undo.pop() else { return false };
-        self.text.replace_range(edit.at..edit.at + edit.inserted.len(), &edit.removed);
+        let Some(group) = self.undo.last().map(|e| e.group) else { return false };
+        while self.undo.last().is_some_and(|e| e.group == group) {
+            let edit = self.undo.pop().expect("あると確かめた");
+            self.text.replace_range(edit.at..edit.at + edit.inserted.len(), &edit.removed);
+            self.selected = edit.before.0.clone();
+            self.reversed = edit.before.1;
+            self.redo.push(edit);
+        }
         self.line_starts = line_starts(&self.text);
-        self.selected = edit.before.0.clone();
-        self.reversed = edit.before.1;
+        self.extra.clear();
         self.version += 1;
-        self.redo.push(edit);
         true
     }
 
     pub fn redo(&mut self) -> bool {
-        let Some(edit) = self.redo.pop() else { return false };
-        self.text.replace_range(edit.at..edit.at + edit.removed.len(), &edit.inserted);
+        let Some(group) = self.redo.last().map(|e| e.group) else { return false };
+        while self.redo.last().is_some_and(|e| e.group == group) {
+            let edit = self.redo.pop().expect("あると確かめた");
+            self.text.replace_range(edit.at..edit.at + edit.removed.len(), &edit.inserted);
+            self.selected = edit.after.0.clone();
+            self.reversed = edit.after.1;
+            self.undo.push(edit);
+        }
         self.line_starts = line_starts(&self.text);
-        self.selected = edit.after.0.clone();
-        self.reversed = edit.after.1;
+        self.extra.clear();
         self.version += 1;
-        self.undo.push(edit);
         true
+    }
+
+    // ---- 複数のカーソル ----
+
+    fn take_primary(&self) -> Cursor {
+        Cursor { range: self.selected.clone(), reversed: self.reversed, preferred_col: self.preferred_col }
+    }
+
+    fn set_primary(&mut self, c: Cursor) {
+        self.selected = c.range;
+        self.reversed = c.reversed;
+        self.preferred_col = c.preferred_col;
+    }
+
+    pub fn clear_extra(&mut self) -> bool {
+        let had = !self.extra.is_empty();
+        self.extra.clear();
+        had
+    }
+
+    // 重なったカーソルを1つにまとめる。主のカーソルを含むものは主に残す
+    fn normalize(&mut self) {
+        if self.extra.is_empty() {
+            return;
+        }
+        let primary = self.take_primary();
+        let mut all: Vec<(bool, Cursor)> = std::mem::take(&mut self.extra).into_iter().map(|c| (false, c)).collect();
+        all.push((true, primary));
+        all.sort_by_key(|(_, c)| (c.range.start, c.range.end));
+        let mut merged: Vec<(bool, Cursor)> = Vec::new();
+        for (is_primary, c) in all {
+            match merged.last_mut() {
+                Some((p, last)) if c.range.start < last.range.end || c.range == last.range || (c.range.is_empty() && c.range.start == last.range.end) => {
+                    last.range.end = last.range.end.max(c.range.end);
+                    *p |= is_primary;
+                }
+                _ => merged.push((is_primary, c)),
+            }
+        }
+        for (is_primary, c) in merged {
+            if is_primary {
+                self.set_primary(c);
+            } else {
+                self.extra.push(c);
+            }
+        }
+    }
+
+    // 動きを、どのカーソルにも当てる
+    pub fn each_motion(&mut self, f: impl Fn(&mut Self)) {
+        let extras = std::mem::take(&mut self.extra);
+        let primary = self.take_primary();
+        let mut moved = Vec::with_capacity(extras.len());
+        for c in extras {
+            self.set_primary(c);
+            f(self);
+            moved.push(self.take_primary());
+        }
+        self.set_primary(primary);
+        f(self);
+        self.extra = moved;
+        self.normalize();
+    }
+
+    // 書き換えを、どのカーソルにも当てる。後ろのカーソルから書き換え、前で増減した分だけ後ろをずらす
+    pub fn each_edit(&mut self, f: impl Fn(&mut Self)) {
+        if self.extra.is_empty() {
+            return f(self);
+        }
+        self.group += 1;
+        self.group_active = Some(self.group);
+        let mut all: Vec<(bool, Cursor)> = std::mem::take(&mut self.extra).into_iter().map(|c| (false, c)).collect();
+        all.push((true, self.take_primary()));
+        all.sort_by_key(|(_, c)| std::cmp::Reverse(c.range.start));
+        let mut done: Vec<(bool, Cursor)> = Vec::with_capacity(all.len());
+        for (is_primary, c) in all {
+            let before = self.text.len() as isize;
+            self.set_primary(c);
+            f(self);
+            let delta = self.text.len() as isize - before;
+            for (_, d) in &mut done {
+                d.range = (d.range.start as isize + delta).max(0) as usize..(d.range.end as isize + delta).max(0) as usize;
+            }
+            done.push((is_primary, self.take_primary()));
+        }
+        self.group_active = None;
+        for (is_primary, c) in done {
+            if is_primary {
+                self.set_primary(c);
+            } else {
+                self.extra.push(c);
+            }
+        }
+        self.normalize();
+    }
+
+    pub fn add_cursor_at(&mut self, offset: usize) {
+        let offset = self.clamp(offset);
+        let primary = self.take_primary();
+        self.extra.push(primary);
+        self.selected = offset..offset;
+        self.reversed = false;
+        self.preferred_col = None;
+        self.normalize();
+    }
+
+    // ⌥⌘↑↓。主のカーソルの上か下の行にカーソルを足す
+    pub fn add_cursor_vertical(&mut self, rows: isize) {
+        let primary = self.take_primary();
+        self.vertical(rows, false);
+        if self.selected != primary.range {
+            self.extra.push(primary);
+            self.normalize();
+        }
+    }
+
+    // ⌘D。選んでいなければ今の単語を選び、選んでいれば同じ文字の次を選び足す
+    pub fn add_next_occurrence(&mut self) {
+        if self.selected.is_empty() {
+            let r = self.word_range(self.cursor());
+            self.set_selection(r, false);
+            return;
+        }
+        let needle = self.selected_text().to_string();
+        let taken: Vec<Range<usize>> = self.extra.iter().map(|c| c.range.clone()).chain(std::iter::once(self.selected.clone())).collect();
+        let from = taken.iter().map(|r| r.end).max().unwrap_or(0);
+        let found = self.text[from..]
+            .match_indices(&needle)
+            .map(|(i, _)| from + i)
+            .chain(self.text[..from].match_indices(&needle).map(|(i, _)| i))
+            .map(|i| i..i + needle.len())
+            .find(|r| !taken.contains(r));
+        if let Some(r) = found {
+            let primary = self.take_primary();
+            self.extra.push(primary);
+            self.selected = r;
+            self.reversed = false;
+            self.normalize();
+        }
+    }
+
+    // ⇧⌘L。選んだ文字と同じものをすべて選ぶ
+    pub fn select_all_occurrences(&mut self) {
+        if self.selected.is_empty() {
+            let r = self.word_range(self.cursor());
+            self.set_selection(r, false);
+        }
+        let needle = self.selected_text().to_string();
+        if needle.is_empty() {
+            return;
+        }
+        let ranges: Vec<Range<usize>> = self.text.match_indices(&needle).map(|(i, _)| i..i + needle.len()).collect();
+        self.extra = ranges.into_iter().filter(|r| *r != self.selected).map(|range| Cursor { range, reversed: false, preferred_col: None }).collect();
+        self.normalize();
+    }
+
+    // 範囲をまとめて置き換える（検索のすべて置換）。1回で取り消せる
+    pub fn replace_all(&mut self, ranges: &[Range<usize>], with: &str) {
+        if ranges.is_empty() {
+            return;
+        }
+        self.group += 1;
+        self.group_active = Some(self.group);
+        let mut sorted = ranges.to_vec();
+        sorted.sort_by_key(|r| std::cmp::Reverse(r.start));
+        for r in sorted {
+            self.replace(r, with);
+        }
+        self.group_active = None;
+        self.extra.clear();
     }
 }
 
@@ -489,6 +711,45 @@ mod tests {
         assert!(b.version > saved);
         b.undo();
         assert!(b.version > saved);
+    }
+
+    #[test]
+    fn 複数のカーソルで打った字は1回で取り消せる() {
+        let mut b = buf("a\nb\nc", 1);
+        b.add_cursor_vertical(1);
+        b.add_cursor_vertical(1);
+        assert_eq!(b.extra.len(), 2);
+        b.each_edit(|b| b.insert("!"));
+        assert_eq!(b.text(), "a!\nb!\nc!");
+        b.each_edit(|b| b.backspace(false, false));
+        assert_eq!(b.text(), "a\nb\nc");
+        b.undo();
+        assert_eq!(b.text(), "a!\nb!\nc!");
+        b.undo();
+        assert_eq!(b.text(), "a\nb\nc");
+    }
+
+    #[test]
+    fn 同じ文字の次を選び足し_重なったカーソルはまとめる() {
+        let mut b = buf("foo bar foo foo", 1);
+        b.add_next_occurrence();
+        assert_eq!(b.selected, 0..3);
+        b.add_next_occurrence();
+        b.add_next_occurrence();
+        assert_eq!(b.extra.len(), 2);
+        b.each_edit(|b| b.insert("x"));
+        assert_eq!(b.text(), "x bar x x");
+        b.each_motion(|b| b.doc_edge(false, false));
+        assert!(b.extra.is_empty());
+    }
+
+    #[test]
+    fn すべて置換は1回で取り消せる() {
+        let mut b = buf("a-a-a", 0);
+        b.replace_all(&[0..1, 2..3, 4..5], "bb");
+        assert_eq!(b.text(), "bb-bb-bb");
+        b.undo();
+        assert_eq!(b.text(), "a-a-a");
     }
 
     #[test]

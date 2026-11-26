@@ -21,7 +21,8 @@ actions!(
         MoveLeft, MoveRight, MoveUp, MoveDown, SelectLeft, SelectRight, SelectUp, SelectDown, WordLeft, WordRight, SelectWordLeft, SelectWordRight,
         LineStart, LineEnd, SelectLineStart, SelectLineEnd, DocStart, DocEnd, SelectDocStart, SelectDocEnd, PageUp, PageDown, SelectPageUp,
         SelectPageDown, Backspace, DeleteWordBack, DeleteToLineStart, DeleteForward, DeleteWordForward, Newline, Indent, Outdent, SelectAll, Copy,
-        Cut, Paste, Undo, Redo, Save, TogglePreview,
+        Cut, Paste, Undo, Redo, Save, TogglePreview, AddNextOccurrence, SelectAllOccurrences, AddCursorUp, AddCursorDown, CancelEditor,
+        ToggleWrap, Find, FindReplace, FindNext, FindPrevious,
     ]
 );
 
@@ -77,6 +78,16 @@ pub fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("cmd-shift-z", Redo, c),
         KeyBinding::new("cmd-s", Save, c),
         KeyBinding::new("cmd-shift-v", TogglePreview, c),
+        KeyBinding::new("cmd-d", AddNextOccurrence, c),
+        KeyBinding::new("cmd-shift-l", SelectAllOccurrences, c),
+        KeyBinding::new("cmd-alt-up", AddCursorUp, c),
+        KeyBinding::new("cmd-alt-down", AddCursorDown, c),
+        KeyBinding::new("escape", CancelEditor, c),
+        KeyBinding::new("alt-z", ToggleWrap, c),
+        KeyBinding::new("cmd-f", Find, c),
+        KeyBinding::new("cmd-alt-f", FindReplace, c),
+        KeyBinding::new("cmd-g", FindNext, c),
+        KeyBinding::new("cmd-shift-g", FindPrevious, c),
     ]
 }
 
@@ -92,10 +103,35 @@ pub enum EditorEvent {
 
 // これより大きいファイルは開かない
 const MAX_BYTES: u64 = 5 * 1024 * 1024;
-const TAB_WIDTH: usize = 4;
+const TAB_WIDTH: usize = TAB;
 const IMAGE_EXTENSIONS: [&str; 9] = ["png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "svg", "tiff"];
 // Markdown を最後にどちらで見たか。次に開く Markdown もそれで開く
 static PREVIEW_PREFERRED: AtomicBool = AtomicBool::new(false);
+// 長い行を折り返すか。最後に選んだほうを次に開くファイルにも使う
+static WRAP_PREFERRED: AtomicBool = AtomicBool::new(false);
+
+// ファイルの中の検索と置換
+struct Search {
+    query: Entity<crate::input::TextInput>,
+    replace: Entity<crate::input::TextInput>,
+    show_replace: bool,
+    case: bool,
+    word: bool,
+    regex: bool,
+    // 数え直す条件（版・検索の文字・選択肢）と、見つかった範囲
+    key: Option<(u64, String, bool, bool, bool)>,
+    matches: Vec<Range<usize>>,
+    current: Option<usize>,
+    error: Option<String>,
+    _subs: Vec<gpui::Subscription>,
+}
+
+// 打ちかけの語の候補（ファイルの中の語から出す）
+struct Completion {
+    start: usize,
+    items: Vec<String>,
+    selected: usize,
+}
 
 enum Body {
     Text(TextBuffer),
@@ -107,8 +143,11 @@ struct Painted {
     bounds: Bounds<Pixels>,
     text_left: Pixels,
     line_height: Pixels,
-    first_line: usize,
-    lines: Vec<ShapedLine>,
+    first_row: usize,
+    // 見えている見た目の行の（元の行, 行の中の始まり, 終わり, 字形）
+    rows: Vec<(usize, usize, usize, ShapedLine)>,
+    // 主のカーソルの左下（候補の一覧を出す位置）
+    cursor_at: Option<Point<Pixels>>,
 }
 
 pub struct FileEditor {
@@ -131,6 +170,14 @@ pub struct FileEditor {
     // ⌘ を押してリンクの上にいる（指の形にする）
     link_hover: bool,
     painted: Option<Painted>,
+    wrap: bool,
+    // 折り返しの見た目の行（版・桁数ごとに作り直す）
+    rows_cache: Option<(u64, usize, crate::rows::RowMap)>,
+    search: Option<Search>,
+    completion: Option<Completion>,
+    // 選びながら枠の外へ出たときの送り（上が負）と、最後の指の位置
+    drag_edge: Option<(f32, Point<Pixels>)>,
+    drag_task: Option<Task<()>>,
     _poll: Task<()>,
 }
 
@@ -179,6 +226,8 @@ fn read_body(path: &Path) -> (Body, String, Option<SystemTime>) {
     }
 }
 
+use crate::rows::TAB_WIDTH as TAB;
+
 // タブを幅 4 の空白に広げた表示の位置と、元の位置を行き来する
 fn display_line(line: &str) -> String {
     line.replace('\t', &" ".repeat(TAB_WIDTH))
@@ -198,6 +247,30 @@ fn from_display(line: &str, display: usize) -> usize {
         d += w;
     }
     line.len()
+}
+
+// 見た目の行を rows だけ上下した位置。桁は見た目の幅で保つ
+fn visual_target(map: &crate::rows::RowMap, b: &TextBuffer, offset: usize, rows: isize) -> usize {
+    let line = b.line_of(offset);
+    let line_start = b.line_start(line);
+    let row = map.row_of(line, offset - line_start);
+    let Some(&(_, start, _)) = map.rows.get(row) else { return offset };
+    let col: usize = b.line(line)[start..offset - line_start].chars().map(crate::rows::char_width).sum();
+    let target = row as isize + rows;
+    if target < 0 {
+        return 0;
+    }
+    let Some(&(tl, ts, te)) = map.rows.get(target as usize) else { return b.text().len() };
+    let text = &b.line(tl)[ts..te];
+    let mut width = 0;
+    for (i, c) in text.char_indices() {
+        let w = crate::rows::char_width(c);
+        if width + w > col {
+            return b.line_start(tl) + ts + i;
+        }
+        width += w;
+    }
+    b.line_start(tl) + te
 }
 
 impl FileEditor {
@@ -235,6 +308,12 @@ impl FileEditor {
             selecting: false,
             link_hover: false,
             painted: None,
+            wrap: WRAP_PREFERRED.load(Ordering::Relaxed),
+            rows_cache: None,
+            search: None,
+            completion: None,
+            drag_edge: None,
+            drag_task: None,
             _poll: poll,
         }
     }
@@ -276,18 +355,252 @@ impl FileEditor {
         cx.notify();
     }
 
-    fn edit(&mut self, cx: &mut Context<Self>, f: impl FnOnce(&mut TextBuffer)) {
+    // 書き換えを、どのカーソルにも当てる
+    fn edit(&mut self, cx: &mut Context<Self>, f: impl Fn(&mut TextBuffer)) {
         if let Some(b) = self.buffer() {
-            f(b);
+            b.each_edit(f);
+            self.completion = None;
             self.after_change(cx);
         }
     }
 
-    fn motion(&mut self, cx: &mut Context<Self>, f: impl FnOnce(&mut TextBuffer)) {
+    fn motion(&mut self, cx: &mut Context<Self>, f: impl Fn(&mut TextBuffer)) {
         if let Some(b) = self.buffer() {
-            f(b);
+            b.each_motion(f);
+            self.completion = None;
             self.reveal = true;
             cx.notify();
+        }
+    }
+
+    // カーソルの数を変える操作（全体に1回だけ当てる）
+    fn whole(&mut self, cx: &mut Context<Self>, f: impl FnOnce(&mut TextBuffer)) {
+        if let Some(b) = self.buffer() {
+            f(b);
+            self.completion = None;
+            self.reveal = true;
+            cx.notify();
+        }
+    }
+
+    // ↑↓。折り返していれば見た目の行で動く
+    fn move_vertical(&mut self, rows: isize, select: bool, cx: &mut Context<Self>) {
+        if !self.wrap || self.preview {
+            return self.motion(cx, |b| b.vertical(rows, select));
+        }
+        let FileEditor { body: Body::Text(b), rows_cache: Some((_, _, map)), .. } = self else {
+            return self.motion(cx, |b| b.vertical(rows, select));
+        };
+        b.each_motion(|b| {
+            let to = visual_target(map, b, b.cursor(), rows);
+            b.move_to(to, select);
+        });
+        self.completion = None;
+        self.reveal = true;
+        cx.notify();
+    }
+
+    // ---- 行と見た目の行 ----
+
+    fn row_count(&self) -> usize {
+        match (&self.body, &self.rows_cache) {
+            (_, Some((_, _, map))) if self.wrap => map.rows.len(),
+            (Body::Text(b), _) => b.line_count(),
+            _ => 0,
+        }
+    }
+
+    // 見た目の行の（元の行, 行の中の始まり, 終わり）
+    fn row(&self, row: usize) -> Option<(usize, usize, usize)> {
+        let Body::Text(b) = &self.body else { return None };
+        match &self.rows_cache {
+            Some((_, _, map)) if self.wrap => map.rows.get(row).copied(),
+            _ => (row < b.line_count()).then(|| (row, 0, b.line(row).len())),
+        }
+    }
+
+    fn row_of(&self, offset: usize) -> usize {
+        let Body::Text(b) = &self.body else { return 0 };
+        let line = b.line_of(offset);
+        match &self.rows_cache {
+            Some((_, _, map)) if self.wrap => map.row_of(line, offset - b.line_start(line)),
+            _ => line,
+        }
+    }
+
+    fn set_wrap(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.wrap = on;
+        WRAP_PREFERRED.store(on, Ordering::Relaxed);
+        self.scroll.x = px(0.0);
+        self.reveal = true;
+        cx.notify();
+    }
+
+    // ---- 候補 ----
+
+    // 打った直後に、カーソルの前の語（2文字以上）で始まる、ファイルの中の別の語を候補にする
+    fn update_completion(&mut self) {
+        self.completion = None;
+        let Body::Text(b) = &self.body else { return };
+        if !b.extra.is_empty() || !b.selected.is_empty() {
+            return;
+        }
+        let at = b.cursor();
+        let line_start = b.line_start(b.line_of(at));
+        let before = &b.text()[line_start..at];
+        let word_len: usize = before.chars().rev().take_while(|c| c.is_alphanumeric() || *c == '_').map(char::len_utf8).sum();
+        if before[before.len() - word_len..].chars().count() < 2 {
+            return;
+        }
+        let prefix = &before[before.len() - word_len..];
+        let lower = prefix.to_lowercase();
+        let mut items: Vec<String> = Vec::new();
+        for word in b.text().split(|c: char| !(c.is_alphanumeric() || c == '_')) {
+            if word.len() > prefix.len() && word.to_lowercase().starts_with(&lower) && !items.iter().any(|w| w == word) {
+                items.push(word.to_string());
+                if items.len() >= 200 {
+                    break;
+                }
+            }
+        }
+        if items.is_empty() {
+            return;
+        }
+        // 大文字と小文字まで合うもの、短いものを先にする
+        items.sort_by_key(|w| (!w.starts_with(prefix), w.len()));
+        items.truncate(10);
+        self.completion = Some(Completion { start: at - word_len, items, selected: 0 });
+    }
+
+    fn accept_completion(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(c) = self.completion.take() else { return false };
+        let Some(word) = c.items.get(c.selected).cloned() else { return false };
+        if let Some(b) = self.buffer() {
+            let at = b.cursor();
+            b.replace(c.start..at, &word);
+            self.after_change(cx);
+        }
+        true
+    }
+
+    // ---- 検索 ----
+
+    fn open_search(&mut self, replace: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let selected = match &self.body {
+            Body::Text(b) if !b.selected.is_empty() && !b.selected_text().contains('\n') => Some(b.selected_text().to_string()),
+            _ => None,
+        };
+        if self.search.is_none() {
+            let query = cx.new(|cx| crate::input::TextInput::new("検索", cx));
+            let with = cx.new(|cx| crate::input::TextInput::new("置き換える文字", cx));
+            let subs = vec![
+                cx.subscribe_in(&query, window, |e, _, event, window, cx| match event {
+                    crate::input::InputEvent::Changed => {
+                        e.refresh_search(cx);
+                        e.step_search(0, true, cx);
+                    }
+                    crate::input::InputEvent::Submit { shift } => e.step_search(if *shift { -1 } else { 1 }, false, cx),
+                    crate::input::InputEvent::Cancel => e.close_search(window, cx),
+                    _ => {}
+                }),
+                cx.subscribe_in(&with, window, |e, _, event, window, cx| match event {
+                    crate::input::InputEvent::Submit { .. } => e.replace_current(cx),
+                    crate::input::InputEvent::Cancel => e.close_search(window, cx),
+                    _ => {}
+                }),
+            ];
+            self.search = Some(Search { query, replace: with, show_replace: false, case: false, word: false, regex: false, key: None, matches: Vec::new(), current: None, error: None, _subs: subs });
+        }
+        let Some(search) = self.search.as_mut() else { return };
+        search.show_replace |= replace;
+        let query = search.query.clone();
+        if let Some(text) = selected {
+            query.update(cx, |i, cx| i.set_text(&text, cx));
+        }
+        query.update(cx, |i, cx| i.select_all_text(cx));
+        let handle = query.read(cx).focus_handle(cx);
+        window.focus(&handle, cx);
+        self.refresh_search(cx);
+        cx.notify();
+    }
+
+    fn close_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.search = None;
+        window.focus(&self.focus, cx);
+        cx.notify();
+    }
+
+    // 検索の文字・選択肢・中身が変わったときだけ、見つかる範囲を数え直す
+    fn refresh_search(&mut self, cx: &mut Context<Self>) {
+        let Body::Text(b) = &self.body else { return };
+        let Some(search) = self.search.as_mut() else { return };
+        let query = search.query.read(cx).text().to_string();
+        let key = (b.version, query.clone(), search.case, search.word, search.regex);
+        if search.key.as_ref() == Some(&key) {
+            return;
+        }
+        search.key = Some(key);
+        search.error = None;
+        search.matches.clear();
+        if query.is_empty() {
+            search.current = None;
+            return;
+        }
+        let mut pattern = if search.regex { query.clone() } else { regex::escape(&query) };
+        if search.word {
+            pattern = format!(r"\b(?:{pattern})\b");
+        }
+        match regex::RegexBuilder::new(&pattern).case_insensitive(!search.case).multi_line(true).build() {
+            Ok(re) => {
+                search.matches = re.find_iter(b.text()).filter(|m| !m.is_empty()).map(|m| m.range()).take(10_000).collect();
+            }
+            Err(_) => search.error = Some("正規表現が正しくない".into()),
+        }
+        let at = b.selected.start;
+        search.current = search.matches.iter().position(|m| m.start >= at).or((!search.matches.is_empty()).then_some(0));
+    }
+
+    // 次（1）か前（-1）の一致へ移って選ぶ。stay なら今の位置の一致を選ぶだけ
+    fn step_search(&mut self, step: isize, stay: bool, cx: &mut Context<Self>) {
+        self.refresh_search(cx);
+        let Some(search) = self.search.as_mut() else { return };
+        let n = search.matches.len();
+        if n == 0 {
+            cx.notify();
+            return;
+        }
+        let current = search.current.unwrap_or(0);
+        let next = if stay { current } else { (current as isize + step).rem_euclid(n as isize) as usize };
+        search.current = Some(next);
+        let range = search.matches[next].clone();
+        if let Body::Text(b) = &mut self.body {
+            b.clear_extra();
+            b.set_selection(range, false);
+        }
+        self.reveal = true;
+        cx.notify();
+    }
+
+    fn replace_current(&mut self, cx: &mut Context<Self>) {
+        self.refresh_search(cx);
+        let Some(search) = self.search.as_ref() else { return };
+        let Some(range) = search.current.and_then(|i| search.matches.get(i)).cloned() else { return };
+        let with = search.replace.read(cx).text().to_string();
+        if let Some(b) = self.buffer() {
+            b.replace(range, &with);
+            self.after_change(cx);
+        }
+        self.step_search(0, true, cx);
+    }
+
+    fn replace_all(&mut self, cx: &mut Context<Self>) {
+        self.refresh_search(cx);
+        let Some(search) = self.search.as_ref() else { return };
+        let ranges = search.matches.clone();
+        let with = search.replace.read(cx).text().to_string();
+        if let Some(b) = self.buffer() {
+            b.replace_all(&ranges, &with);
+            self.after_change(cx);
         }
     }
 
@@ -365,15 +678,15 @@ impl FileEditor {
     fn offset_for_point(&self, position: Point<Pixels>) -> Option<usize> {
         let Body::Text(b) = &self.body else { return None };
         let p = self.painted.as_ref()?;
-        let row = ((position.y - p.bounds.top() + self.scroll.y) / p.line_height).floor().max(0.0) as usize;
-        let line = row.min(b.line_count() - 1);
-        let text = b.line(line);
+        let row = (((position.y - p.bounds.top() + self.scroll.y) / p.line_height).floor().max(0.0) as usize).min(self.row_count().saturating_sub(1));
+        let (line, start, end) = self.row(row)?;
+        let text = &b.line(line)[start..end];
         let x = (position.x - p.text_left + self.scroll.x).max(px(0.0));
-        let display = match p.lines.get(line.wrapping_sub(p.first_line)) {
-            Some(shaped) => shaped.closest_index_for_x(x),
+        let display = match p.rows.get(row.wrapping_sub(p.first_row)) {
+            Some((_, _, _, shaped)) => shaped.closest_index_for_x(x),
             None => display_line(text).len(),
         };
-        Some(b.line_start(line) + from_display(text, display))
+        Some(b.line_start(line) + start + from_display(text, display))
     }
 
     // その位置のリンク（URL かファイルのパス）
@@ -401,7 +714,15 @@ impl FileEditor {
         }
         let count = event.click_count;
         let shift = event.modifiers.shift;
+        self.completion = None;
         if let Body::Text(b) = &mut self.body {
+            // ⌥クリックでカーソルを足す
+            if event.modifiers.alt && count == 1 {
+                b.add_cursor_at(at);
+                cx.notify();
+                return;
+            }
+            b.clear_extra();
             match count {
                 2 => {
                     let r = b.word_range(at);
@@ -429,23 +750,70 @@ impl FileEditor {
         if !self.selecting || event.pressed_button != Some(MouseButton::Left) {
             return;
         }
-        if let Some(at) = self.offset_for_point(event.position)
+        self.drag_to(event.position, cx);
+        // 枠の上下の外へ出たら、出た分に応じて送り続ける
+        let Some(p) = self.painted.as_ref() else { return };
+        let (top, bottom) = (p.bounds.top(), p.bounds.bottom());
+        let edge = if event.position.y < top {
+            Some(-f32::from(top - event.position.y))
+        } else if event.position.y > bottom {
+            Some(f32::from(event.position.y - bottom))
+        } else {
+            None
+        };
+        match edge {
+            Some(d) => {
+                self.drag_edge = Some((d, event.position));
+                if self.drag_task.is_none() {
+                    self.drag_task = Some(cx.spawn(async move |this, cx| {
+                        loop {
+                            cx.background_executor().timer(Duration::from_millis(30)).await;
+                            let go_on = this
+                                .update(cx, |e, cx| {
+                                    let Some((d, at)) = e.drag_edge.filter(|_| e.selecting) else {
+                                        e.drag_task = None;
+                                        return false;
+                                    };
+                                    let step = (d.abs() / 4.0).clamp(2.0, 40.0) * d.signum();
+                                    e.scroll.y = (e.scroll.y + px(step)).max(px(0.0));
+                                    e.drag_to(at, cx);
+                                    true
+                                })
+                                .unwrap_or(false);
+                            if !go_on {
+                                break;
+                            }
+                        }
+                    }));
+                }
+            }
+            None => self.drag_edge = None,
+        }
+    }
+
+    fn drag_to(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
+        let Some(p) = self.painted.as_ref() else { return };
+        let clamped = point(position.x, position.y.clamp(p.bounds.top(), p.bounds.bottom() - px(1.0)));
+        if let Some(at) = self.offset_for_point(clamped)
             && let Body::Text(b) = &mut self.body
         {
             b.move_to(at, true);
-            self.reveal = true;
             cx.notify();
         }
     }
 
     fn on_mouse_up(&mut self, _: &MouseUpEvent, _: &mut Window, _: &mut Context<Self>) {
         self.selecting = false;
+        self.drag_edge = None;
+        self.drag_task = None;
     }
 
     fn on_scroll(&mut self, event: &ScrollEvent, window: &mut Window, cx: &mut Context<Self>) {
         let delta = event.delta.pixel_delta(window.line_height());
         self.scroll.y = (self.scroll.y - delta.y).max(px(0.0));
-        self.scroll.x = (self.scroll.x - delta.x).max(px(0.0));
+        if !self.wrap {
+            self.scroll.x = (self.scroll.x - delta.x).max(px(0.0));
+        }
         cx.stop_propagation();
         cx.notify();
     }
@@ -506,9 +874,140 @@ impl FileEditor {
                     e.set_preview(on, cx);
                 })))
             })
+            .when(is_text && !self.preview, |d| {
+                d.child(button("editor-wrap", if self.wrap { "折り返さない（⌥Z）" } else { "折り返す（⌥Z）" }).on_click(cx.listener(|e, _: &ClickEvent, _, cx| {
+                    let on = !e.wrap;
+                    e.set_wrap(on, cx);
+                })))
+            })
             .when(is_text, |d| d.child(button("editor-save", "保存（⌘S）").on_click(cx.listener(|e, _: &ClickEvent, _, cx| e.save(cx)))))
             .child(button("editor-external", "外部のエディタで開く").on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(EditorEvent::OpenExternal))))
             .into_any_element()
+    }
+
+    fn render_search(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let search = self.search.as_ref()?;
+        let a = cx.global::<Appearance>();
+        let chrome = a.chrome.clone();
+        let (text, muted, border, hover, accent, term_bg) =
+            (hsla(chrome.text, 1.0), hsla(chrome.text_muted, 1.0), hsla(chrome.border, 1.0), hsla(chrome.bg_hover, 1.0), hsla(chrome.accent, 1.0), hsla(chrome.term_bg, 1.0));
+        let warning = hsla(a.theme.palette[3], 1.0);
+        let button = |id: &'static str, label: &'static str| {
+            div().id(id).px_2().py(px(1.0)).rounded_md().border_1().border_color(border).text_xs().text_color(text).hover(move |s| s.bg(hover)).child(label)
+        };
+        let toggle = |id: &'static str, label: &'static str, on: bool, tip: &'static str| {
+            div()
+                .id(id)
+                .px_1()
+                .rounded_sm()
+                .text_xs()
+                .border_1()
+                .border_color(if on { accent } else { border })
+                .text_color(if on { accent } else { muted })
+                .hover(move |s| s.bg(hover))
+                .tooltip(move |_, cx| crate::tooltip::text(tip, cx))
+                .child(label)
+        };
+        let count = match (&search.error, search.matches.len(), search.current) {
+            (Some(err), _, _) => err.clone(),
+            (None, 0, _) => if search.query.read(cx).text().is_empty() { String::new() } else { "見つからない".into() },
+            (None, n, Some(i)) => format!("{}/{n}", i + 1),
+            (None, n, None) => format!("{n} 件"),
+        };
+        let input_box = |input: &Entity<crate::input::TextInput>| div().w(px(260.0)).px_2().py(px(2.0)).rounded_md().border_1().border_color(border).bg(term_bg).text_sm().child(input.clone());
+        let show_replace = search.show_replace;
+        let find_row = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_2()
+            .child(
+                div()
+                    .id("search-expand")
+                    .text_color(muted)
+                    .hover(|s| s.text_color(text))
+                    .on_click(cx.listener(|e, _: &ClickEvent, _, cx| {
+                        if let Some(s) = e.search.as_mut() {
+                            s.show_replace = !s.show_replace;
+                        }
+                        cx.notify();
+                    }))
+                    .child(crate::ui::icon(if show_replace { "chevron-down" } else { "chevron-right" }, 12.0, muted)),
+            )
+            .child(input_box(&search.query))
+            .child(toggle("search-case", "Aa", search.case, "大文字と小文字を区別する").on_click(cx.listener(|e, _: &ClickEvent, _, cx| {
+                if let Some(s) = e.search.as_mut() {
+                    s.case = !s.case;
+                }
+                e.step_search(0, true, cx);
+            })))
+            .child(toggle("search-word", "ab", search.word, "語の全体で一致させる").on_click(cx.listener(|e, _: &ClickEvent, _, cx| {
+                if let Some(s) = e.search.as_mut() {
+                    s.word = !s.word;
+                }
+                e.step_search(0, true, cx);
+            })))
+            .child(toggle("search-regex", ".*", search.regex, "正規表現で探す").on_click(cx.listener(|e, _: &ClickEvent, _, cx| {
+                if let Some(s) = e.search.as_mut() {
+                    s.regex = !s.regex;
+                }
+                e.step_search(0, true, cx);
+            })))
+            .child(div().min_w(px(64.0)).text_xs().text_color(if search.error.is_some() { warning } else { muted }).child(count))
+            .child(button("search-prev", "↑").on_click(cx.listener(|e, _: &ClickEvent, _, cx| e.step_search(-1, false, cx))))
+            .child(button("search-next", "↓").on_click(cx.listener(|e, _: &ClickEvent, _, cx| e.step_search(1, false, cx))))
+            .child(button("search-close", "閉じる").on_click(cx.listener(|e, _: &ClickEvent, window, cx| e.close_search(window, cx))));
+        let replace_row = show_replace.then(|| {
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .pl(px(20.0))
+                .child(input_box(&search.replace))
+                .child(button("replace-one", "置き換える").on_click(cx.listener(|e, _: &ClickEvent, _, cx| e.replace_current(cx))))
+                .child(button("replace-all", "すべて置き換える").on_click(cx.listener(|e, _: &ClickEvent, _, cx| e.replace_all(cx))))
+        });
+        Some(div().flex().flex_col().flex_none().gap_1().px_3().py_1().border_b_1().border_color(border).child(find_row).children(replace_row).into_any_element())
+    }
+
+    fn render_completion(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let c = self.completion.as_ref()?;
+        let at = self.painted.as_ref()?.cursor_at?;
+        let a = cx.global::<Appearance>();
+        let chrome = a.chrome.clone();
+        let mut list = div()
+            .flex()
+            .flex_col()
+            .min_w(px(160.0))
+            .max_w(px(360.0))
+            .py_1()
+            .rounded_md()
+            .border_1()
+            .border_color(hsla(chrome.border, 1.0))
+            .bg(hsla(chrome.bg, 1.0))
+            .shadow_md()
+            .font_family(a.font.family.clone())
+            .text_sm();
+        for (i, item) in c.items.iter().enumerate() {
+            let selected = i == c.selected;
+            list = list.child(
+                div()
+                    .id(("completion", i))
+                    .px_2()
+                    .text_color(hsla(chrome.text, 1.0))
+                    .when(selected, |d| d.bg(hsla(chrome.selection, 1.0)))
+                    .hover(|s| s.bg(hsla(chrome.bg_hover, 1.0)))
+                    .on_click(cx.listener(move |e, _: &ClickEvent, _, cx| {
+                        if let Some(c) = e.completion.as_mut() {
+                            c.selected = i;
+                        }
+                        e.accept_completion(cx);
+                    }))
+                    .child(item.clone()),
+            );
+        }
+        Some(gpui::deferred(gpui::anchored().position(at).child(list)).with_priority(2).into_any_element())
     }
 
     fn render_banner(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -642,6 +1141,16 @@ fn percent_decode(text: &str) -> String {
         i += 1;
     }
     String::from_utf8(out).unwrap_or_else(|_| text.to_string())
+}
+
+// コピーする文字。カーソルが複数なら、選んだ範囲を前から順に改行でつなぐ
+fn selections_text(b: &TextBuffer) -> Option<String> {
+    let mut ranges: Vec<Range<usize>> = b.extra.iter().map(|c| c.range.clone()).chain(std::iter::once(b.selected.clone())).filter(|r| !r.is_empty()).collect();
+    if ranges.is_empty() {
+        return None;
+    }
+    ranges.sort_by_key(|r| r.start);
+    Some(ranges.iter().map(|r| &b.text()[r.clone()]).collect::<Vec<_>>().join("\n"))
 }
 
 fn inline_element(inline: &Inline, id: usize, ctx: &PreviewCtx, cx: &App) -> AnyElement {
@@ -786,10 +1295,15 @@ impl EntityInputHandler for FileEditor {
 
     fn replace_text_in_range(&mut self, range: Option<Range<usize>>, text: &str, _: &mut Window, cx: &mut Context<Self>) {
         let range = range.map(|r| self.range_from_utf16(&r)).or(self.marked.clone());
-        self.edit(cx, |b| {
-            let range = range.unwrap_or(b.selected.clone());
-            b.replace(range, text);
-        });
+        match range {
+            Some(range) => {
+                let Some(b) = self.buffer() else { return };
+                b.replace(range, text);
+                self.after_change(cx);
+            }
+            None => self.edit(cx, |b| b.insert(text)),
+        }
+        self.update_completion();
     }
 
     fn replace_and_mark_text_in_range(&mut self, range: Option<Range<usize>>, text: &str, new_selected: Option<Range<usize>>, _: &mut Window, cx: &mut Context<Self>) {
@@ -821,12 +1335,11 @@ impl EntityInputHandler for FileEditor {
         let range = self.range_from_utf16(&range);
         let Body::Text(b) = &self.body else { return None };
         let p = self.painted.as_ref()?;
-        let line = b.line_of(range.start);
-        let shaped = p.lines.get(line.checked_sub(p.first_line)?)?;
-        let text = b.line(line);
-        let start = b.line_start(line);
-        let x = shaped.x_for_index(to_display(text, range.start - start));
-        let top = p.bounds.top() + p.line_height * line as f32 - self.scroll.y;
+        let row = self.row_of(range.start);
+        let (line, start, end, shaped) = p.rows.get(row.checked_sub(p.first_row)?)?;
+        let text = &b.line(*line)[*start..*end];
+        let x = shaped.x_for_index(to_display(text, (range.start - b.line_start(*line) - start).min(text.len())));
+        let top = p.bounds.top() + p.line_height * row as f32 - self.scroll.y;
         Some(Bounds::new(point(p.text_left + x - self.scroll.x, top), size(px(2.0), p.line_height)))
     }
 
@@ -841,6 +1354,8 @@ impl Render for FileEditor {
         let chrome = cx.global::<Appearance>().chrome.clone();
         let header = self.render_header(cx);
         let banner = self.render_banner(cx);
+        let search = if self.preview { None } else { self.render_search(cx) };
+        let completion = self.render_completion(cx);
         let body: AnyElement = match &self.body {
             Body::Message(message) => div().flex().flex_1().items_center().justify_center().text_color(hsla(chrome.text_muted, 1.0)).child(message.clone()).into_any_element(),
             Body::Image => div().flex().flex_1().min_h_0().items_center().justify_center().p_4().child(gpui::img(self.path.clone()).max_w_full().max_h_full()).into_any_element(),
@@ -866,12 +1381,24 @@ impl Render for FileEditor {
             .flex_col()
             .on_action(cx.listener(|e, _: &MoveLeft, _, cx| e.motion(cx, |b| b.left(false, false))))
             .on_action(cx.listener(|e, _: &MoveRight, _, cx| e.motion(cx, |b| b.right(false, false))))
-            .on_action(cx.listener(|e, _: &MoveUp, _, cx| e.motion(cx, |b| b.vertical(-1, false))))
-            .on_action(cx.listener(|e, _: &MoveDown, _, cx| e.motion(cx, |b| b.vertical(1, false))))
+            .on_action(cx.listener(|e, _: &MoveUp, _, cx| {
+                if let Some(c) = e.completion.as_mut() {
+                    c.selected = c.selected.checked_sub(1).unwrap_or(c.items.len() - 1);
+                    return cx.notify();
+                }
+                e.move_vertical(-1, false, cx)
+            }))
+            .on_action(cx.listener(|e, _: &MoveDown, _, cx| {
+                if let Some(c) = e.completion.as_mut() {
+                    c.selected = (c.selected + 1) % c.items.len();
+                    return cx.notify();
+                }
+                e.move_vertical(1, false, cx)
+            }))
             .on_action(cx.listener(|e, _: &SelectLeft, _, cx| e.motion(cx, |b| b.left(true, false))))
             .on_action(cx.listener(|e, _: &SelectRight, _, cx| e.motion(cx, |b| b.right(true, false))))
-            .on_action(cx.listener(|e, _: &SelectUp, _, cx| e.motion(cx, |b| b.vertical(-1, true))))
-            .on_action(cx.listener(|e, _: &SelectDown, _, cx| e.motion(cx, |b| b.vertical(1, true))))
+            .on_action(cx.listener(|e, _: &SelectUp, _, cx| e.move_vertical(-1, true, cx)))
+            .on_action(cx.listener(|e, _: &SelectDown, _, cx| e.move_vertical(1, true, cx)))
             .on_action(cx.listener(|e, _: &WordLeft, _, cx| e.motion(cx, |b| b.left(false, true))))
             .on_action(cx.listener(|e, _: &WordRight, _, cx| e.motion(cx, |b| b.right(false, true))))
             .on_action(cx.listener(|e, _: &SelectWordLeft, _, cx| e.motion(cx, |b| b.left(true, true))))
@@ -886,41 +1413,53 @@ impl Render for FileEditor {
             .on_action(cx.listener(|e, _: &SelectDocEnd, _, cx| e.motion(cx, |b| b.doc_edge(true, true))))
             .on_action(cx.listener(|e, _: &PageUp, _, cx| {
                 let rows = e.page_rows();
-                e.motion(cx, |b| b.vertical(-rows, false))
+                e.move_vertical(-rows, false, cx)
             }))
             .on_action(cx.listener(|e, _: &PageDown, _, cx| {
                 let rows = e.page_rows();
-                e.motion(cx, |b| b.vertical(rows, false))
+                e.move_vertical(rows, false, cx)
             }))
             .on_action(cx.listener(|e, _: &SelectPageUp, _, cx| {
                 let rows = e.page_rows();
-                e.motion(cx, |b| b.vertical(-rows, true))
+                e.move_vertical(-rows, true, cx)
             }))
             .on_action(cx.listener(|e, _: &SelectPageDown, _, cx| {
                 let rows = e.page_rows();
-                e.motion(cx, |b| b.vertical(rows, true))
+                e.move_vertical(rows, true, cx)
             }))
-            .on_action(cx.listener(|e, _: &Backspace, _, cx| e.edit(cx, |b| b.backspace(false, false))))
+            .on_action(cx.listener(|e, _: &Backspace, _, cx| {
+                e.edit(cx, |b| b.backspace(false, false));
+                if e.completion.is_none() && matches!(&e.body, Body::Text(b) if b.extra.is_empty()) {
+                    e.update_completion();
+                }
+            }))
             .on_action(cx.listener(|e, _: &DeleteWordBack, _, cx| e.edit(cx, |b| b.backspace(true, false))))
             .on_action(cx.listener(|e, _: &DeleteToLineStart, _, cx| e.edit(cx, |b| b.backspace(false, true))))
             .on_action(cx.listener(|e, _: &DeleteForward, _, cx| e.edit(cx, |b| b.delete_forward(false))))
             .on_action(cx.listener(|e, _: &DeleteWordForward, _, cx| e.edit(cx, |b| b.delete_forward(true))))
-            .on_action(cx.listener(|e, _: &Newline, _, cx| e.edit(cx, |b| b.newline())))
-            .on_action(cx.listener(|e, _: &Indent, _, cx| e.edit(cx, |b| b.indent())))
+            .on_action(cx.listener(|e, _: &Newline, _, cx| {
+                if !e.accept_completion(cx) {
+                    e.edit(cx, |b| b.newline())
+                }
+            }))
+            .on_action(cx.listener(|e, _: &Indent, _, cx| {
+                if !e.accept_completion(cx) {
+                    e.edit(cx, |b| b.indent())
+                }
+            }))
             .on_action(cx.listener(|e, _: &Outdent, _, cx| e.edit(cx, |b| b.outdent())))
             .on_action(cx.listener(|e, _: &SelectAll, _, cx| e.motion(cx, |b| b.select_all())))
             .on_action(cx.listener(|e, _: &Copy, _, cx| {
                 if let Body::Text(b) = &e.body
-                    && !b.selected.is_empty()
+                    && let Some(text) = selections_text(b)
                 {
-                    cx.write_to_clipboard(ClipboardItem::new_string(b.selected_text().to_string()));
+                    cx.write_to_clipboard(ClipboardItem::new_string(text));
                 }
             }))
             .on_action(cx.listener(|e, _: &Cut, _, cx| {
                 if let Some(b) = e.buffer()
-                    && !b.selected.is_empty()
+                    && let Some(text) = selections_text(b)
                 {
-                    let text = b.selected_text().to_string();
                     cx.write_to_clipboard(ClipboardItem::new_string(text));
                     e.edit(cx, |b| b.insert(""));
                 }
@@ -937,6 +1476,32 @@ impl Render for FileEditor {
                 b.redo();
             })))
             .on_action(cx.listener(|e, _: &Save, _, cx| e.save(cx)))
+            .on_action(cx.listener(|e, _: &AddNextOccurrence, _, cx| e.whole(cx, |b| b.add_next_occurrence())))
+            .on_action(cx.listener(|e, _: &SelectAllOccurrences, _, cx| e.whole(cx, |b| b.select_all_occurrences())))
+            .on_action(cx.listener(|e, _: &AddCursorUp, _, cx| e.whole(cx, |b| b.add_cursor_vertical(-1))))
+            .on_action(cx.listener(|e, _: &AddCursorDown, _, cx| e.whole(cx, |b| b.add_cursor_vertical(1))))
+            .on_action(cx.listener(|e, _: &CancelEditor, window, cx| {
+                if e.completion.take().is_some() {
+                    return cx.notify();
+                }
+                if e.search.is_some() {
+                    return e.close_search(window, cx);
+                }
+                if let Body::Text(b) = &mut e.body
+                    && b.clear_extra()
+                {
+                    return cx.notify();
+                }
+                cx.propagate();
+            }))
+            .on_action(cx.listener(|e, _: &ToggleWrap, _, cx| {
+                let on = !e.wrap;
+                e.set_wrap(on, cx);
+            }))
+            .on_action(cx.listener(|e, _: &Find, window, cx| e.open_search(false, window, cx)))
+            .on_action(cx.listener(|e, _: &FindReplace, window, cx| e.open_search(true, window, cx)))
+            .on_action(cx.listener(|e, _: &FindNext, _, cx| e.step_search(1, false, cx)))
+            .on_action(cx.listener(|e, _: &FindPrevious, _, cx| e.step_search(-1, false, cx)))
             .on_action(cx.listener(|e, _: &TogglePreview, _, cx| {
                 if is_markdown(&e.path) {
                     let on = !e.preview;
@@ -945,7 +1510,9 @@ impl Render for FileEditor {
             }))
             .child(header)
             .children(banner)
+            .children(search)
             .child(body)
+            .children(completion)
     }
 }
 
@@ -955,11 +1522,12 @@ struct EditorElement {
 
 pub struct EditorPrepaint {
     text_bounds: Bounds<Pixels>,
+    line_height: Pixels,
     gutter: Vec<(Pixels, ShapedLine)>,
-    lines: Vec<(Pixels, ShapedLine)>,
-    selection: Vec<gpui::PaintQuad>,
-    current_line: Option<gpui::PaintQuad>,
-    cursor: Option<gpui::PaintQuad>,
+    rows: Vec<(Pixels, ShapedLine)>,
+    under: Vec<gpui::PaintQuad>,
+    cursors: Vec<gpui::PaintQuad>,
+    current_rows: Vec<gpui::PaintQuad>,
 }
 
 impl gpui::Element for EditorElement {
@@ -992,8 +1560,7 @@ impl gpui::Element for EditorElement {
             Some(Tok::Str) => hsla(theme.palette[2], 1.0),
             Some(Tok::Number) => hsla(theme.palette[3], 1.0),
             Some(Tok::Type) => hsla(theme.palette[6], 1.0),
-            Some(Tok::Tag) => hsla(theme.palette[4], 1.0),
-            Some(Tok::Heading) => hsla(theme.palette[4], 1.0),
+            Some(Tok::Tag) | Some(Tok::Heading) => hsla(theme.palette[4], 1.0),
         };
         let run = |len: usize, color, underline: bool| TextRun {
             len,
@@ -1004,79 +1571,102 @@ impl gpui::Element for EditorElement {
             strikethrough: None,
         };
         let shape = |window: &mut Window, text: String, runs: Vec<TextRun>| window.text_system().shape_line(SharedString::from(text), font_size, &runs, None);
+        let empty = EditorPrepaint { text_bounds: bounds, line_height, gutter: Vec::new(), rows: Vec::new(), under: Vec::new(), cursors: Vec::new(), current_rows: Vec::new() };
 
         let editor = self.editor.clone();
         let lang = syntax::lang_for(&editor.read(cx).path);
-        // 複数行の注釈の状態は、書き換えたときだけ数え直す
-        editor.update(cx, |e, _| {
-            if let (Body::Text(b), Some(lang)) = (&e.body, lang)
-                && e.states_cache.as_ref().is_none_or(|(v, _)| *v != b.version)
-            {
-                let states = syntax::block_states((0..b.line_count()).map(|l| b.line(l)), lang);
-                e.states_cache = Some((b.version, states));
-            }
-        });
-        let e = editor.read(cx);
-        let Body::Text(b) = &e.body else {
-            return EditorPrepaint { text_bounds: bounds, gutter: Vec::new(), lines: Vec::new(), selection: Vec::new(), current_line: None, cursor: None };
-        };
-        let line_count = b.line_count();
-        let digits = line_count.to_string().len().max(3);
         let char_w = shape(window, "0".into(), vec![run(1, hsla(theme.foreground, 1.0), false)]).width;
+        let line_count = match &editor.read(cx).body {
+            Body::Text(b) => b.line_count(),
+            _ => return empty,
+        };
+        let digits = line_count.to_string().len().max(3);
         let gutter_w = char_w * digits as f32 + px(24.0);
         let text_left = bounds.left() + gutter_w;
         let text_bounds = Bounds::from_corners(point(text_left, bounds.top()), bounds.bottom_right());
+        let text_width = text_bounds.size.width - px(8.0);
+        // 複数行の注釈の状態と、折り返しの見た目の行は、書き換えたとき（と幅が変わったとき）だけ作り直す
+        let cols = ((text_width / char_w).floor() as usize).max(8);
+        editor.update(cx, |e, cx| {
+            e.refresh_search(cx);
+            let Body::Text(b) = &e.body else { return };
+            if let Some(lang) = lang
+                && e.states_cache.as_ref().is_none_or(|(v, _)| *v != b.version)
+            {
+                e.states_cache = Some((b.version, syntax::block_states((0..b.line_count()).map(|l| b.line(l)), lang)));
+            }
+            if e.wrap {
+                if e.rows_cache.as_ref().is_none_or(|(v, c, _)| *v != b.version || *c != cols) {
+                    e.rows_cache = Some((b.version, cols, crate::rows::RowMap::build((0..b.line_count()).map(|l| b.line(l)), cols)));
+                }
+            } else {
+                e.rows_cache = None;
+            }
+        });
+        let e = editor.read(cx);
+        let Body::Text(b) = &e.body else { return empty };
+        let row_count = e.row_count();
         let visible_rows = (bounds.size.height / line_height).ceil() as usize + 1;
 
-        // 縦の送りを決める。カーソルを見せるときは、カーソルの行が見える所まで送る
+        // 縦の送り。カーソルを見せるときは、主のカーソルの行が見える所まで送る
         let cursor = b.cursor();
-        let cursor_line = b.line_of(cursor);
+        let cursor_row = e.row_of(cursor);
         let mut scroll = e.scroll;
-        let max_y = (line_height * line_count as f32 - line_height * 3.0).max(px(0.0));
         if e.reveal {
-            let top = line_height * cursor_line as f32;
+            let top = line_height * cursor_row as f32;
             if top < scroll.y {
                 scroll.y = top;
             } else if top + line_height > scroll.y + bounds.size.height {
                 scroll.y = top + line_height - bounds.size.height;
             }
         }
-        scroll.y = scroll.y.clamp(px(0.0), max_y.max(scroll.y.min(line_height * line_count as f32)));
-        scroll.y = scroll.y.min(max_y);
+        let max_y = (line_height * row_count as f32 - line_height * 3.0).max(px(0.0));
+        scroll.y = scroll.y.clamp(px(0.0), max_y);
         let first = (scroll.y / line_height).floor() as usize;
-        let last = (first + visible_rows).min(line_count);
+        let last = (first + visible_rows).min(row_count);
         let states = e.states_cache.as_ref().map(|(_, s)| s.clone());
+        let matches: Vec<Range<usize>> = e.search.as_ref().map(|s| s.matches.clone()).unwrap_or_default();
+        let current_match = e.search.as_ref().and_then(|s| s.current.and_then(|i| s.matches.get(i).cloned()));
 
-        let mut shaped_lines = Vec::new();
-        let mut gutter = Vec::new();
         let muted = hsla(chrome.text_muted, 0.7);
-        let current = hsla(chrome.text, 1.0);
-        for line in first..last {
+        let bright = hsla(chrome.text, 1.0);
+        let mut gutter = Vec::new();
+        let mut shaped_rows: Vec<(usize, usize, usize, Pixels, ShapedLine)> = Vec::new();
+        let cursor_lines: Vec<usize> = std::iter::once(b.line_of(cursor)).chain(b.extra.iter().map(|c| b.line_of(c.head()))).collect();
+        let mut line_colors: Option<(usize, Vec<Option<Tok>>)> = None;
+        for row in first..last {
+            let Some((line, start, end)) = e.row(row) else { break };
             let text = b.line(line);
-            let y = bounds.top() + line_height * line as f32 - scroll.y;
-            let number = (line + 1).to_string();
-            let pad = digits - number.len();
-            let label = format!("{}{}", " ".repeat(pad), number);
-            let label_len = label.len();
-            gutter.push((y, shape(window, label, vec![run(label_len, if line == cursor_line { current } else { muted }, false)])));
-            let display = display_line(text);
-            let mut colors: Vec<Option<Tok>> = vec![None; text.len()];
-            if let Some(lang) = lang {
-                let mut inside = states.as_ref().and_then(|s| s.get(line).copied()).unwrap_or(false);
-                for (range, tok) in syntax::highlight_line(text, lang, &mut inside) {
-                    for c in &mut colors[range.start.min(text.len())..range.end.min(text.len())] {
-                        *c = Some(tok);
+            let y = bounds.top() + line_height * row as f32 - scroll.y;
+            // 行番号は、元の行の最初の見た目の行にだけ出す
+            if start == 0 {
+                let number = (line + 1).to_string();
+                let label = format!("{}{}", " ".repeat(digits - number.len()), number);
+                let len = label.len();
+                gutter.push((y, shape(window, label, vec![run(len, if cursor_lines.contains(&line) { bright } else { muted }, false)])));
+            }
+            if line_colors.as_ref().is_none_or(|(l, _)| *l != line) {
+                let mut colors: Vec<Option<Tok>> = vec![None; text.len()];
+                if let Some(lang) = lang {
+                    let mut inside = states.as_ref().and_then(|s| s.get(line).copied()).unwrap_or(false);
+                    for (range, tok) in syntax::highlight_line(text, lang, &mut inside) {
+                        for c in &mut colors[range.start.min(text.len())..range.end.min(text.len())] {
+                            *c = Some(tok);
+                        }
                     }
                 }
+                line_colors = Some((line, colors));
             }
-            // 元の位置ごとの色を、表示の位置の連なりにまとめる
+            let colors = &line_colors.as_ref().expect("作った").1;
             let line_start = b.line_start(line);
-            let marked = e.marked.clone().filter(|m| m.start < line_start + text.len() && m.end > line_start).map(|m| m.start.max(line_start) - line_start..m.end.min(line_start + text.len()) - line_start);
+            let marked = e.marked.clone().filter(|m| m.start < line_start + end && m.end > line_start + start);
+            let part = &text[start..end];
             let mut runs: Vec<TextRun> = Vec::new();
             let mut last_key: Option<(Option<Tok>, bool)> = None;
-            for (i, c) in text.char_indices() {
+            for (i, c) in part.char_indices() {
+                let at = start + i;
                 let w = if c == '\t' { TAB_WIDTH } else { c.len_utf8() };
-                let key = (colors[i], marked.as_ref().is_some_and(|m| m.contains(&i)));
+                let key = (colors[at], marked.as_ref().is_some_and(|m| m.contains(&(line_start + at))));
                 if last_key == Some(key)
                     && let Some(r) = runs.last_mut()
                 {
@@ -1086,72 +1676,100 @@ impl gpui::Element for EditorElement {
                     last_key = Some(key);
                 }
             }
-            let shaped = shape(window, display, runs);
-            shaped_lines.push((y, shaped));
+            shaped_rows.push((line, start, end, y, shape(window, display_line(part), runs)));
         }
 
-        // 横の送り。カーソルを見せるときは、カーソルの桁が見える所まで送る
-        let text_width = text_bounds.size.width - px(8.0);
-        if e.reveal
-            && let Some((_, shaped)) = shaped_lines.get(cursor_line.wrapping_sub(first))
+        // 横の送り（折り返していないときだけ）。カーソルを見せるときは、その桁が見える所まで送る
+        let x_in_row = |offset: usize| -> Option<(Pixels, Pixels)> {
+            let line = b.line_of(offset);
+            let in_line = offset - b.line_start(line);
+            let row = e.row_of(offset);
+            let (l, start, end, y, shaped) = shaped_rows.get(row.checked_sub(first)?)?;
+            debug_assert_eq!(*l, line);
+            let part = &b.line(line)[*start..*end];
+            Some((shaped.x_for_index(to_display(part, in_line.saturating_sub(*start).min(part.len()))), *y))
+        };
+        if e.wrap {
+            scroll.x = px(0.0);
+        } else if e.reveal
+            && let Some((x, _)) = x_in_row(cursor)
         {
-            let text = b.line(cursor_line);
-            let x = shaped.x_for_index(to_display(text, cursor - b.line_start(cursor_line)));
             if x < scroll.x {
                 scroll.x = (x - char_w * 4.0).max(px(0.0));
             } else if x > scroll.x + text_width {
                 scroll.x = x - text_width + char_w * 4.0;
             }
-        }
-        let widest = shaped_lines.iter().map(|(_, s)| s.width).fold(px(0.0), |a, b| a.max(b));
-        if !e.reveal {
+        } else {
+            let widest = shaped_rows.iter().map(|r| r.4.width).fold(px(0.0), |a, b| a.max(b));
             scroll.x = scroll.x.min((widest - text_width + char_w * 4.0).max(px(0.0)));
         }
 
-        let x_at = |offset: usize| -> Option<(Pixels, Pixels)> {
-            let line = b.line_of(offset);
-            let (y, shaped) = shaped_lines.get(line.checked_sub(first)?)?;
-            let text = b.line(line);
-            Some((text_left + shaped.x_for_index(to_display(text, offset - b.line_start(line))) - scroll.x, *y))
-        };
-        let selection_color = hsla(chrome.selection, 1.0);
-        let mut selection = Vec::new();
-        let mut cursor_quad = None;
-        let mut current_line = None;
-        if b.selected.is_empty() {
-            if let Some((x, y)) = x_at(cursor) {
-                cursor_quad = Some(fill(Bounds::new(point(x, y), size(px(2.0), line_height)), hsla(chrome.accent, 1.0)));
-                current_line = Some(fill(Bounds::new(point(bounds.left(), y), size(bounds.size.width, line_height)), hsla(chrome.bg_hover, 0.5)));
+        // 範囲を見た目の行ごとの四角にする（選択・検索の一致）
+        let range_quads = |range: &Range<usize>, color: gpui::Hsla, out: &mut Vec<gpui::PaintQuad>| {
+            for (line, start, end, y, shaped) in &shaped_rows {
+                let row_start = b.line_start(*line) + start;
+                let row_end = b.line_start(*line) + end;
+                let last_row_of_line = *end == b.line(*line).len();
+                if range.end < row_start || range.start > row_end || (range.start == row_end && !range.is_empty() && !last_row_of_line) {
+                    continue;
+                }
+                let part = &b.line(*line)[*start..*end];
+                let from = if range.start > row_start { shaped.x_for_index(to_display(part, range.start - row_start)) } else { px(0.0) };
+                let to = if range.end <= row_end { shaped.x_for_index(to_display(part, range.end - row_start)) } else { shaped.width + char_w };
+                if to > from {
+                    out.push(fill(Bounds::from_corners(point(text_left + from - scroll.x, *y), point(text_left + to - scroll.x, *y + line_height)), color));
+                }
             }
-        } else {
-            let (s, t) = (b.selected.start, b.selected.end);
-            let (l1, l2) = (b.line_of(s).max(first), b.line_of(t).min(last.saturating_sub(1)));
-            for line in l1..=l2 {
-                let Some((y, shaped)) = shaped_lines.get(line - first) else { continue };
-                let text = b.line(line);
-                let ls = b.line_start(line);
-                let from = if line == b.line_of(s) { shaped.x_for_index(to_display(text, s - ls)) } else { px(0.0) };
-                let to = if line == b.line_of(t) { shaped.x_for_index(to_display(text, t - ls)) } else { shaped.width + char_w };
-                selection.push(fill(Bounds::from_corners(point(text_left + from - scroll.x, *y), point(text_left + to - scroll.x, *y + line_height)), selection_color));
+        };
+        let mut under = Vec::new();
+        let match_color = hsla(theme.palette[3], 0.25);
+        let current_color = hsla(theme.palette[3], 0.55);
+        let view_start = shaped_rows.first().map(|r| b.line_start(r.0) + r.1).unwrap_or(0);
+        let view_end = shaped_rows.last().map(|r| b.line_start(r.0) + r.2).unwrap_or(0);
+        for m in matches.iter().filter(|m| m.end >= view_start && m.start <= view_end) {
+            range_quads(m, if Some(m) == current_match.as_ref() { current_color } else { match_color }, &mut under);
+        }
+        let selection_color = hsla(chrome.selection, 1.0);
+        let mut cursors = Vec::new();
+        let mut current_rows = Vec::new();
+        let mut cursor_at = None;
+        let all: Vec<(Range<usize>, usize, bool)> = b
+            .extra
+            .iter()
+            .map(|c| (c.range.clone(), c.head(), false))
+            .chain(std::iter::once((b.selected.clone(), cursor, true)))
+            .collect();
+        for (range, head, primary) in &all {
+            if !range.is_empty() {
+                range_quads(range, selection_color, &mut under);
+            }
+            if let Some((x, y)) = x_in_row(*head) {
+                cursors.push(fill(Bounds::new(point(text_left + x - scroll.x, y), size(px(2.0), line_height)), hsla(chrome.accent, 1.0)));
+                if range.is_empty() {
+                    current_rows.push(fill(Bounds::new(point(bounds.left(), y), size(bounds.size.width, line_height)), hsla(chrome.bg_hover, 0.5)));
+                }
+                if *primary {
+                    cursor_at = Some(point(text_left + x - scroll.x, y + line_height));
+                }
             }
         }
-        let shaped_only: Vec<ShapedLine> = shaped_lines.iter().map(|(_, s)| s.clone()).collect();
+        let rows_for_hit: Vec<(usize, usize, usize, ShapedLine)> = shaped_rows.iter().map(|(l, s, e, _, sh)| (*l, *s, *e, sh.clone())).collect();
         editor.update(cx, |e, _| {
             e.scroll = scroll;
             e.reveal = false;
-            e.painted = Some(Painted { bounds, text_left, line_height, first_line: first, lines: shaped_only });
+            e.painted = Some(Painted { bounds, text_left, line_height, first_row: first, rows: rows_for_hit, cursor_at });
         });
-        let lines = shaped_lines.into_iter().map(|(y, s)| (y, s)).collect();
-        EditorPrepaint { text_bounds, gutter, lines, selection, current_line, cursor: cursor_quad }
+        let rows = shaped_rows.into_iter().map(|(_, _, _, y, s)| (y, s)).collect();
+        EditorPrepaint { text_bounds, line_height, gutter, rows, under, cursors, current_rows }
     }
 
     fn paint(&mut self, _: Option<&GlobalElementId>, _: Option<&gpui::InspectorElementId>, bounds: Bounds<Pixels>, _: &mut (), prepaint: &mut EditorPrepaint, window: &mut Window, cx: &mut App) {
         let focus = self.editor.read(cx).focus.clone();
         window.handle_input(&focus, ElementInputHandler::new(bounds, self.editor.clone()), cx);
-        let Some(line_height) = self.editor.read(cx).painted.as_ref().map(|p| p.line_height) else { return };
+        let line_height = prepaint.line_height;
         let scroll_x = self.editor.read(cx).scroll.x;
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
-            if let Some(q) = prepaint.current_line.take() {
+            for q in prepaint.current_rows.drain(..) {
                 window.paint_quad(q);
             }
             for (y, label) in &prepaint.gutter {
@@ -1160,16 +1778,16 @@ impl gpui::Element for EditorElement {
         });
         let text_bounds = prepaint.text_bounds;
         window.with_content_mask(Some(ContentMask { bounds: text_bounds }), |window| {
-            for q in prepaint.selection.drain(..) {
+            for q in prepaint.under.drain(..) {
                 window.paint_quad(q);
             }
-            for (y, line) in &prepaint.lines {
-                let _ = line.paint(point(text_bounds.left() - scroll_x, *y), line_height, gpui::TextAlign::Left, None, window, cx);
+            for (y, row) in &prepaint.rows {
+                let _ = row.paint(point(text_bounds.left() - scroll_x, *y), line_height, gpui::TextAlign::Left, None, window, cx);
             }
-            if focus.is_focused(window)
-                && let Some(q) = prepaint.cursor.take()
-            {
-                window.paint_quad(q);
+            if focus.is_focused(window) {
+                for q in prepaint.cursors.drain(..) {
+                    window.paint_quad(q);
+                }
             }
         });
     }

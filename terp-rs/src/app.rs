@@ -293,6 +293,9 @@ pub fn short_path(path: &Path) -> String {
     }
 }
 
+// 控えの中で、ファイルのタブを指す番号の始まり（シェルの番号はこれより小さい）
+const FILE_TAB_KEY: u64 = 1 << 60;
+
 #[derive(Clone)]
 pub(crate) struct Palette {
     pub(crate) bg: Hsla,
@@ -885,6 +888,14 @@ impl TerpApp {
             let id = self.add_session(view, workspace.clone(), window, cx);
             restored.push((summary.id, id, workspace));
         }
+        // 開いていたファイルも、同じ枠の位置に戻す（消えたファイルは戻さない）
+        for saved in self.ui.files.clone() {
+            if !saved.path.is_file() || !self.projects.workspaces.iter().any(|w| w.id == saved.workspace) {
+                continue;
+            }
+            let id = self.create_file_tab(saved.path.clone(), None, saved.workspace.clone(), window, cx);
+            restored.push((saved.key, id, saved.workspace));
+        }
         // 前の枠の配置に戻し、配置に無い端末は所属のワークスペースの今の枠に足す
         let to_app: HashMap<u64, u64> = restored.iter().map(|(host, app, _)| (*host, *app)).collect();
         for (workspace, saved) in self.ui.layouts.clone() {
@@ -909,8 +920,19 @@ impl TerpApp {
         if self.replacing {
             return;
         }
-        let to_host: HashMap<u64, u64> =
+        let mut to_host: HashMap<u64, u64> =
             self.sessions.iter().filter_map(|s| s.view.read(cx).terminal.remote_id().map(|h| (s.id, h))).collect();
+        // ファイルのタブは、シェルの番号と重ならない大きな番号で枠の並びに残す
+        self.ui.files = self
+            .files
+            .iter()
+            .enumerate()
+            .map(|(i, f)| {
+                let key = FILE_TAB_KEY + i as u64;
+                to_host.insert(f.id, key);
+                crate::state::SavedFile { key, workspace: f.workspace.clone(), path: f.editor.read(cx).path.clone() }
+            })
+            .collect();
         self.ui.font_delta = self.font_delta as i32;
         self.ui.sidebar_hidden = !self.sidebar;
         self.ui.sidebar_width = self.sidebar_width;

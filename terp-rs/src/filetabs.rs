@@ -30,14 +30,21 @@ impl TerpApp {
     // ファイルをタブで開く。同じワークスペースで開いていれば、そのタブへ移る
     pub(crate) fn open_file_tab(&mut self, path: PathBuf, line: Option<usize>, window: &mut Window, cx: &mut Context<Self>) {
         let workspace = self.workspace();
-        if let Some(tab) = self.files.iter().find(|f| f.workspace == workspace && f.editor.read(cx).path == path) {
-            let (id, editor) = (tab.id, tab.editor.clone());
+        let existing = self.files.iter().find(|f| f.workspace == workspace && f.editor.read(cx).path == path).map(|t| (t.id, t.editor.clone()));
+        if let Some((id, editor)) = existing {
             if let Some(line) = line {
                 editor.update(cx, |e, cx| e.reveal_line(line, cx));
             }
             self.select(id, window, cx);
             return;
         }
+        let id = self.create_file_tab(path, line, workspace, window, cx);
+        self.layout_mut().show_tab(id);
+        self.select(id, window, cx);
+    }
+
+    // タブの中身だけを作る（枠には入れない）。開き直したときにも使う
+    pub(crate) fn create_file_tab(&mut self, path: PathBuf, line: Option<usize>, workspace: String, window: &mut Window, cx: &mut Context<Self>) -> u64 {
         let id = self.next_id;
         self.next_id += 1;
         let editor = cx.new(|cx| FileEditor::open(path, line, window, cx));
@@ -55,8 +62,7 @@ impl TerpApp {
             }
         });
         self.files.push(FileTab { id, editor, workspace, _subscription: subscription });
-        self.layout_mut().show_tab(id);
-        self.select(id, window, cx);
+        id
     }
 
     // 編集の画面のリンクを開く。URL は外で、ファイルはタブで、フォルダは Finder で開く

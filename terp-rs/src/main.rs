@@ -25,6 +25,7 @@ mod permission;
 mod pets;
 mod projects;
 mod rightpanel;
+mod rows;
 mod ptyhost;
 mod search;
 mod settings;

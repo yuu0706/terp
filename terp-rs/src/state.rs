@@ -18,6 +18,14 @@ pub struct ClosedTab {
     pub workspace: String,
 }
 
+// 枠のタブで開いていたファイル。key は枠の並びの中でこのファイルを指す番号
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SavedFile {
+    pub key: u64,
+    pub workspace: String,
+    pub path: PathBuf,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct UiState {
@@ -30,6 +38,7 @@ pub struct UiState {
     // ワークスペースごとの枠。タブの番号は常駐のプロセスでのシェルの番号
     pub layouts: HashMap<String, Layout>,
     pub closed: Vec<ClosedTab>,
+    pub files: Vec<SavedFile>,
 }
 
 impl Default for UiState {
@@ -42,6 +51,7 @@ impl Default for UiState {
             collapsed_repos: Vec::new(),
             layouts: HashMap::new(),
             closed: Vec::new(),
+            files: Vec::new(),
         }
     }
 }
