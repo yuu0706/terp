@@ -77,12 +77,44 @@ impl Render for QuickWindow {
                     .border_color(p.border)
                     .map(crate::ui::titlebar)
                     .child(div().flex_1().min_w_0().text_xs().child("terp"))
+                    .child({
+                        let app = app.clone();
+                        div()
+                            .id("quick-terminal-to-list")
+                            .px_2()
+                            .rounded_md()
+                            .text_xs()
+                            .text_color(p.muted)
+                            .hover(|s| s.bg(p.hover).text_color(p.text))
+                            .tooltip(|_, cx| crate::tooltip::text("この端末を左の一覧へ移す。ドラフトに残して後から小さいターミナルへ戻せる", cx))
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                            .on_click(move |_: &ClickEvent, window, cx| {
+                                // 自分の窓を閉じるのは、この窓の中から直接行う（外から閉じると、押した処理の途中で閉じられない）
+                                let bounds = (window.bounds(), window.display(cx).map(|d| d.id()));
+                                window.remove_window();
+                                if let Some(app) = app.upgrade() {
+                                    app.update(cx, |app, cx| {
+                                        app.quick.window = None;
+                                        app.quick.bounds = Some(bounds);
+                                        app.unquick(cx);
+                                    });
+                                }
+                            })
+                            .child("一覧へ移す")
+                    })
                     .child(
                         crate::ui::icon_button("quick-terminal-hide", "minus", "隠す（⌥⌘N）。シェルは残り、次に出したときに続きから使える", p.muted, p.hover, p.text)
                             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                            .on_click(move |_: &ClickEvent, _, cx| {
+                            .on_click(move |_: &ClickEvent, window, cx| {
+                                let bounds = (window.bounds(), window.display(cx).map(|d| d.id()));
+                                window.remove_window();
                                 if let Some(app) = app.upgrade() {
-                                    app.update(cx, |app, cx| app.hide_quick(cx));
+                                    app.update(cx, |app, cx| {
+                                        app.quick.window = None;
+                                        app.quick.bounds = Some(bounds);
+                                        app.persist(cx);
+                                        cx.notify();
+                                    });
                                 }
                             }),
                     ),
@@ -146,6 +178,12 @@ impl TerpApp {
             self.refocus(window, cx);
             return;
         }
+        self.show_quick(window, cx);
+    }
+
+    // 小さいターミナルを出す。端末が無ければホームで新しく開く
+    fn show_quick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let home = crate::config::home_dir();
         if self.quick.id.is_none_or(|id| self.session(id).is_none()) {
             let workspace = self.workspace();
             let Some(id) = self.spawn_session_in(home, workspace.clone(), window, cx) else { return };
@@ -236,6 +274,56 @@ impl TerpApp {
             self.persist(cx);
         }
         cx.notify();
+    }
+
+    // 小さいターミナルの端末を左の一覧へ移す（今のワークスペースの、固定していない枠のタブに入れる）。
+    // 小さいターミナルは空になり、次に出したときはホームで新しく開く
+    pub(crate) fn unquick(&mut self, cx: &mut Context<Self>) {
+        let Some(id) = self.quick.id else { return };
+        self.hide_quick(cx);
+        self.quick.id = None;
+        let workspace = self.workspace();
+        if let Some(session) = self.sessions.iter_mut().find(|s| s.id == id) {
+            session.workspace = workspace.clone();
+            session.view.update(cx, |v, _| {
+                v.quick = false;
+                v.save_meta(&workspace);
+            });
+        }
+        self.layout_mut().show_tab(id);
+        self.persist(cx);
+        cx.notify();
+    }
+
+    // 左の一覧の端末を小さいターミナルへ移す。小さいターミナルに別の端末があれば、そちらを左の一覧へ移す
+    pub(crate) fn make_quick(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
+        if self.quick.id == Some(id) {
+            return self.show_quick(window, cx);
+        }
+        if self.quick.id.is_some() {
+            self.unquick(cx);
+        }
+        self.hide_quick(cx);
+        let was_active = self.active_id() == Some(id);
+        let recent = self.recent.clone();
+        for layout in self.layouts.values_mut() {
+            layout.remove_tab(id, &recent);
+        }
+        if was_active {
+            match self.active_id() {
+                Some(next) => self.select(next, window, cx),
+                None => window.focus(&self.focus, cx),
+            }
+        }
+        let Some(session) = self.session(id) else { return };
+        let (view, workspace) = (session.view.clone(), session.workspace.clone());
+        view.update(cx, |v, _| {
+            v.quick = true;
+            v.save_meta(&workspace);
+        });
+        self.quick.id = Some(id);
+        self.show_quick(window, cx);
+        self.persist(cx);
     }
 
     // 端末が終わったら、窓も閉じて忘れる
