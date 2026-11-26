@@ -8,12 +8,12 @@ use crate::projects::{self, Project, contains_path};
 use crate::ui::{agent_icon, icon, icon_button};
 use gpui::{
     AnyElement, App, ClickEvent, Context, ExternalPaths, FontWeight, MouseButton, MouseDownEvent, PathPromptOptions,
-    SharedString, Window, div, prelude::*, px,
+    ScrollEvent, SharedString, Task, Window, div, prelude::*, px,
 };
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 // ドラッグしているリポジトリの見出し（並べ替え）
 #[derive(Clone)]
@@ -51,6 +51,45 @@ fn priority(mark: Mark) -> u8 {
         Mark::Agent(AgentState::Done) => 2,
         Mark::Agent(AgentState::Working) => 1,
         _ => 0,
+    }
+}
+
+
+const SWIPE_DISTANCE: f32 = 30.0;
+const SWIPE_SETTLE: Duration = Duration::from_millis(120);
+
+// 横に払う操作の途中の状態。切り替えたら、払い終わるまで同じ向きの続きを無視する
+#[derive(Default)]
+pub(crate) struct Swipe {
+    dx: f32,
+    done: bool,
+    sign: f32,
+    settle: Option<Task<()>>,
+}
+
+impl Swipe {
+    // 横の量を足し、切り替える先の一覧を返す。量が正（Web の deltaX が正の向き）ならドラフト、負ならすべて
+    fn feed(&mut self, dx: f32, current: &str) -> Option<&'static str> {
+        let sign = dx.signum();
+        if self.done && sign != self.sign {
+            *self = Swipe::default();
+        }
+        if self.done {
+            return None;
+        }
+        self.dx += dx;
+        let target = if self.dx > 0.0 { "draft" } else { "all" };
+        if current == target {
+            self.dx = 0.0;
+            return None;
+        }
+        if self.dx.abs() < SWIPE_DISTANCE {
+            return None;
+        }
+        self.done = true;
+        self.sign = sign;
+        self.dx = 0.0;
+        Some(target)
     }
 }
 
@@ -298,6 +337,27 @@ impl TerpApp {
             self.ui.collapsed_repos.push(path);
         }
         cx.notify();
+    }
+
+    // GPUI の横の量は macOS の値のままで、Web の deltaX と向きが逆になる。Electron 版と同じ向きにそろえて渡す
+    fn on_sidebar_swipe(&mut self, dx: f32, dy: f32, cx: &mut Context<Self>) {
+        if dx.abs() <= dy.abs() {
+            return;
+        }
+        // 指を離して 120ms 動きが無ければ払い終わりとし、ずらした一覧を戻す
+        let settle = cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(SWIPE_SETTLE).await;
+            let _ = this.update(cx, |app, cx| {
+                app.swipe = Swipe::default();
+                cx.notify();
+            });
+        });
+        let target = self.swipe.feed(dx, &self.ui.sidebar_view);
+        self.swipe.settle = Some(settle);
+        match target {
+            Some(view) => self.set_view(view, cx),
+            None => cx.notify(),
+        }
     }
 
     fn set_view(&mut self, view: &str, cx: &mut Context<Self>) {
@@ -780,6 +840,20 @@ impl TerpApp {
             );
 
         let list = if all { self.render_all_view(p, cx) } else { self.render_draft_view(&ws, p, cx) };
+        // 横に払うと「すべて」と「ドラフト」を切り替える。払っている間は一覧を少しずらして見せる
+        let list = div()
+            .id("sidebar-tree")
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_h_0()
+            .relative()
+            .left(px(-self.swipe.dx * 0.5))
+            .on_scroll(cx.listener(|app, event: &ScrollEvent, window, cx| {
+                let delta = event.delta.pixel_delta(window.line_height());
+                app.on_sidebar_swipe(-f32::from(delta.x), f32::from(delta.y), cx);
+            }))
+            .child(list);
 
         let foot = self.render_foot(p, cx);
 
@@ -1363,5 +1437,32 @@ impl TerpApp {
                     .on_click(cx.listener(|app, _: &ClickEvent, window, cx| app.new_terminal(&crate::app::NewTerminal, window, cx))),
             )
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn 正の向きに30払うとドラフトに切り替え_払い終わるまで続きでは切り替えない() {
+        let mut swipe = Swipe::default();
+        assert_eq!(swipe.feed(20.0, "all"), None);
+        assert_eq!(swipe.feed(15.0, "all"), Some("draft"));
+        assert_eq!(swipe.feed(40.0, "draft"), None);
+    }
+
+    #[test]
+    fn 今の一覧の向きへ払っても何もしない() {
+        let mut swipe = Swipe::default();
+        assert_eq!(swipe.feed(50.0, "draft"), None);
+        assert_eq!(swipe.dx, 0.0);
+    }
+
+    #[test]
+    fn 切り替えた後に逆へ払うと戻せる() {
+        let mut swipe = Swipe::default();
+        assert_eq!(swipe.feed(35.0, "all"), Some("draft"));
+        assert_eq!(swipe.feed(-35.0, "draft"), Some("all"));
     }
 }

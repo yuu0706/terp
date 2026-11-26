@@ -165,6 +165,7 @@ pub struct TerpApp {
     pub(crate) overview_tab_memory: Option<String>,
     pub(crate) settings: Option<crate::settings::Settings>,
     pub(crate) theme_ai: Option<crate::themeai::ThemeAi>,
+    pub(crate) swipe: crate::sidebar::Swipe,
     pub(crate) panel: Option<crate::rightpanel::RightPanel>,
     pub(crate) pets: crate::pets::Pets,
     // よく戻るタブ。タブごとの訪れた時刻（3秒以上とどまったものだけ）と、今いるタブ
@@ -417,6 +418,7 @@ impl TerpApp {
             overview_tab_memory: None,
             settings: None,
             theme_ai: None,
+            swipe: crate::sidebar::Swipe::default(),
             panel: None,
             pets: Default::default(),
             visits: HashMap::new(),
