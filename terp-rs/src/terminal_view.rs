@@ -92,6 +92,8 @@ pub struct TerminalView {
     pub work_path: Option<PathBuf>,
     // エージェントを確認なしで起動した
     pub bypass: bool,
+    // 小さいターミナル（左の一覧に出さない）
+    pub quick: bool,
     // エージェントが今していること（「編集 app.rs」など）
     pub activity: Option<String>,
     // 動いているエージェントの会話（記録の場所）
@@ -156,6 +158,7 @@ impl TerminalView {
                 custom_name: None,
                 work_path: None,
                 bypass: false,
+                quick: false,
                 activity: None,
                 agent_session: None,
                 edits: Vec::new(),
@@ -431,6 +434,9 @@ impl TerminalView {
         }
         if self.bypass {
             meta["bypass"] = serde_json::Value::Bool(true);
+        }
+        if self.quick {
+            meta["quick"] = serde_json::Value::Bool(true);
         }
         self.terminal.set_meta(&meta);
     }

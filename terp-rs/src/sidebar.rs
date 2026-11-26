@@ -723,9 +723,6 @@ impl TerpApp {
 
     fn row_menu(&mut self, id: u64, position: gpui::Point<gpui::Pixels>, cx: &mut Context<Self>) {
         let mut items = vec![MenuItem::new("名前を変更", action(move |app, window, cx| app.start_rename(id, window, cx)))];
-        if self.floating_of(id).is_none() {
-            items.push(MenuItem::new("小さい窓で開く", action(move |app, window, cx| app.open_floating(id, None, true, window, cx))));
-        }
         let config = &cx.global::<crate::appearance::Appearance>().config;
         if config.ai_assist && config.ai_name_terminal {
             items.push(MenuItem::new("AI で名前を付ける", action(move |app, _, cx| app.name_with_ai(id, cx))));

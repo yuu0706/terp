@@ -9,7 +9,7 @@ mod config;
 mod dock;
 mod editor;
 mod filetabs;
-mod floating;
+mod quick;
 mod ghostty;
 mod git;
 mod gitops;
@@ -65,7 +65,7 @@ fn shortcuts() -> Vec<(&'static str, &'static str, Box<dyn Action>)> {
     vec![
         ("settings", "Command+,", Box::new(OpenSettings)),
         ("new", "Command+T", Box::new(NewTerminal)),
-        ("floating", "Command+Alt+N", Box::new(OpenFloating)),
+        ("quick-terminal", "Command+Alt+N", Box::new(ToggleQuick)),
         ("split-right", "Command+\\", Box::new(SplitRight)),
         ("next-attention", "Command+Shift+J", Box::new(NextAttention)),
         ("pane-left", "Command+Alt+Left", Box::new(PaneLeft)),

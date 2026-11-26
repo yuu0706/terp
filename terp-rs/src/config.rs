@@ -90,6 +90,8 @@ pub struct Config {
     pub link_file: String,
     // フォルダ: finder / panel（右の面のファイルの一覧）/ terminal（そのフォルダで新しいターミナル）
     pub link_folder: String,
+    // 小さいターミナルのボタンで開くもの: terp / terminal / ghostty
+    pub quick_terminal_app: String,
 }
 
 impl Default for Config {
@@ -141,6 +143,7 @@ impl Default for Config {
             editor: String::new(),
             link_file: "tab".into(),
             link_folder: "finder".into(),
+            quick_terminal_app: "terp".into(),
         }
     }
 }
@@ -230,6 +233,7 @@ impl Config {
             "editor" => self.editor = parsed.editor,
             "linkFile" => self.link_file = parsed.link_file,
             "linkFolder" => self.link_folder = parsed.link_folder,
+            "quickTerminalApp" => self.quick_terminal_app = parsed.quick_terminal_app,
             _ => {}
         }
     }

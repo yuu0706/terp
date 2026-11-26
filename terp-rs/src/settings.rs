@@ -132,7 +132,7 @@ fn local_date(time: std::time::SystemTime) -> String {
 // 近道の id と、画面に出す名前・区分
 pub const SHORTCUT_LABELS: &[(&str, &str, &str)] = &[
     ("new", "新しいターミナル", "ターミナル"),
-    ("floating", "小さい窓のターミナル", "ターミナル"),
+    ("quick-terminal", "小さいターミナルを出し入れ", "ターミナル"),
     ("split-right", "右に分割", "ターミナル"),
     ("close", "タブを閉じる", "ターミナル"),
     ("reopen", "閉じたタブを開き直す", "ターミナル"),
@@ -1336,9 +1336,9 @@ impl TerpApp {
     }
 
     fn settings_advanced(&self, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
-        let (c_link_file, c_link_folder) = {
+        let (c_link_file, c_link_folder, c_quick) = {
             let c = &cx.global::<Appearance>().config;
-            (c.link_file.clone(), c.link_folder.clone())
+            (c.link_file.clone(), c.link_folder.clone(), c.quick_terminal_app.clone())
         };
         div()
             .flex()
@@ -1364,6 +1364,20 @@ impl TerpApp {
                     "linkFolder",
                     json!(c_link_folder),
                     vec![(json!("finder"), "Finder".into()), (json!("panel"), "右の面のファイルの一覧".into()), (json!("terminal"), "そのフォルダで新しいターミナル".into())],
+                    false,
+                    p,
+                    cx,
+                ),
+                false,
+                p,
+            ))
+            .child(self.field(
+                "小さいターミナルのボタンで開くもの",
+                Some("端末の枠の右下のボタンと ⌥⌘N で開くもの。terp では窓の中に出し入れし、隠してもシェルは残る。ほかのアプリでは、ホームで新しい窓を開く"),
+                self.choice_control(
+                    "quickTerminalApp",
+                    json!(c_quick),
+                    vec![(json!("terp"), "terp の小さいターミナル".into()), (json!("terminal"), "ターミナル（macOS）".into()), (json!("ghostty"), "Ghostty".into())],
                     false,
                     p,
                     cx,

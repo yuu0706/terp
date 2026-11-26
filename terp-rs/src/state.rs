@@ -39,7 +39,6 @@ pub struct UiState {
     pub layouts: HashMap<String, Layout>,
     pub closed: Vec<ClosedTab>,
     pub files: Vec<SavedFile>,
-    pub floating: Vec<crate::floating::SavedFloating>,
 }
 
 impl Default for UiState {
@@ -53,7 +52,6 @@ impl Default for UiState {
             layouts: HashMap::new(),
             closed: Vec::new(),
             files: Vec::new(),
-            floating: Vec::new(),
         }
     }
 }
