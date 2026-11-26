@@ -167,6 +167,10 @@ pub struct TerpApp {
     pub(crate) theme_ai: Option<crate::themeai::ThemeAi>,
     pub(crate) swipe: crate::sidebar::Swipe,
     pub(crate) sidebar_state: crate::sidebar::SidebarState,
+    // 全画面のときに後ろへ敷く壁紙。全画面に入るたびに読み直す
+    wallpaper: Option<std::path::PathBuf>,
+    wallpaper_requested: bool,
+    wallpaper_task: Option<Task<()>>,
     pub(crate) panel: Option<crate::rightpanel::RightPanel>,
     pub(crate) pets: crate::pets::Pets,
     // よく戻るタブ。タブごとの訪れた時刻（3秒以上とどまったものだけ）と、今いるタブ
@@ -221,6 +225,46 @@ pub fn apply_dock_icon(cx: &App) {
     let svg = crate::dock::icon_svg(&hex(top), &hex(bottom), &hex(c.accent), &hex(c.text_muted), &hex(c.text));
     crate::dock::set_dock_icon(Some(&svg));
     crate::dock::set_bundle_icon(Some(svg));
+}
+
+impl TerpApp {
+    // 全画面で、背景を透かしているときだけ壁紙を敷く。全画面に入ったら読み直し、抜けたら次に備えて忘れる
+    fn render_wallpaper(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !window.is_fullscreen() {
+            self.wallpaper_requested = false;
+            return None;
+        }
+        let config = &cx.global::<Appearance>().config;
+        if config.background_opacity >= 1.0 {
+            return None;
+        }
+        if !self.wallpaper_requested {
+            self.wallpaper_requested = true;
+            let blur = config.background_blur.radius();
+            if let Some((source, width)) = crate::wallpaper::current() {
+                let task = cx.background_executor().spawn(async move { crate::wallpaper::prepare(&source, blur, width) });
+                self.wallpaper_task = Some(cx.spawn(async move |this, cx| {
+                    let result = task.await;
+                    let _ = this.update(cx, |app, cx| {
+                        app.wallpaper = result.ok();
+                        cx.notify();
+                    });
+                }));
+            }
+        }
+        let path = self.wallpaper.clone()?;
+        // ぼかした縁が見えないよう、窓より少し大きく敷く
+        Some(
+            div()
+                .absolute()
+                .top(px(-24.0))
+                .bottom(px(-24.0))
+                .left(px(-24.0))
+                .right(px(-24.0))
+                .child(gpui::img(path).size_full().object_fit(gpui::ObjectFit::Cover))
+                .into_any_element(),
+        )
+    }
 }
 
 pub fn apply_blur(cx: &App) {
@@ -427,6 +471,9 @@ impl TerpApp {
             theme_ai: None,
             swipe: crate::sidebar::Swipe::default(),
             sidebar_state: crate::sidebar::SidebarState::new(cx),
+            wallpaper: None,
+            wallpaper_requested: false,
+            wallpaper_task: None,
             panel: None,
             pets: Default::default(),
             visits: HashMap::new(),
@@ -2242,6 +2289,7 @@ impl Render for TerpApp {
             self.layout_mut();
         }
         let panes = self.render_node(&root, Vec::new(), &p, window, cx);
+        let wallpaper = self.render_wallpaper(window, cx);
 
         div()
             .key_context("Terp")
@@ -2251,6 +2299,8 @@ impl Render for TerpApp {
             .flex_row()
             .font_family(font.family.clone())
             .text_color(p.text)
+            .relative()
+            .children(wallpaper)
             .on_mouse_move(cx.listener(Self::on_drag_move))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_drag_end))
             .on_action(cx.listener(Self::new_terminal))

@@ -30,6 +30,7 @@ mod state;
 mod terminal;
 mod terminal_view;
 mod themeai;
+mod wallpaper;
 mod themegen;
 mod tooltip;
 mod transcript;
