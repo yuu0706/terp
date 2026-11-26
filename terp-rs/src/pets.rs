@@ -12,7 +12,8 @@ use std::time::{Duration, Instant};
 pub const PET_MAX: usize = 6;
 const DONE_JUMP: Duration = Duration::from_millis(3000);
 const HOP_HEIGHT: f32 = 7.0;
-const TICK_MS: u64 = 60;
+// 1秒に60回動かす。Electron 版の requestAnimationFrame に合わせる
+const TICK: Duration = Duration::from_micros(16_667);
 
 struct Kind {
     sheet: &'static str,
@@ -218,7 +219,7 @@ impl TerpApp {
             self.pets.last = Instant::now();
             self.pets._tick = Some(cx.spawn_in(window, async move |this, cx| {
                 loop {
-                    cx.background_executor().timer(Duration::from_millis(TICK_MS)).await;
+                    cx.background_executor().timer(TICK).await;
                     if this.update_in(cx, |app, window, cx| {
                         app.update_pets(window, cx);
                         cx.notify();
