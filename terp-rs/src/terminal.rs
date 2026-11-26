@@ -356,6 +356,17 @@ impl Terminal {
         self.term.lock().resize(size);
     }
 
+    // 今の大きさを送り直す。同じ端末を別の窓が違う大きさにしていても、こちらの大きさに戻す
+    pub fn resend_size(&self) {
+        let size = self.size;
+        match &self.backend {
+            Backend::Local { master, .. } => {
+                let _ = master.resize(PtySize { rows: size.rows, cols: size.cols, pixel_width: 0, pixel_height: 0 });
+            }
+            Backend::Remote { client, id } => client.send(Kind::Resize, *id, &serde_json::to_vec(&size).unwrap_or_default()),
+        }
+    }
+
     // 大きさを一度変えて戻し、全画面のプログラムに描き直させる（SIGWINCH）
     pub fn redraw(&self) {
         let size = self.size;

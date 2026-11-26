@@ -272,6 +272,30 @@ fn open_window(cx: &mut App) {
     }
 }
 
+fn claim_single_instance() -> bool {
+    use std::io::{Read, Seek, Write};
+    use std::os::fd::AsRawFd;
+    let dir = config::config_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    let Ok(mut file) = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(dir.join("gpui-app.lock")) else { return true };
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+        let _ = file.set_len(0);
+        let _ = file.seek(std::io::SeekFrom::Start(0));
+        let _ = write!(file, "{}", std::process::id());
+        // 終わるまで鍵を持ち続ける
+        std::mem::forget(file);
+        return true;
+    }
+    let mut text = String::new();
+    let _ = file.read_to_string(&mut text);
+    if let Ok(pid) = text.trim().parse::<i32>()
+        && let Some(running) = objc2_app_kit::NSRunningApplication::runningApplicationWithProcessIdentifier(pid)
+    {
+        running.activateWithOptions(objc2_app_kit::NSApplicationActivationOptions::ActivateAllWindows);
+    }
+    false
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.get(1).map(String::as_str) == Some("--pty-host") {
@@ -280,6 +304,11 @@ fn main() {
             eprintln!("常駐のプロセスを始められない: {err}");
             std::process::exit(1);
         }
+        return;
+    }
+    // terp の窓は1つの手元に1つだけにする。2つ目を開くと、同じ端末の大きさを取り合って表示が崩れるため、
+    // すでに動いていれば、その窓を前に出して終える
+    if !claim_single_instance() {
         return;
     }
     let app = application().with_assets(assets::Assets);

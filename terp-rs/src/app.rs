@@ -528,6 +528,11 @@ impl TerpApp {
             if window.is_window_active() {
                 app.refresh_repos(cx);
                 app.refresh_agents(cx);
+                // 見えている端末の大きさを送り直す（別の terp の窓が違う大きさにしていたときのため）
+                let visible: Vec<u64> = app.layout().map(|l| l.visible()).unwrap_or_default();
+                for s in app.sessions.iter().filter(|s| visible.contains(&s.id) || app.is_quick(s.id)) {
+                    s.view.read(cx).terminal.resend_size();
+                }
             }
         })
         .detach();
