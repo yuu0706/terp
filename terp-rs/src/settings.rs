@@ -27,6 +27,7 @@ pub struct Settings {
     capture_focus: FocusHandle,
     pub message: Option<String>,
     pending: HashMap<&'static str, Task<()>>,
+    pub(crate) agent_editor: crate::agentsettings::AgentEditor,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -317,6 +318,7 @@ impl TerpApp {
             capture_focus: cx.focus_handle(),
             message: None,
             pending: HashMap::new(),
+            agent_editor: crate::agentsettings::AgentEditor::new(window, cx),
             _subscriptions: subs,
         });
         if let Some(s) = &self.settings {
@@ -326,6 +328,8 @@ impl TerpApp {
     }
 
     pub(crate) fn close_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // 打ちかけのエージェントの設定を、閉じる前に書く
+        self.save_agent_editor(window, cx);
         if self.settings.take().is_some() {
             self.refocus(window, cx);
             cx.notify();
@@ -333,7 +337,7 @@ impl TerpApp {
     }
 
     // 設定を書き、すぐ画面に反映する
-    fn set_config(&mut self, key: &str, value: Option<Value>, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn set_config(&mut self, key: &str, value: Option<Value>, window: &mut Window, cx: &mut Context<Self>) {
         // アプリの背景色は、決めたときのテーマの間だけ使う。そのテーマの名前を一緒に書く
         let mark = (key == "appBackground").then(|| {
             value.as_ref().map(|_| Value::String(cx.global::<Appearance>().config.theme.clone().unwrap_or_default()))
@@ -1084,48 +1088,6 @@ impl TerpApp {
         for a in self.found_agents() {
             options.push((json!(a.command), format!("{}（{}）", a.command.rsplit('/').next().unwrap_or(&a.command), a.label)));
         }
-        let mut registry = div().flex().flex_col().gap_1().w(px(420.0));
-        let (found, missing): (Vec<_>, Vec<_>) = self.agents.iter().partition(|a| a.found());
-        registry = registry.child(div().text_xs().text_color(p.muted).child(format!("連携中 ({})", found.len())));
-        for a in found {
-            let command = a.command.clone();
-            let hidden = a.hidden;
-            registry = registry.child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_2()
-                    .px_2()
-                    .py_1()
-                    .rounded_md()
-                    .border_1()
-                    .border_color(p.border)
-                    .child(crate::ui::agent_icon(&a.icon, 14.0, p.text))
-                    .child(div().flex_1().text_sm().child(format!("{}（{}）", a.label, a.command)))
-                    .child(
-                        div()
-                            .id(SharedString::from(format!("agent-hide-{}", a.command)))
-                            .px_2()
-                            .text_xs()
-                            .rounded_md()
-                            .text_color(p.muted)
-                            .hover(|s| s.bg(p.hover).text_color(p.text))
-                            .on_click(cx.listener(move |app, _: &ClickEvent, window, cx| {
-                                let mut list = cx.global::<Appearance>().config.agents.clone();
-                                match list.iter_mut().find(|v| v.get("command").and_then(Value::as_str) == Some(command.as_str())) {
-                                    Some(Value::Object(m)) => {
-                                        m.insert("hidden".into(), Value::Bool(!hidden));
-                                    }
-                                    _ => list.push(json!({ "command": command, "hidden": !hidden })),
-                                }
-                                app.set_config("agents", Some(Value::Array(list)), window, cx);
-                            }))
-                            .child(if hidden { "表示する" } else { "隠す" }),
-                    ),
-            );
-        }
-        registry = registry.child(div().mt_2().text_xs().text_color(p.muted).child(format!("未連携 ({})", missing.len())));
         div()
             .flex()
             .flex_col()
@@ -1138,7 +1100,7 @@ impl TerpApp {
             ))
             .child(self.field("メインのエージェント", Some("タブの並びの隣のボタンで、プルダウンなしで起動するもの"), self.choice_control("mainAgent", c.main_agent.clone().map(Value::String).unwrap_or(Value::Null), options, false, p, cx), false, p))
             .child(self.field("名前を変えたら会話の名前も変える", Some("ターミナルの名前を付けたとき、claude・codex に /rename を打ち込み、/resume の一覧でも同じ名前にする。考え中や入力の途中は、手が空くまで待ってから送る"), self.toggle("agentRename", c.agent_rename, false, false, p, cx), false, p))
-            .child(self.field("AI エージェントの登録一覧", Some("起動のボタンに出すもの。細かい設定（実行ファイルの場所・引数・環境変数）は設定ファイルの agents に書く"), registry.into_any_element(), false, p))
+            .child(self.field("AI エージェントの登録一覧", Some("起動のボタンに出すもの。行を押すと、表示名・コマンドの場所・引数・環境変数を直せる"), self.render_agent_registry(p, cx), false, p))
             .into_any_element()
     }
 

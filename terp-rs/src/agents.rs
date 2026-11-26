@@ -69,6 +69,11 @@ pub struct Agent {
     pub icon: String,
 }
 
+// 既知のエージェントの既定の（表示名, 確認を飛ばす引数, いつも付ける引数）
+pub fn defaults(command: &str) -> Option<(&'static str, &'static str, &'static str)> {
+    KNOWN.iter().find(|k| k.0 == command).map(|k| (k.1, k.2, k.4))
+}
+
 impl Agent {
     pub fn found(&self) -> bool {
         self.path.is_some()
@@ -79,7 +84,7 @@ fn is_executable(path: &Path) -> bool {
     std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
 }
 
-fn valid_env_name(name: &str) -> bool {
+pub fn valid_env_name(name: &str) -> bool {
     let mut chars = name.chars();
     chars.next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_') && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
