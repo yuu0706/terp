@@ -97,8 +97,8 @@ pub enum EditorEvent {
     Changed,
     // 外部のエディタで開く
     OpenExternal,
-    // ⌘クリックしたリンクと、相対のパスを探す基準の場所（ファイルのあるフォルダ）
-    OpenLink(crate::links::Target, PathBuf),
+    // ⌘クリックしたリンクと、相対のパスを探す基準の場所（ファイルのあるフォルダ）、⇧ を足したか
+    OpenLink(crate::links::Target, PathBuf, bool),
 }
 
 // これより大きいファイルは開かない
@@ -709,7 +709,7 @@ impl FileEditor {
         if event.modifiers.platform
             && let Some(target) = self.link_at(at)
         {
-            cx.emit(EditorEvent::OpenLink(target, self.base_dir()));
+            cx.emit(EditorEvent::OpenLink(target, self.base_dir(), event.modifiers.shift));
             return;
         }
         let count = event.click_count;
@@ -1075,7 +1075,7 @@ impl FileEditor {
     }
 
     // プレビューのリンクを開く。ページ内（#見出し）は送り、URL は外で、ファイルはタブで開く
-    fn open_preview_link(&mut self, href: &str, cx: &mut Context<Self>) {
+    fn open_preview_link(&mut self, href: &str, alternate: bool, cx: &mut Context<Self>) {
         if href.starts_with("http://") || href.starts_with("https://") || href.starts_with("mailto:") {
             cx.open_url(href);
             return;
@@ -1093,7 +1093,7 @@ impl FileEditor {
             return;
         }
         let target = crate::links::Target::Path { path: percent_decode(path), line: None, column: None, shorter: Vec::new() };
-        cx.emit(EditorEvent::OpenLink(target, self.base_dir()));
+        cx.emit(EditorEvent::OpenLink(target, self.base_dir(), alternate));
     }
 
     fn scroll_to_heading(&self, anchor: &str) {
@@ -1189,9 +1189,10 @@ fn inline_element(inline: &Inline, id: usize, ctx: &PreviewCtx, cx: &App) -> Any
     let ranges: Vec<Range<usize>> = links.iter().map(|(r, _)| r.clone()).collect();
     let editor = ctx.editor.clone();
     InteractiveText::new(ElementId::Name(format!("md-text-{id}").into()), styled)
-        .on_click(ranges, move |index, _, cx| {
+        .on_click(ranges, move |index, window, cx| {
             let href = links[index].1.clone();
-            let _ = editor.update(cx, |e, cx| e.open_preview_link(&href, cx));
+            let alternate = window.modifiers().shift;
+            let _ = editor.update(cx, |e, cx| e.open_preview_link(&href, alternate, cx));
         })
         .into_any_element()
 }

@@ -50,7 +50,8 @@ pub enum TerminalEvent {
     // 応答の終わり・許可待ち・ベル。通知を出すかは親が決める
     Attention { kind: Attention, message: String },
     // ⌘クリックか右クリックで押したリンク。開き先は親が決める（作業の一番上からも探すため）
-    OpenLink(crate::links::Target),
+    // ⇧ を足して押したときは、設定と別の開き方で開く
+    OpenLink(crate::links::Target, bool),
 }
 
 #[derive(Clone, PartialEq)]
@@ -875,7 +876,7 @@ impl TerminalView {
         // ⌘クリックか右クリックでリンクを開く。リンクの外の右クリックは止めない
         if (event.button == MouseButton::Left && event.modifiers.platform) || event.button == MouseButton::Right {
             if let Some(link) = self.link_at(event.position) {
-                cx.emit(TerminalEvent::OpenLink(link.target));
+                cx.emit(TerminalEvent::OpenLink(link.target, event.modifiers.shift));
                 return;
             }
         }

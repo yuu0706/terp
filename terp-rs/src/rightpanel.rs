@@ -79,6 +79,11 @@ impl TerpApp {
     // 表示中のタブの作業の一番上
     fn panel_root(&self, cx: &App) -> Option<PathBuf> {
         let id = self.active_id()?;
+        // ファイルのタブを見ているときは、そのファイルのあるリポジトリ
+        if let Some(file) = self.file_tab(id) {
+            let dir = file.editor.read(cx).path.parent().map(PathBuf::from)?;
+            return gitops::toplevel(&dir).or(Some(dir));
+        }
         let cwd = self.session(id)?.view.read(cx).cwd();
         self.placement(id, cx).map(|(_, w)| w).or_else(|| gitops::toplevel(&cwd)).or(Some(cwd))
     }
@@ -155,6 +160,28 @@ impl TerpApp {
             _refresh: refresh,
             _subscriptions: subs,
         });
+        self.reload_panel(cx);
+    }
+
+    // 右の面のファイルの一覧で、そのフォルダまで開いて見せる。今の作業の外なら Finder で開く
+    pub(crate) fn reveal_in_panel(&mut self, dir: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        let root = self.panel_root(cx);
+        let Some(root) = root.filter(|r| dir.starts_with(r)) else {
+            cx.open_with_system(&dir);
+            self.show_toast("今の作業の外のフォルダのため、Finder で開いた".into(), cx);
+            return;
+        };
+        if self.panel.as_ref().is_none_or(|p| p.kind != PanelKind::Files) {
+            self.toggle_panel(PanelKind::Files, window, cx);
+        }
+        if let Some(panel) = self.panel.as_mut() {
+            let mut at = dir.as_path();
+            while at.starts_with(&root) && at != root {
+                panel.expanded.insert(at.to_path_buf());
+                let Some(parent) = at.parent() else { break };
+                at = parent;
+            }
+        }
         self.reload_panel(cx);
     }
 

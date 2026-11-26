@@ -1335,12 +1335,44 @@ impl TerpApp {
     }
 
     fn settings_advanced(&self, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
+        let (c_link_file, c_link_folder) = {
+            let c = &cx.global::<Appearance>().config;
+            (c.link_file.clone(), c.link_folder.clone())
+        };
         div()
             .flex()
             .flex_col()
             .child(self.field(
-                "ファイルを開くエディタ",
-                Some("端末のパスを開くときのコマンド。{file}・{line}・{col} を置き換える。空なら VS Code（code）があればそれ、無ければ既定のアプリで開く"),
+                "ファイルのリンクの開き方",
+                Some("端末や編集の画面で ⌘クリックしたファイルを開く先。⇧⌘クリックでは、terp のタブと外部のエディタを入れ替えて開く"),
+                self.choice_control(
+                    "linkFile",
+                    json!(c_link_file),
+                    vec![(json!("tab"), "terp のタブ".into()), (json!("editor"), "外部のエディタ".into()), (json!("system"), "macOS の既定のアプリ".into())],
+                    false,
+                    p,
+                    cx,
+                ),
+                false,
+                p,
+            ))
+            .child(self.field(
+                "フォルダのリンクの開き方",
+                Some("⌘クリックしたフォルダを開く先。⇧⌘クリックでは、Finder と右の面のファイルの一覧を入れ替えて開く"),
+                self.choice_control(
+                    "linkFolder",
+                    json!(c_link_folder),
+                    vec![(json!("finder"), "Finder".into()), (json!("panel"), "右の面のファイルの一覧".into()), (json!("terminal"), "そのフォルダで新しいターミナル".into())],
+                    false,
+                    p,
+                    cx,
+                ),
+                false,
+                p,
+            ))
+            .child(self.field(
+                "外部のエディタ",
+                Some("「外部のエディタ」で開くときのコマンド。{file}・{line}・{col} を置き換える。空なら VS Code（code）があればそれ、無ければ既定のアプリで開く"),
                 self.text_control("editor", 320.0, p, None, cx),
                 false,
                 p,

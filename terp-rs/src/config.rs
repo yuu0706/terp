@@ -86,6 +86,10 @@ pub struct Config {
     pub ai_daily_limit: u32,
     // 外部のエディタで開くコマンド。{file}・{line}・{col} を置き換える。空なら macOS の既定のアプリで開く
     pub editor: String,
+    // リンクの開き方。ファイル: tab（terp のタブ）/ editor（外部のエディタ）/ system（macOS の既定のアプリ）
+    pub link_file: String,
+    // フォルダ: finder / panel（右の面のファイルの一覧）/ terminal（そのフォルダで新しいターミナル）
+    pub link_folder: String,
 }
 
 impl Default for Config {
@@ -135,6 +139,8 @@ impl Default for Config {
             ai_auto_title: false,
             ai_daily_limit: 30,
             editor: String::new(),
+            link_file: "tab".into(),
+            link_folder: "finder".into(),
         }
     }
 }
@@ -222,6 +228,8 @@ impl Config {
             "aiAutoTitle" => self.ai_auto_title = parsed.ai_auto_title,
             "aiDailyLimit" => self.ai_daily_limit = parsed.ai_daily_limit,
             "editor" => self.editor = parsed.editor,
+            "linkFile" => self.link_file = parsed.link_file,
+            "linkFolder" => self.link_folder = parsed.link_folder,
             _ => {}
         }
     }

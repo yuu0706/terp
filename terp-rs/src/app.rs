@@ -849,7 +849,7 @@ impl TerpApp {
             TerminalEvent::Exited => app.close(id, false, window, cx),
             TerminalEvent::Changed => cx.notify(),
             TerminalEvent::Attention { kind, message } => app.on_attention(id, *kind, message.clone(), window, cx),
-            TerminalEvent::OpenLink(target) => app.open_link(id, target.clone(), window, cx),
+            TerminalEvent::OpenLink(target, alternate) => app.open_link(id, target.clone(), *alternate, window, cx),
         });
         // 端末を押して入力を移したら、その枠とタブを選ぶ
         let focus_handle = view.read(cx).focus_handle(cx);
@@ -1359,7 +1359,7 @@ impl TerpApp {
     }
 
     // URL は既定のブラウザ、ファイルは外部のエディタ、フォルダは Finder で開く
-    fn open_link(&mut self, id: u64, target: crate::links::Target, window: &mut Window, cx: &mut Context<Self>) {
+    fn open_link(&mut self, id: u64, target: crate::links::Target, alternate: bool, window: &mut Window, cx: &mut Context<Self>) {
         if let crate::links::Target::Url(url) = &target {
             cx.open_url(url);
             return;
@@ -1367,14 +1367,7 @@ impl TerpApp {
         let Some(session) = self.session(id) else { return };
         let cwd = session.view.read(cx).cwd();
         let root = self.placement(id, cx).map(|(_, w)| w);
-        match crate::links::resolve(&target, &cwd, root.as_deref(), &home_dir()) {
-            Some(r) if r.directory => cx.open_with_system(&r.path),
-            Some(r) => self.open_file_tab(r.path, r.line.map(|l| l as usize), window, cx),
-            None => {
-                self.notice = Some("リンクのファイルが見つからない".into());
-                cx.notify();
-            }
-        }
+        self.open_link_target(target, &cwd, root.as_deref(), alternate, window, cx);
     }
 
     // メインのエージェント。設定の mainAgent、無ければ見つかった最初のもの

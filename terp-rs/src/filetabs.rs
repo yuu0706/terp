@@ -11,6 +11,21 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 // 未保存のファイルの数。終了するときの確かめに使う
 pub static UNSAVED: AtomicUsize = AtomicUsize::new(0);
 
+// 設定の開き方と ⇧ の有無から、実際の開き方を決める。⇧ のときは、ファイルは terp のタブと外部のエディタを、
+// フォルダは Finder と右の面を入れ替える（設定がどちらでもなければ、ファイルは terp のタブ、フォルダは Finder）
+fn link_way(folder: bool, setting: &str, alternate: bool) -> &'static str {
+    match (folder, setting, alternate) {
+        (false, "editor", false) => "editor",
+        (false, "system", false) => "system",
+        (false, "tab", true) => "editor",
+        (false, _, _) => "tab",
+        (true, "panel", false) => "panel",
+        (true, "terminal", false) => "terminal",
+        (true, "finder", true) => "panel",
+        (true, _, _) => "finder",
+    }
+}
+
 pub struct FileTab {
     pub id: u64,
     pub editor: Entity<FileEditor>,
@@ -53,7 +68,7 @@ impl TerpApp {
                 app.count_unsaved(cx);
                 cx.notify();
             }
-            EditorEvent::OpenLink(target, base) => app.open_editor_link(target.clone(), base.clone(), window, cx),
+            EditorEvent::OpenLink(target, base, alternate) => app.open_link_target(target.clone(), base, None, *alternate, window, cx),
             EditorEvent::OpenExternal => {
                 let path = editor.read(cx).path.clone();
                 let config = cx.global::<crate::appearance::Appearance>().config.editor.clone();
@@ -65,16 +80,35 @@ impl TerpApp {
         id
     }
 
-    // 編集の画面のリンクを開く。URL は外で、ファイルはタブで、フォルダは Finder で開く
-    fn open_editor_link(&mut self, target: crate::links::Target, base: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+    // リンクを開く。URL は既定のブラウザで、ファイルとフォルダは設定の開き方で開く。
+    // alternate（⇧⌘クリック）なら、ファイルは terp のタブと外部のエディタを、フォルダは Finder と右の面を入れ替える
+    pub(crate) fn open_link_target(&mut self, target: crate::links::Target, base: &std::path::Path, root: Option<&std::path::Path>, alternate: bool, window: &mut Window, cx: &mut Context<Self>) {
         if let crate::links::Target::Url(url) = &target {
             cx.open_url(url);
             return;
         }
-        match crate::links::resolve(&target, &base, None, &crate::config::home_dir()) {
-            Some(r) if r.directory => cx.open_with_system(&r.path),
-            Some(r) => self.open_file_tab(r.path, r.line.map(|l| l as usize), window, cx),
-            None => self.show_toast("リンクのファイルが見つからない".into(), cx),
+        let Some(r) = crate::links::resolve(&target, base, root, &crate::config::home_dir()) else {
+            self.show_toast("リンクのファイルが見つからない".into(), cx);
+            return;
+        };
+        let config = cx.global::<crate::appearance::Appearance>().config.clone();
+        if r.directory {
+            let way = link_way(true, &config.link_folder, alternate);
+            match way {
+                "panel" => self.reveal_in_panel(r.path, window, cx),
+                "terminal" => self.open_terminal(r.path, window, cx),
+                _ => cx.open_with_system(&r.path),
+            }
+            return;
+        }
+        let way = link_way(false, &config.link_file, alternate);
+        match way {
+            "editor" => {
+                let path_var = crate::git::login_env().get("PATH").cloned().unwrap_or_default();
+                crate::links::open_file(&r, &config.editor, &path_var);
+            }
+            "system" => cx.open_with_system(&r.path),
+            _ => self.open_file_tab(r.path, r.line.map(|l| l as usize), window, cx),
         }
     }
 
@@ -194,5 +228,23 @@ impl TerpApp {
                     .when(!dirty, |d| d.child(crate::ui::icon("close", 11.0, p.muted))),
             )
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::link_way;
+
+    #[test]
+    fn シフトを足すと開き方を入れ替える() {
+        assert_eq!(link_way(false, "tab", false), "tab");
+        assert_eq!(link_way(false, "tab", true), "editor");
+        assert_eq!(link_way(false, "editor", true), "tab");
+        assert_eq!(link_way(false, "system", true), "tab");
+        assert_eq!(link_way(true, "finder", false), "finder");
+        assert_eq!(link_way(true, "finder", true), "panel");
+        assert_eq!(link_way(true, "terminal", false), "terminal");
+        assert_eq!(link_way(true, "terminal", true), "finder");
+        assert_eq!(link_way(false, "unknown", false), "tab");
     }
 }
