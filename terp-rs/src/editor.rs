@@ -80,12 +80,14 @@ pub fn key_bindings() -> Vec<KeyBinding> {
     ]
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum EditorEvent {
     // 未保存かどうか・題名が変わった
     Changed,
     // 外部のエディタで開く
     OpenExternal,
+    // ⌘クリックしたリンクと、相対のパスを探す基準の場所（ファイルのあるフォルダ）
+    OpenLink(crate::links::Target, PathBuf),
 }
 
 // これより大きいファイルは開かない
@@ -120,11 +122,14 @@ pub struct FileEditor {
     error: Option<String>,
     preview: bool,
     preview_cache: Option<(u64, Vec<Block>)>,
+    preview_scroll: gpui::ScrollHandle,
     states_cache: Option<(u64, Vec<bool>)>,
     scroll: Point<Pixels>,
     reveal: bool,
     marked: Option<Range<usize>>,
     selecting: bool,
+    // ⌘ を押してリンクの上にいる（指の形にする）
+    link_hover: bool,
     painted: Option<Painted>,
     _poll: Task<()>,
 }
@@ -222,11 +227,13 @@ impl FileEditor {
             error: None,
             preview,
             preview_cache: None,
+            preview_scroll: gpui::ScrollHandle::new(),
             states_cache: None,
             scroll: point(px(0.0), px(0.0)),
             reveal: true,
             marked: None,
             selecting: false,
+            link_hover: false,
             painted: None,
             _poll: poll,
         }
@@ -369,9 +376,29 @@ impl FileEditor {
         Some(b.line_start(line) + from_display(text, display))
     }
 
+    // その位置のリンク（URL かファイルのパス）
+    fn link_at(&self, at: usize) -> Option<crate::links::Target> {
+        let Body::Text(b) = &self.body else { return None };
+        let line = b.line_of(at);
+        let text = b.line(line);
+        let char_index = text[..at - b.line_start(line)].chars().count();
+        crate::links::find(text).into_iter().find(|f| (f.start..f.end).contains(&char_index)).map(|f| f.target)
+    }
+
+    fn base_dir(&self) -> PathBuf {
+        self.path.parent().map(Path::to_path_buf).unwrap_or_default()
+    }
+
     fn on_mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         window.focus(&self.focus, cx);
         let Some(at) = self.offset_for_point(event.position) else { return };
+        // ⌘クリックでリンクを開く
+        if event.modifiers.platform
+            && let Some(target) = self.link_at(at)
+        {
+            cx.emit(EditorEvent::OpenLink(target, self.base_dir()));
+            return;
+        }
         let count = event.click_count;
         let shift = event.modifiers.shift;
         if let Body::Text(b) = &mut self.body {
@@ -392,6 +419,13 @@ impl FileEditor {
     }
 
     fn on_mouse_move(&mut self, event: &MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if event.pressed_button.is_none() {
+            let hover = event.modifiers.platform && self.offset_for_point(event.position).and_then(|at| self.link_at(at)).is_some();
+            if hover != self.link_hover {
+                self.link_hover = hover;
+                cx.notify();
+            }
+        }
         if !self.selecting || event.pressed_button != Some(MouseButton::Left) {
             return;
         }
@@ -522,14 +556,95 @@ impl FileEditor {
             self.preview_cache = Some((version, crate::markdown::parse(b.text())));
         }
         let blocks = self.preview_cache.as_ref().map(|(_, b)| b.clone()).unwrap_or_default();
-        let base = self.path.parent().map(Path::to_path_buf).unwrap_or_default();
+        let base = self.base_dir();
         let mut counter = 0usize;
-        let column = div().flex().flex_col().gap_3().max_w(px(820.0)).children(blocks.iter().map(|block| render_block(block, &base, &mut counter, cx)));
-        div().id("md-preview").size_full().overflow_y_scroll().px_6().py_4().text_color(hsla(cx.global::<Appearance>().chrome.text, 1.0)).child(column).into_any_element()
+        let ctx = PreviewCtx { editor: cx.entity().downgrade(), base: base.clone() };
+        let items: Vec<AnyElement> = blocks.iter().map(|block| div().max_w(px(820.0)).child(render_block(block, &ctx, &mut counter, cx)).into_any_element()).collect();
+        div()
+            .id("md-preview")
+            .size_full()
+            .overflow_y_scroll()
+            .track_scroll(&self.preview_scroll)
+            .flex()
+            .flex_col()
+            .gap_3()
+            .px_6()
+            .py_4()
+            .text_color(hsla(cx.global::<Appearance>().chrome.text, 1.0))
+            .children(items)
+            .into_any_element()
+    }
+
+    // プレビューのリンクを開く。ページ内（#見出し）は送り、URL は外で、ファイルはタブで開く
+    fn open_preview_link(&mut self, href: &str, cx: &mut Context<Self>) {
+        if href.starts_with("http://") || href.starts_with("https://") || href.starts_with("mailto:") {
+            cx.open_url(href);
+            return;
+        }
+        if let Some(anchor) = href.strip_prefix('#') {
+            self.scroll_to_heading(&percent_decode(anchor));
+            cx.notify();
+            return;
+        }
+        if href.contains("://") {
+            return;
+        }
+        let path = href.split('#').next().unwrap_or("");
+        if path.is_empty() {
+            return;
+        }
+        let target = crate::links::Target::Path { path: percent_decode(path), line: None, column: None, shorter: Vec::new() };
+        cx.emit(EditorEvent::OpenLink(target, self.base_dir()));
+    }
+
+    fn scroll_to_heading(&self, anchor: &str) {
+        let Some((_, blocks)) = &self.preview_cache else { return };
+        let mut seen = std::collections::HashMap::new();
+        for (index, block) in blocks.iter().enumerate() {
+            if let Block::Heading(_, inline) = block
+                && slugify(&inline.text, &mut seen) == anchor
+            {
+                self.preview_scroll.scroll_to_item(index);
+                return;
+            }
+        }
     }
 }
 
-fn inline_element(inline: &Inline, id: usize, cx: &App) -> AnyElement {
+struct PreviewCtx {
+    editor: gpui::WeakEntity<FileEditor>,
+    base: PathBuf,
+}
+
+// GitHub の見出しの id と同じく、小文字にし、記号を除き、空白を - にする。同じ見出しには -1, -2 を付ける
+fn slugify(text: &str, seen: &mut std::collections::HashMap<String, usize>) -> String {
+    let base: String = text.trim().to_lowercase().chars().filter(|c| c.is_alphanumeric() || c.is_whitespace() || *c == '_' || *c == '-').map(|c| if c.is_whitespace() { '-' } else { c }).collect();
+    let count = seen.entry(base.clone()).or_insert(0);
+    let slug = if *count == 0 { base.clone() } else { format!("{base}-{count}") };
+    *count += 1;
+    slug
+}
+
+fn percent_decode(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%'
+            && i + 2 < bytes.len()
+            && let Ok(v) = u8::from_str_radix(std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or("zz"), 16)
+        {
+            out.push(v);
+            i += 3;
+            continue;
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8(out).unwrap_or_else(|_| text.to_string())
+}
+
+fn inline_element(inline: &Inline, id: usize, ctx: &PreviewCtx, cx: &App) -> AnyElement {
     let a = cx.global::<Appearance>();
     let accent = hsla(a.chrome.accent, 1.0);
     let code_bg = hsla(a.chrome.bg_hover, 1.0);
@@ -563,17 +678,16 @@ fn inline_element(inline: &Inline, id: usize, cx: &App) -> AnyElement {
         return styled.into_any_element();
     }
     let ranges: Vec<Range<usize>> = links.iter().map(|(r, _)| r.clone()).collect();
+    let editor = ctx.editor.clone();
     InteractiveText::new(ElementId::Name(format!("md-text-{id}").into()), styled)
         .on_click(ranges, move |index, _, cx| {
-            let url = &links[index].1;
-            if url.starts_with("http://") || url.starts_with("https://") || url.starts_with("mailto:") {
-                cx.open_url(url);
-            }
+            let href = links[index].1.clone();
+            let _ = editor.update(cx, |e, cx| e.open_preview_link(&href, cx));
         })
         .into_any_element()
 }
 
-fn render_block(block: &Block, base: &Path, counter: &mut usize, cx: &App) -> AnyElement {
+fn render_block(block: &Block, ctx: &PreviewCtx, counter: &mut usize, cx: &App) -> AnyElement {
     *counter += 1;
     let id = *counter;
     let a = cx.global::<Appearance>();
@@ -591,10 +705,10 @@ fn render_block(block: &Block, base: &Path, counter: &mut usize, cx: &App) -> An
                 .text_size(px(size))
                 .font_weight(FontWeight::BOLD)
                 .when(*level <= 2, |d| d.pb_1().border_b_1().border_color(border))
-                .child(inline_element(inline, id, cx))
+                .child(inline_element(inline, id, ctx, cx))
                 .into_any_element()
         }
-        Block::Para(inline) => div().line_height(relative(1.6)).child(inline_element(inline, id, cx)).into_any_element(),
+        Block::Para(inline) => div().line_height(relative(1.6)).child(inline_element(inline, id, ctx, cx)).into_any_element(),
         Block::Code(code) => div().p_3().rounded_md().bg(code_bg).font_family(mono).text_sm().child(code.clone()).into_any_element(),
         Block::Quote(blocks) => div()
             .flex()
@@ -604,7 +718,7 @@ fn render_block(block: &Block, base: &Path, counter: &mut usize, cx: &App) -> An
             .border_l_4()
             .border_color(border)
             .text_color(muted)
-            .children(blocks.iter().map(|b| render_block(b, base, counter, cx)))
+            .children(blocks.iter().map(|b| render_block(b, ctx, counter, cx)))
             .into_any_element(),
         Block::List { start, items } => {
             let mut list = div().flex().flex_col().gap_1();
@@ -619,7 +733,7 @@ fn render_block(block: &Block, base: &Path, counter: &mut usize, cx: &App) -> An
                         .flex_row()
                         .gap_2()
                         .child(div().flex_none().min_w(px(18.0)).text_color(muted).child(marker))
-                        .child(div().flex_1().min_w_0().flex().flex_col().gap_1().children(item.iter().map(|b| render_block(b, base, counter, cx)))),
+                        .child(div().flex_1().min_w_0().flex().flex_col().gap_1().children(item.iter().map(|b| render_block(b, ctx, counter, cx)))),
                 );
             }
             list.into_any_element()
@@ -630,7 +744,7 @@ fn render_block(block: &Block, base: &Path, counter: &mut usize, cx: &App) -> An
                 let mut line = div().flex().flex_row().when(r > 0, |d| d.border_t_1().border_color(border)).when(r == 0, |d| d.font_weight(FontWeight::SEMIBOLD).bg(code_bg));
                 for (c, cell) in row.iter().enumerate() {
                     *counter += 1;
-                    line = line.child(div().flex_1().min_w_0().px_2().py_1().when(c > 0, |d| d.border_l_1().border_color(border)).child(inline_element(cell, *counter, cx)));
+                    line = line.child(div().flex_1().min_w_0().px_2().py_1().when(c > 0, |d| d.border_l_1().border_color(border)).child(inline_element(cell, *counter, ctx, cx)));
                 }
                 table = table.child(line);
             }
@@ -640,7 +754,7 @@ fn render_block(block: &Block, base: &Path, counter: &mut usize, cx: &App) -> An
             if src.starts_with("http://") || src.starts_with("https://") {
                 return div().text_color(muted).child(format!("［画像: {alt}］")).into_any_element();
             }
-            let path = if Path::new(src).is_absolute() { PathBuf::from(src) } else { base.join(src) };
+            let path = if Path::new(src).is_absolute() { PathBuf::from(src) } else { ctx.base.join(percent_decode(src)) };
             div().max_w_full().child(gpui::img(path).max_w_full()).into_any_element()
         }
         Block::Rule => div().h(px(1.0)).bg(border).into_any_element(),
@@ -735,7 +849,7 @@ impl Render for FileEditor {
                 .id("editor-text")
                 .flex_1()
                 .min_h_0()
-                .cursor(CursorStyle::IBeam)
+                .cursor(if self.link_hover { CursorStyle::PointingHand } else { CursorStyle::IBeam })
                 .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
                 .on_mouse_move(cx.listener(Self::on_mouse_move))
                 .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
@@ -1076,6 +1190,16 @@ mod tests {
         assert_eq!(from_display(line, 3), 1);
         assert_eq!(from_display(line, 9), 3);
         assert_eq!(from_display(line, 99), line.len());
+    }
+
+    #[test]
+    fn 見出しの_id_は_github_と同じ形にする() {
+        let mut seen = std::collections::HashMap::new();
+        assert_eq!(slugify("Hello World!", &mut seen), "hello-world");
+        assert_eq!(slugify("Hello World", &mut seen), "hello-world-1");
+        assert_eq!(slugify("設定の 読み方", &mut seen), "設定の-読み方");
+        assert_eq!(percent_decode("%E8%A8%AD%E5%AE%9A"), "設定");
+        assert_eq!(percent_decode("a%2"), "a%2");
     }
 
     #[test]

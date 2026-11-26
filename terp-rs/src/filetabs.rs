@@ -41,11 +41,12 @@ impl TerpApp {
         let id = self.next_id;
         self.next_id += 1;
         let editor = cx.new(|cx| FileEditor::open(path, line, window, cx));
-        let subscription = cx.subscribe_in(&editor, window, move |app, editor, event, _, cx| match event {
+        let subscription = cx.subscribe_in(&editor, window, move |app, editor, event, window, cx| match event {
             EditorEvent::Changed => {
                 app.count_unsaved(cx);
                 cx.notify();
             }
+            EditorEvent::OpenLink(target, base) => app.open_editor_link(target.clone(), base.clone(), window, cx),
             EditorEvent::OpenExternal => {
                 let path = editor.read(cx).path.clone();
                 let config = cx.global::<crate::appearance::Appearance>().config.editor.clone();
@@ -56,6 +57,19 @@ impl TerpApp {
         self.files.push(FileTab { id, editor, workspace, _subscription: subscription });
         self.layout_mut().show_tab(id);
         self.select(id, window, cx);
+    }
+
+    // 編集の画面のリンクを開く。URL は外で、ファイルはタブで、フォルダは Finder で開く
+    fn open_editor_link(&mut self, target: crate::links::Target, base: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        if let crate::links::Target::Url(url) = &target {
+            cx.open_url(url);
+            return;
+        }
+        match crate::links::resolve(&target, &base, None, &crate::config::home_dir()) {
+            Some(r) if r.directory => cx.open_with_system(&r.path),
+            Some(r) => self.open_file_tab(r.path, r.line.map(|l| l as usize), window, cx),
+            None => self.show_toast("リンクのファイルが見つからない".into(), cx),
+        }
     }
 
     pub(crate) fn select_file(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
