@@ -857,13 +857,7 @@ impl TerpApp {
             .justify_end()
             .gap_1()
             .px_2()
-            .on_mouse_down(MouseButton::Left, |event: &MouseDownEvent, window, _| {
-                if event.click_count == 2 {
-                    window.titlebar_double_click();
-                } else {
-                    window.start_window_move();
-                }
-            })
+            .map(crate::ui::titlebar)
             .child(
                 icon_button("sidebar-hide", "sidebar", "左の一覧を隠す（⌘B）", p.muted, p.hover, p.text)
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())

@@ -59,7 +59,7 @@ impl Render for QuickWindow {
                     .bg(p.solid_bg)
                     .border_b_1()
                     .border_color(p.border)
-                    .on_mouse_down(MouseButton::Left, |_: &gpui::MouseDownEvent, window, _| window.start_window_move())
+                    .map(crate::ui::titlebar)
                     .child(div().flex_1().min_w_0().text_xs().child("terp"))
                     .child(
                         crate::ui::icon_button("quick-terminal-hide", "minus", "隠す（⌥⌘N）。シェルは残り、次に出したときに続きから使える", p.muted, p.hover, p.text)
@@ -72,6 +72,21 @@ impl Render for QuickWindow {
                     ),
             )
             .child(div().flex_1().min_h_0().child(self.view.clone()))
+    }
+}
+
+// 浮かせる窓は macOS の「パネル」で、既定では terp から別のアプリへ移ると隠れる。
+// macOS の許可の確認が前に出ただけで消えて見えるため、隠れないようにする
+fn keep_visible_on_deactivate(window: &Window) {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    let Ok(handle) = HasWindowHandle::window_handle(window) else { return };
+    let RawWindowHandle::AppKit(appkit) = handle.as_raw() else { return };
+    let view = appkit.ns_view.as_ptr() as *mut objc2::runtime::AnyObject;
+    unsafe {
+        let ns_window: *mut objc2::runtime::AnyObject = objc2::msg_send![view, window];
+        if !ns_window.is_null() {
+            let _: () = objc2::msg_send![ns_window, setHidesOnDeactivate: objc2::runtime::Bool::NO];
+        }
     }
 }
 
@@ -137,6 +152,7 @@ impl TerpApp {
         let app = cx.entity().downgrade();
         let focus = view.read(cx).focus_handle(cx);
         let opened = cx.open_window(options, |w, cx| {
+            keep_visible_on_deactivate(w);
             w.on_next_frame(move |w, cx| w.focus(&focus, cx));
             // 閉じるボタンは、隠すのと同じにする
             let back = app.clone();

@@ -576,13 +576,7 @@ impl TerpApp {
             .pr_2()
             .border_b_1()
             .border_color(p.border)
-            .on_mouse_down(MouseButton::Left, |event: &gpui::MouseDownEvent, window, _| {
-                if event.click_count == 2 {
-                    window.titlebar_double_click();
-                } else {
-                    window.start_window_move();
-                }
-            })
+            .map(crate::ui::titlebar)
             .child(div().font_weight(FontWeight::SEMIBOLD).child("設定"))
             .child(div().flex_1().min_w_0().text_sm().text_color(p.warning).overflow_hidden().text_ellipsis().whitespace_nowrap().children(s.message.clone()))
             .child(
