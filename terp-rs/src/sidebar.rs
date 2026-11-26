@@ -61,13 +61,16 @@ pub(crate) struct SidebarState {
     focus: FocusHandle,
     // ⌥↑↓ で動かすリポジトリ。リポジトリの見出しを押すと決まり、端末に入力を移すと外れる
     pub(crate) focused_repo: Option<String>,
+    // 選んでいるリポジトリと、新しいターミナルを開く場所（作業の場所）。
+    // カードを押すか、そのリポジトリの端末を選ぶと決まる。None なら表示中のタブから決める
+    pub(crate) selected_repo: Option<(String, PathBuf)>,
     drag_speed: f32,
     drag_task: Option<Task<()>>,
 }
 
 impl SidebarState {
     pub(crate) fn new(cx: &mut App) -> Self {
-        SidebarState { scroll: ScrollHandle::new(), focus: cx.focus_handle(), focused_repo: None, drag_speed: 0.0, drag_task: None }
+        SidebarState { scroll: ScrollHandle::new(), focus: cx.focus_handle(), focused_repo: None, selected_repo: None, drag_speed: 0.0, drag_task: None }
     }
 }
 
@@ -192,7 +195,31 @@ impl TerpApp {
 
     // ⌘T の場所。表示中の端末が作業の中ならその一番上、それ以外はホーム
     pub(crate) fn new_terminal_place(&self, cx: &App) -> PathBuf {
+        if let Some((_, path)) = self.selected_repo().filter(|(_, p)| p.is_dir()) {
+            return path;
+        }
         self.active_id().and_then(|id| self.placement(id, cx)).map(|(_, w)| w).unwrap_or_else(home_dir)
+    }
+
+    // 選んでいるリポジトリ（今のワークスペースのものだけ）
+    pub(crate) fn selected_repo(&self) -> Option<(String, PathBuf)> {
+        let ws = self.workspace();
+        self.sidebar_state.selected_repo.clone().filter(|(repo, _)| self.projects.projects.iter().any(|p| p.path == *repo && p.workspace == ws))
+    }
+
+    // カードの枠を強調するリポジトリ。選んでいなければ、表示中のタブのリポジトリ
+    fn highlighted_repo(&self, cx: &App) -> Option<String> {
+        if self.sidebar_state.selected_repo.is_some() {
+            return self.selected_repo().map(|(r, _)| r);
+        }
+        self.active_id().and_then(|id| self.placement(id, cx)).map(|(r, _)| r)
+    }
+
+    fn select_repo(&mut self, repo: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.sidebar_state.selected_repo = Some((repo.clone(), PathBuf::from(&repo)));
+        self.sidebar_state.focused_repo = Some(repo);
+        window.focus(&self.sidebar_state.focus, cx);
+        cx.notify();
     }
 
     pub(crate) fn refresh_repos(&mut self, cx: &mut Context<Self>) {
@@ -1155,10 +1182,9 @@ impl TerpApp {
             .text_color(p.text)
             .hover(|s| s.bg(p.hover))
             .tooltip(move |_, cx| crate::tooltip::text(p4.clone(), cx))
-            .when(self.sidebar_state.focused_repo.as_deref() == Some(path.as_str()), |d| d.border_1().border_color(accent))
             .on_click(cx.listener(move |app, _: &ClickEvent, window, cx| {
-                app.sidebar_state.focused_repo = Some(p1.clone());
-                window.focus(&app.sidebar_state.focus, cx);
+                cx.stop_propagation();
+                app.select_repo(p1.clone(), window, cx);
                 app.toggle_collapsed(p1.clone(), cx);
             }))
             .on_mouse_down(
@@ -1195,7 +1221,15 @@ impl TerpApp {
                     },
                 ))
             });
-        let mut card = self.card(p).child(head);
+        // カードを押すと、このリポジトリを選ぶ（新しいターミナルはここで開く）。選んでいるカードは枠を強調色にする
+        let highlighted = self.highlighted_repo(cx).as_deref() == Some(path.as_str());
+        let p5 = path.clone();
+        let mut card = self
+            .card(p)
+            .id(SharedString::from(format!("repo-card-{path}")))
+            .when(highlighted, |d| d.border_color(accent))
+            .on_click(cx.listener(move |app, _: &ClickEvent, window, cx| app.select_repo(p5.clone(), window, cx)))
+            .child(head);
         if !collapsed {
             for work in repo.works {
                 card = card.child(self.render_work(&path, &work, p, cx));
@@ -1251,7 +1285,10 @@ impl TerpApp {
                 let tip = path.display().to_string();
                 move |_, cx| crate::tooltip::text(tip.clone(), cx)
             })
-            .on_click(cx.listener(move |app, _: &ClickEvent, window, cx| app.open_work(path.clone(), window, cx)))
+            .on_click(cx.listener(move |app, _: &ClickEvent, window, cx| {
+                cx.stop_propagation();
+                app.open_work(path.clone(), window, cx)
+            }))
             .on_drop(cx.listener({
                 let target = w.path.clone();
                 move |app, dragged: &DraggedTab, _, cx| app.set_work_path(dragged.id, Some(target.clone()), cx)
@@ -1357,6 +1394,7 @@ impl TerpApp {
             .when(!selected, |d| d.hover(|s| s.bg(p.hover)))
             .tooltip(move |_, cx| crate::tooltip::text(tip.clone(), cx))
             .on_click(cx.listener(move |app, event: &ClickEvent, window, cx| {
+                cx.stop_propagation();
                 if event.click_count() == 2 {
                     app.start_rename(id, window, cx);
                 } else {

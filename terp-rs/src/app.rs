@@ -1084,6 +1084,8 @@ impl TerpApp {
             self.set_workspace(&workspace, window, cx);
         }
         let previous = self.active_id();
+        // 端末を選んだら、そのリポジトリ（作業の場所）を選んでいる状態にする。リポジトリの外なら外す
+        self.sidebar_state.selected_repo = self.placement(id, cx);
         // 枠のタブに無い端末は、固定していない枠のタブに足して出す
         self.layout_mut().show_tab(id);
         self.record_visit(id);
