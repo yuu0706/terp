@@ -592,7 +592,7 @@ impl TerpApp {
                     .text_sm()
                     .hover(|s| s.bg(p.hover))
                     .when_some(mark, |d, m| d.text_color(color(m)))
-                    .on_click(cx.listener(move |app, _: &ClickEvent, _, cx| {
+                    .on_click(cx.listener(move |app, _: &ClickEvent, window, cx| {
                         if is_dir {
                             if let Some(pnl) = app.panel.as_mut()
                                 && !pnl.expanded.remove(&p2)
@@ -601,9 +601,7 @@ impl TerpApp {
                             }
                             app.reload_panel(cx);
                         } else {
-                            let editor = cx.global::<crate::appearance::Appearance>().config.editor.clone();
-                            let path_var = crate::git::login_env().get("PATH").cloned().unwrap_or_default();
-                            crate::links::open_file(&crate::links::Resolved { path: p2.clone(), directory: false, line: None, column: None }, &editor, &path_var);
+                            app.open_file_tab(p2.clone(), None, window, cx);
                         }
                     }))
                     .child(if is_dir { icon(if open { "chevron-down" } else { "chevron-right" }, 12.0, p.muted).into_any_element() } else { div().w(px(12.0)).into_any_element() })

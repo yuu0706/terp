@@ -138,6 +138,7 @@ pub(crate) struct DividerDrag {
 pub struct TerpApp {
     pub(crate) focus: FocusHandle,
     pub(crate) sessions: Vec<Session>,
+    pub(crate) files: Vec<crate::filetabs::FileTab>,
     pub(crate) next_id: u64,
     pub(crate) layouts: HashMap<String, Layout>,
     pub(crate) recent: Vec<u64>,
@@ -444,6 +445,7 @@ impl TerpApp {
         let mut app = TerpApp {
             focus: cx.focus_handle(),
             sessions: Vec::new(),
+            files: Vec::new(),
             next_id: 1,
             layouts: HashMap::new(),
             recent: Vec::new(),
@@ -543,7 +545,7 @@ impl TerpApp {
     }
 
     pub(crate) fn active_id(&self) -> Option<u64> {
-        self.layout().and_then(|l| l.active_tab()).filter(|id| self.session(*id).is_some())
+        self.layout().and_then(|l| l.active_tab()).filter(|id| self.session(*id).is_some() || self.file_tab(*id).is_some())
     }
 
     pub(crate) fn workspace_ids(&self, workspace: &str) -> Vec<u64> {
@@ -844,7 +846,7 @@ impl TerpApp {
             TerminalEvent::Exited => app.close(id, false, window, cx),
             TerminalEvent::Changed => cx.notify(),
             TerminalEvent::Attention { kind, message } => app.on_attention(id, *kind, message.clone(), window, cx),
-            TerminalEvent::OpenLink(target) => app.open_link(id, target.clone(), cx),
+            TerminalEvent::OpenLink(target) => app.open_link(id, target.clone(), window, cx),
         });
         // 端末を押して入力を移したら、その枠とタブを選ぶ
         let focus_handle = view.read(cx).focus_handle(cx);
@@ -1026,6 +1028,9 @@ impl TerpApp {
     }
 
     pub(crate) fn select(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
+        if self.file_tab(id).is_some() {
+            return self.select_file(id, window, cx);
+        }
         let Some(session) = self.session(id) else { return };
         let workspace = session.workspace.clone();
         let view = session.view.clone();
@@ -1054,6 +1059,10 @@ impl TerpApp {
 
     // 枠のタブから外すだけ。端末は左の一覧に残る（終わらせるのは一覧の行の ×）
     pub(crate) fn hide_tab(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
+        // ファイルは左の一覧に出ないため、タブから外すときは閉じる
+        if self.file_tab(id).is_some() {
+            return self.close_file(id, window, cx);
+        }
         let Some(workspace) = self.session(id).map(|s| s.workspace.clone()) else { return };
         let was_active = self.active_id() == Some(id);
         let recent = self.recent.clone();
@@ -1071,6 +1080,9 @@ impl TerpApp {
 
     // remember なら ⇧⌘T で開き直せるよう覚える（シェルの exit で終わった端末は覚えない）
     pub(crate) fn close(&mut self, id: u64, remember: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.file_tab(id).is_some() {
+            return self.close_file(id, window, cx);
+        }
         let Some(workspace) = self.session(id).map(|s| s.workspace.clone()) else { return };
         if remember && let Some(session) = self.session(id) {
             let view = session.view.read(cx);
@@ -1325,7 +1337,7 @@ impl TerpApp {
     }
 
     // URL は既定のブラウザ、ファイルは外部のエディタ、フォルダは Finder で開く
-    fn open_link(&mut self, id: u64, target: crate::links::Target, cx: &mut Context<Self>) {
+    fn open_link(&mut self, id: u64, target: crate::links::Target, window: &mut Window, cx: &mut Context<Self>) {
         if let crate::links::Target::Url(url) = &target {
             cx.open_url(url);
             return;
@@ -1335,11 +1347,7 @@ impl TerpApp {
         let root = self.placement(id, cx).map(|(_, w)| w);
         match crate::links::resolve(&target, &cwd, root.as_deref(), &home_dir()) {
             Some(r) if r.directory => cx.open_with_system(&r.path),
-            Some(r) => {
-                let editor = cx.global::<Appearance>().config.editor.clone();
-                let path = crate::git::login_env().get("PATH").cloned().unwrap_or_default();
-                crate::links::open_file(&r, &editor, &path);
-            }
+            Some(r) => self.open_file_tab(r.path, r.line.map(|l| l as usize), window, cx),
             None => {
                 self.notice = Some("リンクのファイルが見つからない".into());
                 cx.notify();
@@ -1749,6 +1757,11 @@ impl TerpApp {
 
     // 操作中の端末へ入力を戻す
     pub(crate) fn refocus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(editor) = self.active_id().and_then(|a| self.file_tab(a)).map(|t| t.editor.clone()) {
+            let handle = editor.read(cx).focus_handle(cx);
+            window.focus(&handle, cx);
+            return;
+        }
         match self.active_id().and_then(|a| self.session(a)).map(|s| s.view.clone()) {
             Some(view) => view.update(cx, |view, cx| view.focus(window, cx)),
             None => window.focus(&self.focus, cx),
@@ -1940,11 +1953,15 @@ impl TerpApp {
     // タブを枠へ落とす。自分の枠の端へ落として元の枠が空いたら、1つ前に見ていた未表示のタブか、新しい端末で埋める
     fn drop_tab(&mut self, tab: u64, pane: u64, window: &mut Window, cx: &mut Context<Self>) {
         self.drop_hint = None;
-        let Some(session) = self.session(tab) else { return };
-        if session.workspace != self.workspace() {
+        // ファイルのタブも動かせる。空いた枠を埋める端末は、そのファイルのフォルダで開く
+        let (workspace, cwd) = match (self.session(tab), self.file_tab(tab)) {
+            (Some(session), _) => (session.workspace.clone(), session.view.read(cx).cwd()),
+            (None, Some(file)) => (file.workspace.clone(), file.editor.read(cx).path.parent().map(PathBuf::from).unwrap_or_else(home_dir)),
+            (None, None) => return,
+        };
+        if workspace != self.workspace() {
             return;
         }
-        let cwd = session.view.read(cx).cwd();
         let side = self.drop_position(pane, window);
         if let Some(empty) = self.layout_mut().move_tab(tab, pane, side) {
             let visible = self.layout().map(|l| l.visible()).unwrap_or_default();
@@ -2169,6 +2186,10 @@ impl TerpApp {
         // 収まらないタブは横に送って見る（Electron 版と同じく送りの棒は出さない）
         let mut tabs = div().id(("pane-tabs", pane_id)).flex().flex_row().items_center().gap(px(2.0)).h_full().min_w_0().overflow_x_scroll();
         for (index, id) in pane.tabs.iter().copied().enumerate() {
+            if self.file_tab(id).is_some() {
+                tabs = tabs.child(self.render_file_tab(id, pane.active == Some(id), layout.active_pane == pane_id, p, cx));
+                continue;
+            }
             let Some(session) = self.session(id) else { continue };
             let view = session.view.read(cx);
             let selected = pane.active == Some(id);
@@ -2265,8 +2286,10 @@ impl TerpApp {
                 })),
         );
         let hint = self.drop_hint.filter(|(id, _)| *id == pane_id).map(|(_, side)| side);
+        let file = pane.active.and_then(|id| self.file_tab(id)).map(|t| t.editor.clone());
         let content: AnyElement = match pane.active.and_then(|id| self.session(id)) {
             Some(session) => div().size_full().bg(p.term_bg).child(session.view.clone()).into_any_element(),
+            None if file.is_some() => div().size_full().bg(p.term_bg).children(file).into_any_element(),
             None => div()
                 .flex_1()
                 .flex()

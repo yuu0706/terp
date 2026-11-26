@@ -7,6 +7,8 @@ mod assist;
 mod appearance;
 mod config;
 mod dock;
+mod editor;
+mod filetabs;
 mod ghostty;
 mod git;
 mod gitops;
@@ -14,6 +16,7 @@ mod input;
 mod inputbox;
 mod keys;
 mod links;
+mod markdown;
 mod offers;
 mod overlay;
 mod overview;
@@ -28,8 +31,10 @@ mod settings;
 mod sidebar;
 mod snapshot;
 mod state;
+mod syntax;
 mod terminal;
 mod terminal_view;
+mod textbuf;
 mod themeai;
 mod wallpaper;
 mod themegen;
@@ -155,6 +160,7 @@ pub fn bind_keys(cx: &mut App) {
         }
     }
     bindings.extend(input::key_bindings());
+    bindings.extend(editor::key_bindings());
     cx.clear_key_bindings();
     cx.bind_keys(bindings);
     if bad {
@@ -285,6 +291,23 @@ fn main() {
         set_menus(cx);
         // 全画面のまま閉じると次に開いたとき黒い画面が残るため、先に全画面を抜けてから終える
         cx.on_action(|_: &Quit, cx| {
+            // 保存していないファイルがあれば、終える前に確かめる
+            if filetabs::UNSAVED.load(std::sync::atomic::Ordering::Relaxed) > 0 {
+                let Some(window) = cx.active_window().or_else(|| cx.windows().into_iter().next()) else { return cx.quit() };
+                let answer = window.update(cx, |_, window, cx| {
+                    window.prompt(gpui::PromptLevel::Warning, "保存していないファイルがあります", Some("終了すると、保存していない変更は消えます。"), &["終了する", "やめる"], cx)
+                });
+                if let Ok(answer) = answer {
+                    cx.spawn(async move |cx| {
+                        if answer.await == Ok(0) {
+                            filetabs::UNSAVED.store(0, std::sync::atomic::Ordering::Relaxed);
+                            let _ = cx.update(|cx| cx.dispatch_action(&Quit));
+                        }
+                    })
+                    .detach();
+                }
+                return;
+            }
             let full = cx.windows().iter().any(|w| w.update(cx, |_, window, _| window.is_fullscreen()).unwrap_or(false));
             if !full {
                 cx.quit();
