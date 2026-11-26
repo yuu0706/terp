@@ -2076,6 +2076,7 @@ impl TerpApp {
                 div()
                     .id(("tab", id))
                     .flex()
+                    .flex_none()
                     .flex_row()
                     .items_center()
                     .gap_1()
