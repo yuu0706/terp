@@ -104,6 +104,10 @@ pub struct TerminalView {
     pub pending_rename: Option<String>,
     // AI で名前を付けている間
     pub ai_naming: bool,
+    // 無地のターミナルの、AI が画面から予測した題名と、予測した時刻・そのときの画面
+    pub ai_title: Option<String>,
+    pub ai_title_at: Option<Instant>,
+    pub ai_title_screen: Option<String>,
     // ⌘A で入力欄だけを選んだとき、写すのは印と字下げを除いた文
     input_selection: Option<String>,
     blink_on: bool,
@@ -158,6 +162,9 @@ impl TerminalView {
                 last_reply: None,
                 pending_rename: None,
                 ai_naming: false,
+                ai_title: None,
+                ai_title_at: None,
+                ai_title_screen: None,
                 input_selection: None,
                 blink_on: true,
                 _blink: cx.spawn(async move |this, cx| {
@@ -333,6 +340,8 @@ impl TerminalView {
             if let Some(title) = self.title.as_ref().map(|t| agent::parse_title(t)).and_then(|t| t.text) {
                 return title;
             }
+        } else if let Some(title) = self.ai_title.as_ref().filter(|t| !t.trim().is_empty()) {
+            return title.clone();
         }
         folder_name(&self.cwd())
     }
@@ -350,6 +359,11 @@ impl TerminalView {
     }
 
     // AI に渡す画面の末尾（最大40行・2,000字）
+    // 最後に出力があってからの時間。出力が無ければ None
+    pub fn since_output(&self) -> Option<std::time::Duration> {
+        self.last_output.map(|t| t.elapsed())
+    }
+
     pub fn screen_tail(&self) -> String {
         let text = self.tail_lines(40).join("\n");
         let chars: Vec<char> = text.chars().collect();
@@ -407,6 +421,9 @@ impl TerminalView {
         let mut meta = serde_json::json!({ "workspace": workspace });
         if let Some(name) = &self.custom_name {
             meta["name"] = serde_json::Value::String(name.clone());
+        }
+        if let Some(title) = &self.ai_title {
+            meta["aiTitle"] = serde_json::Value::String(title.clone());
         }
         if let Some(path) = &self.work_path {
             meta["workPath"] = serde_json::Value::String(path.display().to_string());

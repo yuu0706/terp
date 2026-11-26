@@ -171,6 +171,9 @@ pub struct TerpApp {
     wallpaper: Option<std::path::PathBuf>,
     wallpaper_requested: bool,
     wallpaper_task: Option<Task<()>>,
+    // 題名の自動の予測。次に見る時刻と、断られたときに休む期限
+    auto_title_next: Instant,
+    auto_title_paused_until: Option<Instant>,
     pub(crate) panel: Option<crate::rightpanel::RightPanel>,
     pub(crate) pets: crate::pets::Pets,
     // よく戻るタブ。タブごとの訪れた時刻（3秒以上とどまったものだけ）と、今いるタブ
@@ -474,6 +477,8 @@ impl TerpApp {
             wallpaper: None,
             wallpaper_requested: false,
             wallpaper_task: None,
+            auto_title_next: Instant::now() + Duration::from_secs(60),
+            auto_title_paused_until: None,
             panel: None,
             pets: Default::default(),
             visits: HashMap::new(),
@@ -551,7 +556,60 @@ impl TerpApp {
     }
 
     // 1秒ごとに、動いているプログラム・作業場所・設定・ワークスペースの変更と、見た端末の印を確かめる
+    // 無地のターミナルの題名を、画面が変わって落ち着いたときに予測する。トークンを抑えるため、
+    // 1分に1枚だけ、同じ端末は10分あけ、画面が前と同じなら呼ばない。上限などで断られたら30分休む
+    fn auto_title_scan(&mut self, cx: &mut Context<Self>) {
+        let now = Instant::now();
+        if now < self.auto_title_next {
+            return;
+        }
+        self.auto_title_next = now + Duration::from_secs(60);
+        let config = cx.global::<Appearance>().config.clone();
+        if !config.ai_assist || !config.ai_auto_title || self.auto_title_paused_until.is_some_and(|t| now < t) {
+            return;
+        }
+        let gap = Duration::from_secs(10 * 60);
+        let found = self.sessions.iter().find_map(|s| {
+            let v = s.view.read(cx);
+            if v.is_agent() || v.custom_name.is_some() || v.ai_naming || v.ai_title_at.is_some_and(|t| now.duration_since(t) < gap) {
+                return None;
+            }
+            if !v.since_output().is_some_and(|d| d > Duration::from_secs(5)) {
+                return None;
+            }
+            let screen = v.screen_tail();
+            if screen.trim().is_empty() || v.ai_title_screen.as_deref() == Some(screen.as_str()) {
+                return None;
+            }
+            let program = v.process.as_ref().map(|p| p.name.clone()).unwrap_or_default();
+            Some((s.view.clone(), screen, short_path(&v.cwd()), program))
+        });
+        let Some((view, screen, cwd, program)) = found else { return };
+        view.update(cx, |v, _| {
+            v.ai_title_at = Some(now);
+            v.ai_title_screen = Some(screen.clone());
+        });
+        cx.spawn(async move |this, cx| {
+            let result = cx.background_executor().spawn(async move { crate::assist::terminal_name(&config, &screen, &cwd, &program, true) }).await;
+            let _ = this.update(cx, |app, cx| match result {
+                Ok(title) => {
+                    let workspace = app.sessions.iter().find(|s| s.view == view).map(|s| s.workspace.clone());
+                    view.update(cx, |v, _| {
+                        v.ai_title = Some(title);
+                        if let Some(ws) = &workspace {
+                            v.save_meta(ws);
+                        }
+                    });
+                    cx.notify();
+                }
+                Err(_) => app.auto_title_paused_until = Some(Instant::now() + Duration::from_secs(30 * 60)),
+            });
+        })
+        .detach();
+    }
+
     fn poll(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.auto_title_scan(cx);
         let focused = window.is_window_active();
         let visible: Vec<u64> = self.layout().map(|l| l.visible()).unwrap_or_default();
         for session in &self.sessions {
@@ -815,8 +873,10 @@ impl TerpApp {
             let name = summary.meta.get("name").and_then(|n| n.as_str()).map(String::from);
             let work_path = summary.meta.get("workPath").and_then(|n| n.as_str()).map(PathBuf::from);
             let bypass = summary.meta.get("bypass").and_then(|n| n.as_bool()).unwrap_or(false);
+            let ai_title = summary.meta.get("aiTitle").and_then(|n| n.as_str()).filter(|t| !t.is_empty()).map(String::from);
             view.update(cx, |view, _| {
                 view.custom_name = name;
+                view.ai_title = ai_title;
                 view.work_path = work_path;
                 view.bypass = bypass;
             });
@@ -1536,7 +1596,7 @@ impl TerpApp {
         });
         cx.notify();
         cx.spawn(async move |this, cx| {
-            let result = cx.background_executor().spawn(async move { crate::assist::terminal_name(&config, &screen, &cwd, &program) }).await;
+            let result = cx.background_executor().spawn(async move { crate::assist::terminal_name(&config, &screen, &cwd, &program, false) }).await;
             let _ = this.update(cx, |app, cx| {
                 view.update(cx, |v, _| v.ai_naming = false);
                 match result {

@@ -1157,6 +1157,7 @@ impl TerpApp {
                 p,
             ))
             .child(self.field("ターミナルに名前を付ける", Some("行の右クリックに「AI で名前を付ける」を出す。押したときだけ、画面の末尾（最大 2,000 字）を渡す"), self.toggle("aiNameTerminal", c.ai_name_terminal, off, false, p, cx), off, p))
+            .child(self.field("無地のターミナルの題名を自動で予測する", Some("画面が変わって落ち着いたら、画面の末尾を渡して題名を付ける。1分に1枚、同じターミナルは10分あける。画面の文字が claude に送られる"), self.toggle("aiAutoTitle", c.ai_auto_title, off, false, p, cx), off, p))
             .child(self.field("1日の上限", Some("1日に claude を呼ぶ回数の上限。0 で上限なし"), self.stepper("aiDailyLimit", c.ai_daily_limit as f64, 0.0, 1000.0, 1.0, format!("{}回", c.ai_daily_limit), off, p, cx), off, p))
             .child(self.field("今日の使用量", None, div().text_sm().child(format!("{} 回（入力 {} / 出力 {} トークン）", usage.calls, usage.input_tokens, usage.output_tokens)).into_any_element(), false, p))
             .into_any_element()
