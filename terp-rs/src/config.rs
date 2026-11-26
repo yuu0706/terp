@@ -365,12 +365,23 @@ pub fn parse_ghostty_theme(text: &str) -> Theme {
     theme
 }
 
+// 利用者が作ったテーマの置き場所
+pub fn created_theme_dir() -> PathBuf {
+    config_dir().join("themes")
+}
+
+// 利用者が Ghostty 用に置いたテーマ
+pub fn ghostty_theme_dir() -> PathBuf {
+    home_dir().join(".config").join("ghostty").join("themes")
+}
+
+// Ghostty に付いてくるテーマ。一覧には出さないが、設定で選んだままの名前は読めるようにする
+pub fn ghostty_bundled_theme_dir() -> PathBuf {
+    PathBuf::from("/Applications/Ghostty.app/Contents/Resources/ghostty/themes")
+}
+
 pub fn theme_dirs() -> Vec<PathBuf> {
-    vec![
-        config_dir().join("themes"),
-        home_dir().join(".config").join("ghostty").join("themes"),
-        PathBuf::from("/Applications/Ghostty.app/Contents/Resources/ghostty/themes"),
-    ]
+    vec![created_theme_dir(), ghostty_theme_dir(), ghostty_bundled_theme_dir()]
 }
 
 pub fn find_theme(name: &str) -> Option<PathBuf> {

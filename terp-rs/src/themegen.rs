@@ -1,6 +1,5 @@
 // AI にテーマを作らせる。返答は検証し、適用を選ぶまでファイルに残さない
 use crate::config::{Config, Rgb, Theme, config_dir, find_theme};
-use crate::settings::list_themes as list_theme_names;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::time::Duration;
@@ -234,10 +233,9 @@ pub fn save(theme: &Generated) -> Result<String, String> {
     for (key, name) in keys {
         text.push_str(&format!("{name} = {}\n", theme.color(key)));
     }
-    let existing = list_theme_names();
     for n in 1.. {
         let name = if n == 1 { theme.name.clone() } else { format!("{} {n}", theme.name) };
-        if existing.contains(&name) || find_theme(&name).is_some() {
+        if find_theme(&name).is_some() {
             continue;
         }
         let file = dir.join(&name);

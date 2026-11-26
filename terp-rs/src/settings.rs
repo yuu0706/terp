@@ -1,7 +1,7 @@
 // 設定の画面（⌘,）。左に項目、右に設定。変えたらすぐ config.json の該当の値だけを書き換える（手で書いた値は残す）。
 use crate::app::{Palette, TerpApp};
 use crate::appearance::{Appearance, hsla};
-use crate::config::{Config, Rgb, config_path, theme_dirs};
+use crate::config::{Config, Rgb, config_path};
 use crate::input::{InputEvent, TextInput};
 use gpui::{
     AnyElement, App, ClickEvent, Context, Entity, Focusable, FocusHandle, FontWeight, KeyDownEvent, MouseButton, SharedString,
@@ -21,7 +21,7 @@ pub struct Settings {
     shortcut_filter: Entity<TextInput>,
     command_label: Entity<TextInput>,
     command_line: Entity<TextInput>,
-    themes: Vec<String>,
+    themes: Vec<ThemeEntry>,
     preview: Option<String>,
     capturing: Option<&'static str>,
     capture_focus: FocusHandle,
@@ -67,22 +67,65 @@ fn raw_config() -> Map<String, Value> {
     std::fs::read_to_string(config_path()).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()).and_then(|v| v.as_object().cloned()).unwrap_or_default()
 }
 
-pub fn list_themes() -> Vec<String> {
-    let mut names: Vec<String> = Vec::new();
-    for dir in theme_dirs() {
-        let Ok(entries) = std::fs::read_dir(dir) else { continue };
-        for e in entries.flatten() {
-            if e.path().is_file()
-                && let Some(name) = e.file_name().to_str()
-                && !name.starts_with('.')
-                && !names.iter().any(|n| n == name)
-            {
-                names.push(name.to_string());
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ThemeSource {
+    Created,
+    Ghostty,
+}
+
+#[derive(Clone, Debug)]
+pub struct ThemeEntry {
+    pub name: String,
+    pub source: ThemeSource,
+    pub created: Option<std::time::SystemTime>,
+    // 背景・文字・強調色。一覧の色の見本に使う
+    pub colors: [Rgb; 3],
+}
+
+pub fn swatch_colors(theme: &crate::config::Theme) -> [Rgb; 3] {
+    let chrome = crate::config::chrome_colors(theme, None);
+    [theme.background, theme.foreground, chrome.accent]
+}
+
+// 一覧に出すテーマ。作ったテーマを新しい順に、続けて Ghostty のテーマを名前順に並べる。
+// Ghostty に付いてくるテーマは数百件あり、作ったテーマが埋もれるため出さない
+pub fn list_themes() -> Vec<ThemeEntry> {
+    list_themes_in(&[(ThemeSource::Created, crate::config::created_theme_dir()), (ThemeSource::Ghostty, crate::config::ghostty_theme_dir())])
+}
+
+pub fn list_themes_in(dirs: &[(ThemeSource, std::path::PathBuf)]) -> Vec<ThemeEntry> {
+    let mut entries: Vec<ThemeEntry> = Vec::new();
+    for (source, dir) in dirs {
+        let Ok(items) = std::fs::read_dir(dir) else { continue };
+        for e in items.flatten() {
+            let path = e.path();
+            let Some(name) = e.file_name().to_str().map(String::from) else { continue };
+            if !path.is_file() || name.starts_with('.') || entries.iter().any(|t| t.name == name) {
+                continue;
             }
+            let Ok(text) = std::fs::read_to_string(&path) else { continue };
+            let meta = e.metadata().ok();
+            let created = meta.as_ref().and_then(|m| m.created().or_else(|_| m.modified()).ok());
+            let colors = swatch_colors(&crate::config::parse_ghostty_theme(&text));
+            entries.push(ThemeEntry { name, source: *source, created, colors });
         }
     }
-    names.sort_by_key(|n| n.to_lowercase());
-    names
+    entries.sort_by(|a, b| match (a.source, b.source) {
+        (ThemeSource::Created, ThemeSource::Created) => b.created.cmp(&a.created).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())),
+        (ThemeSource::Created, _) => std::cmp::Ordering::Less,
+        (_, ThemeSource::Created) => std::cmp::Ordering::Greater,
+        _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+    });
+    entries
+}
+
+fn local_date(time: std::time::SystemTime) -> String {
+    let secs = time.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as libc::time_t).unwrap_or(0);
+    unsafe {
+        let mut tm: libc::tm = std::mem::zeroed();
+        libc::localtime_r(&secs, &mut tm);
+        format!("{}-{:02}-{:02}", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday)
+    }
 }
 
 // 近道の id と、画面に出す名前・区分
@@ -808,10 +851,26 @@ impl TerpApp {
         let s = self.settings.as_ref().expect("設定を開いている");
         let filter = s.theme_filter.read(cx).text().to_lowercase();
         let current = c.theme.clone().unwrap_or_default();
-        let mut names: Vec<(String, String)> = vec![(String::new(), "内蔵の色（Catppuccin Mocha 相当）".into())];
-        names.extend(s.themes.iter().map(|n| (n.clone(), n.clone())));
-        if !current.is_empty() && !s.themes.contains(&current) {
-            names.push((current.clone(), format!("{current}（見つかりません）")));
+        // 見出しごとに並べる。絞り込みで行が無くなった見出しは出さない
+        struct Row {
+            value: String,
+            label: String,
+            colors: [Rgb; 3],
+            date: Option<String>,
+        }
+        let row = |t: &ThemeEntry| Row { value: t.name.clone(), label: t.name.clone(), colors: t.colors, date: t.created.map(local_date) };
+        let mut groups: Vec<(&str, Vec<Row>)> = vec![
+            ("既定", vec![Row { value: String::new(), label: "内蔵の色（Catppuccin Mocha 相当）".into(), colors: swatch_colors(&crate::config::builtin_theme()), date: None }]),
+            ("作ったテーマ", s.themes.iter().filter(|t| t.source == ThemeSource::Created).map(row).collect()),
+            ("Ghostty のテーマ", s.themes.iter().filter(|t| t.source == ThemeSource::Ghostty).map(row).collect()),
+        ];
+        if !current.is_empty() && !s.themes.iter().any(|t| t.name == current) {
+            let bundled = crate::config::ghostty_bundled_theme_dir().join(&current);
+            let (label, colors) = match std::fs::read_to_string(&bundled) {
+                Ok(text) => (format!("{current}（Ghostty 付属）"), swatch_colors(&crate::config::parse_ghostty_theme(&text))),
+                Err(_) => (format!("{current}（見つかりません）"), swatch_colors(&crate::config::builtin_theme())),
+            };
+            groups.push(("その他", vec![Row { value: current.clone(), label, colors, date: None }]));
         }
         let shown = s.preview.clone().unwrap_or_else(|| current.clone());
         let mut list = div()
@@ -829,40 +888,60 @@ impl TerpApp {
                 }
             }));
         let mut any = false;
-        for (i, (value, label)) in names.into_iter().filter(|(_, l)| filter.is_empty() || l.to_lowercase().contains(&filter)).enumerate() {
-            any = true;
-            let applied = value == current;
-            let previewing = value == shown;
-            let (v1, v2) = (value.clone(), value.clone());
+        let mut index = 0usize;
+        for (heading, rows) in groups {
+            let rows: Vec<Row> = rows.into_iter().filter(|r| filter.is_empty() || r.label.to_lowercase().contains(&filter)).collect();
+            let empty_created = heading == "作ったテーマ" && rows.is_empty() && filter.is_empty();
+            if rows.is_empty() && !empty_created {
+                continue;
+            }
             list = list.child(
-                div()
-                    .id(("theme", i))
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .justify_between()
-                    .gap_2()
-                    .min_h(px(32.0))
-                    .px_2()
-                    .py_1()
-                    .border_b_1()
-                    .border_color(p.border)
-                    .when(previewing, |d| d.bg(p.hover))
-                    .hover(|s| s.bg(p.hover))
-                    .on_hover(cx.listener(move |app, hovered: &bool, _, cx| {
-                        if *hovered {
-                            app.preview_theme(Some(v1.clone()), cx);
-                        }
-                    }))
-                    .on_click(cx.listener(move |app, _: &ClickEvent, window, cx| {
-                        let v = if v2.is_empty() { None } else { Some(Value::String(v2.clone())) };
-                        app.set_config("theme", v, window, cx);
-                    }))
-                    .child(div().min_w_0().child(label))
-                    .when(applied, |d| d.child(div().flex_none().text_sm().text_color(p.accent).child("使用中"))),
+                div().px_2().pt_2().pb_1().text_xs().font_weight(FontWeight::SEMIBOLD).text_color(p.muted).bg(p.hover.opacity(0.5)).border_b_1().border_color(p.border).child(heading),
             );
+            if empty_created {
+                list = list.child(div().px_2().py_2().text_sm().text_color(p.muted).border_b_1().border_color(p.border).child("まだありません。「AI で好みを作成」から作れます"));
+            }
+            for r in rows {
+                any = true;
+                let i = index;
+                index += 1;
+                let applied = r.value == current;
+                let previewing = r.value == shown;
+                let (v1, v2) = (r.value.clone(), r.value.clone());
+                let swatches = div().flex().flex_row().flex_none().rounded_sm().overflow_hidden().border_1().border_color(p.border).children(
+                    r.colors.iter().map(|c| div().w(px(10.0)).h(px(14.0)).bg(hsla(*c, 1.0))),
+                );
+                list = list.child(
+                    div()
+                        .id(("theme", i))
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_2()
+                        .min_h(px(32.0))
+                        .px_2()
+                        .py_1()
+                        .border_b_1()
+                        .border_color(p.border)
+                        .when(previewing, |d| d.bg(p.hover))
+                        .hover(|s| s.bg(p.hover))
+                        .on_hover(cx.listener(move |app, hovered: &bool, _, cx| {
+                            if *hovered {
+                                app.preview_theme(Some(v1.clone()), cx);
+                            }
+                        }))
+                        .on_click(cx.listener(move |app, _: &ClickEvent, window, cx| {
+                            let v = if v2.is_empty() { None } else { Some(Value::String(v2.clone())) };
+                            app.set_config("theme", v, window, cx);
+                        }))
+                        .child(swatches)
+                        .child(div().flex_1().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().child(r.label))
+                        .children(r.date.map(|d| div().flex_none().text_xs().text_color(p.muted).child(d)))
+                        .when(applied, |d| d.child(div().flex_none().text_sm().text_color(p.accent).child("使用中"))),
+                );
+            }
         }
-        if !any {
+        if !any && !filter.is_empty() {
             list = list.child(div().p_2().text_sm().text_color(p.muted).child("該当するテーマなし。絞り込みを変える"));
         }
         let preview = if any { Some(self.theme_preview(&shown, p, cx)) } else { None };
@@ -1350,6 +1429,31 @@ impl Focusable for Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn テーマの一覧は作ったテーマを新しい順に並べてから_ghostty_のテーマを名前順に並べる() {
+        let root = std::env::temp_dir().join(format!("terp-theme-list-{}", std::process::id()));
+        let (created, ghostty) = (root.join("created"), root.join("ghostty"));
+        std::fs::create_dir_all(&created).unwrap();
+        std::fs::create_dir_all(&ghostty).unwrap();
+        let body = "background = #101010\nforeground = #eeeeee\ncursor-color = #58c4ff\n";
+        for name in ["Older", "Newer"] {
+            std::fs::write(created.join(name), body).unwrap();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        std::fs::write(created.join(".hidden"), body).unwrap();
+        for name in ["zeta", "Alpha", "Newer"] {
+            std::fs::write(ghostty.join(name), body).unwrap();
+        }
+        let list = list_themes_in(&[(ThemeSource::Created, created), (ThemeSource::Ghostty, ghostty)]);
+        let names: Vec<(&str, ThemeSource)> = list.iter().map(|t| (t.name.as_str(), t.source)).collect();
+        assert_eq!(
+            names,
+            vec![("Newer", ThemeSource::Created), ("Older", ThemeSource::Created), ("Alpha", ThemeSource::Ghostty), ("zeta", ThemeSource::Ghostty)]
+        );
+        assert_eq!(list[0].colors[0], Rgb::parse("#101010").unwrap());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
 
     #[test]
     fn キーの見せ方() {
