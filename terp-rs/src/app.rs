@@ -452,7 +452,7 @@ impl TerpApp {
             focus: cx.focus_handle(),
             sessions: Vec::new(),
             files: Vec::new(),
-            quick: Default::default(),
+            quick: crate::quick::Quick::restored(ui.quick.as_ref()),
             next_id: 1,
             layouts: HashMap::new(),
             recent: Vec::new(),
@@ -937,6 +937,7 @@ impl TerpApp {
         let mut to_host: HashMap<u64, u64> =
             self.sessions.iter().filter_map(|s| s.view.read(cx).terminal.remote_id().map(|h| (s.id, h))).collect();
         // ファイルのタブは、シェルの番号と重ならない大きな番号で枠の並びに残す
+        self.ui.quick = self.quick.saved();
         self.ui.files = self
             .files
             .iter()

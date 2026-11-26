@@ -22,6 +22,22 @@ impl Quick {
     pub fn visible(&self) -> bool {
         self.window.is_some()
     }
+
+    // 開き直したときに、最後に置いた位置を戻す
+    pub fn restored(saved: Option<&crate::state::SavedQuick>) -> Self {
+        let bounds = saved.map(|s| (Bounds::new(point(px(s.x), px(s.y)), size(px(s.width), px(s.height))), s.display.map(DisplayId::from)));
+        Quick { id: None, window: None, bounds }
+    }
+
+    pub fn saved(&self) -> Option<crate::state::SavedQuick> {
+        self.bounds.map(|(b, d)| crate::state::SavedQuick {
+            x: f32::from(b.origin.x),
+            y: f32::from(b.origin.y),
+            width: f32::from(b.size.width),
+            height: f32::from(b.size.height),
+            display: d.map(u64::from),
+        })
+    }
 }
 
 const QUICK_WIDTH: f32 = 560.0;
@@ -135,7 +151,9 @@ impl TerpApp {
         }
         let Some(view) = self.quick.id.and_then(|id| self.session(id)).map(|s| s.view.clone()) else { return };
         // 初めは terp の窓の中の右下（ボタンの上）に、terp の窓と同じ画面で出す
-        let (bounds, display_id) = self.quick.bounds.unwrap_or_else(|| {
+        // 最後に置いた画面が外れていたら、初めと同じ位置に出す
+        let saved = self.quick.bounds.filter(|(_, d)| d.is_none_or(|d| cx.find_display(d).is_some()));
+        let (bounds, display_id) = saved.unwrap_or_else(|| {
             let main = window.bounds();
             let size = size(px(QUICK_WIDTH).min(main.size.width * 0.9), px(QUICK_HEIGHT).min(main.size.height * 0.8));
             (Bounds::new(point(main.right() - size.width - px(22.0), main.bottom() - size.height - px(60.0)), size), window.display(cx).map(|d| d.id()))
@@ -162,6 +180,7 @@ impl TerpApp {
                     app.update(cx, |app, cx| {
                         app.quick.bounds = Some(bounds);
                         app.quick.window = None;
+                        app.persist(cx);
                         cx.notify();
                     });
                 }
@@ -172,7 +191,10 @@ impl TerpApp {
                 cx.observe_window_bounds(w, move |_: &mut QuickWindow, w, cx| {
                     let bounds = (w.bounds(), w.display(cx).map(|d| d.id()));
                     if let Some(app) = back.upgrade() {
-                        app.update(cx, |app, _| app.quick.bounds = Some(bounds));
+                        app.update(cx, |app, cx| {
+                            app.quick.bounds = Some(bounds);
+                            app.persist(cx);
+                        });
                     }
                 })
                 .detach();
@@ -195,6 +217,7 @@ impl TerpApp {
                     bounds
                 })
                 .map(|b| self.quick.bounds = Some(b));
+            self.persist(cx);
         }
         cx.notify();
     }

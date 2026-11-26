@@ -18,6 +18,16 @@ pub struct ClosedTab {
     pub workspace: String,
 }
 
+// 小さいターミナルを最後に置いた位置と大きさ（画面の左上からの距離）と、その画面
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SavedQuick {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    pub display: Option<u64>,
+}
+
 // 枠のタブで開いていたファイル。key は枠の並びの中でこのファイルを指す番号
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SavedFile {
@@ -39,6 +49,7 @@ pub struct UiState {
     pub layouts: HashMap<String, Layout>,
     pub closed: Vec<ClosedTab>,
     pub files: Vec<SavedFile>,
+    pub quick: Option<SavedQuick>,
 }
 
 impl Default for UiState {
@@ -52,6 +63,7 @@ impl Default for UiState {
             layouts: HashMap::new(),
             closed: Vec::new(),
             files: Vec::new(),
+            quick: None,
         }
     }
 }
