@@ -112,6 +112,7 @@ pub struct TerminalView {
     marked_text: Option<String>,
     layout: Layout,
     selecting: bool,
+    last_motion_cell: Option<(i32, usize)>,
     scroll_remainder: f32,
     replaying: bool,
     search: Option<Search>,
@@ -182,6 +183,7 @@ impl TerminalView {
                 marked_text: None,
                 layout: Layout::default(),
                 selecting: false,
+                last_motion_cell: None,
                 scroll_remainder: 0.0,
                 replaying: false,
                 search: None,
@@ -759,8 +761,34 @@ impl TerminalView {
     }
 
     fn uses_mouse(&self, mods: &gpui::Modifiers) -> bool {
-        // ⇧ を押しているときは、プログラムがマウスを使っていても文字を選べるようにする
-        !mods.shift && self.mode().intersects(TermMode::MOUSE_MODE)
+        // ⇧ か ⌥ を押しているときは、プログラムがマウスを使っていても文字を選べるようにする（Electron 版の macOptionClickForcesSelection と同じ）
+        !mods.shift && !mods.alt && self.mode().intersects(TermMode::MOUSE_MODE)
+    }
+
+    // ボタンを押したままの移動（1002）か、すべての移動（1003）を求められていれば、移動を送る。
+    // 同じ桁・行の中の移動は送らない
+    fn report_motion(&mut self, event: &MouseMoveEvent) {
+        let mode = self.mode();
+        let button = match event.pressed_button {
+            Some(MouseButton::Left) => 0,
+            Some(MouseButton::Middle) => 1,
+            Some(MouseButton::Right) => 2,
+            Some(_) => return,
+            None if mode.contains(TermMode::MOUSE_MOTION) => 3,
+            None => return,
+        };
+        if button != 3 && !mode.intersects(TermMode::MOUSE_DRAG | TermMode::MOUSE_MOTION) {
+            return;
+        }
+        let (point, _) = self.grid_point(event.position, 0);
+        let cell = (point.line.0, point.column.0);
+        if self.last_motion_cell == Some(cell) {
+            return;
+        }
+        self.last_motion_cell = Some(cell);
+        if let Some(bytes) = self.mouse_report(button + 32, true, event.position, &event.modifiers) {
+            self.terminal.write(&bytes);
+        }
     }
 
     // 折り返しでつながった1行の文字と、各文字の行・桁
@@ -841,6 +869,7 @@ impl TerminalView {
                 MouseButton::Right => 2,
                 _ => return,
             };
+            self.last_motion_cell = None;
             if let Some(bytes) = self.mouse_report(button, true, event.position, &event.modifiers) {
                 self.terminal.write(&bytes);
             }
@@ -866,6 +895,10 @@ impl TerminalView {
     fn on_mouse_move(&mut self, event: &MouseMoveEvent, _window: &mut Window, cx: &mut Context<Self>) {
         if event.pressed_button.is_none() {
             self.update_hover(event.position, cx);
+        }
+        if !self.selecting && self.uses_mouse(&event.modifiers) {
+            self.report_motion(event);
+            return;
         }
         if !self.selecting || event.pressed_button != Some(MouseButton::Left) {
             return;
