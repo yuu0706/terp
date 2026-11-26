@@ -91,6 +91,14 @@ impl Render for QuickWindow {
     }
 }
 
+// 窓を範囲の内側に収める。大きすぎれば縮め、はみ出していれば寄せる
+fn clamp_into(b: Bounds<Pixels>, area: Bounds<Pixels>) -> Bounds<Pixels> {
+    let size = size(b.size.width.min(area.size.width), b.size.height.min(area.size.height));
+    let x = b.origin.x.clamp(area.left(), area.right() - size.width);
+    let y = b.origin.y.clamp(area.top(), area.bottom() - size.height);
+    Bounds::new(point(x, y), size)
+}
+
 // 浮かせる窓は macOS の「パネル」で、既定では terp から別のアプリへ移ると隠れる。
 // macOS の許可の確認が前に出ただけで消えて見えるため、隠れないようにする
 fn keep_visible_on_deactivate(window: &Window) {
@@ -151,8 +159,16 @@ impl TerpApp {
         }
         let Some(view) = self.quick.id.and_then(|id| self.session(id)).map(|s| s.view.clone()) else { return };
         // 初めは terp の窓の中の右下（ボタンの上）に、terp の窓と同じ画面で出す
-        // 最後に置いた画面が外れていたら、初めと同じ位置に出す
-        let saved = self.quick.bounds.filter(|(_, d)| d.is_none_or(|d| cx.find_display(d).is_some()));
+        // 最後に置いた画面が外れていたら、初めと同じ位置に出す。画面が残っていても、解像度や並べ方が変わって
+        // はみ出すことがあるため、その画面の見える範囲（メニューバーを除く）の内側へ寄せる
+        let saved = self.quick.bounds.and_then(|(b, d)| {
+            let Some(d) = d else { return Some((b, None)) };
+            let display = cx.find_display(d)?;
+            let (full, visible) = (display.bounds(), display.visible_bounds());
+            // 窓の位置は画面の左上からの距離なので、見える範囲も同じ基準にする
+            let area = Bounds::new(point(visible.origin.x - full.origin.x, visible.origin.y - full.origin.y), visible.size);
+            Some((clamp_into(b, area), Some(d)))
+        });
         let (bounds, display_id) = saved.unwrap_or_else(|| {
             let main = window.bounds();
             let size = size(px(QUICK_WIDTH).min(main.size.width * 0.9), px(QUICK_HEIGHT).min(main.size.height * 0.8));
@@ -251,5 +267,23 @@ impl TerpApp {
             .on_click(cx.listener(|app, _: &ClickEvent, window, cx| app.toggle_quick(window, cx)))
             .child(crate::ui::icon("terminal", 15.0, if open { p.accent } else { p.text }))
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn b(x: f32, y: f32, w: f32, h: f32) -> Bounds<Pixels> {
+        Bounds::new(point(px(x), px(y)), size(px(w), px(h)))
+    }
+
+    #[test]
+    fn はみ出した窓は画面の内側へ寄せ_大きすぎれば縮める() {
+        let area = b(0.0, 25.0, 1440.0, 875.0);
+        assert_eq!(clamp_into(b(100.0, 100.0, 560.0, 340.0), area), b(100.0, 100.0, 560.0, 340.0));
+        assert_eq!(clamp_into(b(2500.0, 1200.0, 560.0, 340.0), area), b(880.0, 560.0, 560.0, 340.0));
+        assert_eq!(clamp_into(b(-300.0, 0.0, 560.0, 340.0), area), b(0.0, 25.0, 560.0, 340.0));
+        assert_eq!(clamp_into(b(10.0, 10.0, 2000.0, 1000.0), area), b(0.0, 25.0, 1440.0, 875.0));
     }
 }
