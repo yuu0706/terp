@@ -561,7 +561,7 @@ impl TerpApp {
 
     pub(crate) fn is_visible(&self, id: u64) -> bool {
         if self.is_quick(id) {
-            return self.quick.visible;
+            return self.quick.visible();
         }
         self.session(id).is_some_and(|s| s.workspace == self.workspace())
             && self.layout().is_some_and(|l| l.visible().contains(&id))
@@ -1066,8 +1066,11 @@ impl TerpApp {
     pub(crate) fn select(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
         // 小さいターミナルは、隠れていれば出す
         if self.is_quick(id) {
-            if !self.quick.visible {
-                self.toggle_quick(window, cx);
+            match self.quick.window {
+                Some(handle) => {
+                    let _ = handle.update(cx, |_, w, _| w.activate_window());
+                }
+                None => self.toggle_quick(window, cx),
             }
             return;
         }
@@ -1135,7 +1138,7 @@ impl TerpApp {
             self.rename = None;
         }
         if self.is_quick(id) {
-            self.quick = Default::default();
+            self.drop_quick(cx);
         }
         // タブを閉じたときは、PTY ホストのシェルも終わらせる
         if let Some(session) = self.session(id) {
@@ -2501,7 +2504,7 @@ impl Render for TerpApp {
                     .h_full()
                     .bg(p.term_bg)
                     .child(self.render_topbar(&p, cx))
-                    .child(div().flex_1().min_h_0().flex().px_2().pb_2().relative().child(panes).children(self.render_quick_panel(&p, cx)).child(self.render_quick_button(&p, cx)))
+                    .child(div().flex_1().min_h_0().flex().px_2().pb_2().relative().child(panes).child(self.render_quick_button(&p, cx)))
                     .when_some(error, |d, error| {
                         d.child(div().flex_none().px_3().py_1().text_xs().bg(p.active).text_color(p.warning).child(error))
                     }),

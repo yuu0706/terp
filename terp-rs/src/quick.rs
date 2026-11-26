@@ -1,17 +1,81 @@
-// 小さいターミナル（クイックターミナル）。端末の枠の右下のボタンか ⌥⌘N で、terp の窓の中に浮かせて出し入れする。
+// 小さいターミナル（クイックターミナル）。端末の枠の右下のボタンか ⌥⌘N で、小さな窓を出し入れする。
+// 初めは terp の窓の中の右下に出し、上の帯をつかめば窓の外へも動かせる。
 // 1つだけ持ち、隠してもシェルは残すので、次に出したときに続きから使える。左の一覧には出さない。
 // 設定で、ボタンで開くものを Terminal や Ghostty に変えられる
 use crate::app::{Palette, TerpApp};
-use gpui::{AnyElement, ClickEvent, Context, Focusable, MouseButton, Window, div, prelude::*, px};
+use crate::terminal_view::TerminalView;
+use gpui::{
+    AnyElement, Bounds, ClickEvent, Context, Entity, Focusable, MouseButton, Pixels, Render, TitlebarOptions, WeakEntity, Window, WindowBounds, WindowHandle,
+    WindowKind, WindowOptions, div, point, prelude::*, px, size,
+};
 
 #[derive(Default)]
 pub struct Quick {
     pub id: Option<u64>,
-    pub visible: bool,
+    // 出しているときの窓。隠すと閉じ、端末は残す
+    pub window: Option<WindowHandle<QuickWindow>>,
+    // 最後に置いた位置と大きさ。次に出すときもそこに出す
+    pub bounds: Option<Bounds<Pixels>>,
+}
+
+impl Quick {
+    pub fn visible(&self) -> bool {
+        self.window.is_some()
+    }
 }
 
 const QUICK_WIDTH: f32 = 560.0;
 const QUICK_HEIGHT: f32 = 340.0;
+
+// 小さいターミナルの窓。上の帯をつかむと、terp の窓の中でも外でも動かせる
+pub struct QuickWindow {
+    app: WeakEntity<TerpApp>,
+    view: Entity<TerminalView>,
+}
+
+impl Render for QuickWindow {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let p = crate::app::palette(cx);
+        let font = cx.global::<crate::appearance::Appearance>().font.clone();
+        let title = self.view.read(cx).display_name();
+        let app = self.app.clone();
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .bg(p.term_bg)
+            .text_color(p.text)
+            .font_family(font.family)
+            .child(
+                div()
+                    .id("quick-bar")
+                    .flex()
+                    .flex_row()
+                    .flex_none()
+                    .items_center()
+                    .gap_1()
+                    .h(px(26.0))
+                    .pl(px(64.0))
+                    .pr_2()
+                    .bg(p.solid_bg)
+                    .border_b_1()
+                    .border_color(p.border)
+                    .on_mouse_down(MouseButton::Left, |_: &gpui::MouseDownEvent, window, _| window.start_window_move())
+                    .child(crate::ui::icon("terminal", 12.0, p.muted))
+                    .child(div().flex_1().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().text_xs().child(title))
+                    .child(
+                        crate::ui::icon_button("quick-terminal-hide", "minus", "隠す（⌥⌘N）。シェルは残り、次に出したときに続きから使える", p.muted, p.hover, p.text)
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                            .on_click(move |_: &ClickEvent, _, cx| {
+                                if let Some(app) = app.upgrade() {
+                                    app.update(cx, |app, cx| app.hide_quick(cx));
+                                }
+                            }),
+                    ),
+            )
+            .child(div().flex_1().min_h_0().child(self.view.clone()))
+    }
+}
 
 impl TerpApp {
     pub(crate) fn is_quick(&self, id: u64) -> bool {
@@ -40,10 +104,9 @@ impl TerpApp {
             }
             _ => {}
         }
-        if self.quick.visible {
-            self.quick.visible = false;
+        if self.quick.visible() {
+            self.hide_quick(cx);
             self.refocus(window, cx);
-            cx.notify();
             return;
         }
         if self.quick.id.is_none_or(|id| self.session(id).is_none()) {
@@ -57,16 +120,76 @@ impl TerpApp {
                 });
             }
         }
-        self.quick.visible = true;
-        if let Some(view) = self.quick.id.and_then(|id| self.session(id)).map(|s| s.view.clone()) {
-            let handle = view.read(cx).focus_handle(cx);
-            window.focus(&handle, cx);
+        let Some(view) = self.quick.id.and_then(|id| self.session(id)).map(|s| s.view.clone()) else { return };
+        // 初めは terp の窓の中の右下（ボタンの上）に出す
+        let bounds = self.quick.bounds.unwrap_or_else(|| {
+            let main = window.bounds();
+            let size = size(px(QUICK_WIDTH).min(main.size.width * 0.9), px(QUICK_HEIGHT).min(main.size.height * 0.8));
+            Bounds::new(point(main.right() - size.width - px(22.0), main.bottom() - size.height - px(60.0)), size)
+        });
+        let options = WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(bounds)),
+            titlebar: Some(TitlebarOptions { title: Some("小さいターミナル".into()), appears_transparent: true, traffic_light_position: Some(point(px(8.0), px(7.0))) }),
+            kind: WindowKind::Floating,
+            window_background: crate::app::background_appearance(cx),
+            window_min_size: Some(size(px(240.0), px(140.0))),
+            ..Default::default()
+        };
+        let app = cx.entity().downgrade();
+        let focus = view.read(cx).focus_handle(cx);
+        let opened = cx.open_window(options, |w, cx| {
+            w.on_next_frame(move |w, cx| w.focus(&focus, cx));
+            // 閉じるボタンは、隠すのと同じにする
+            let back = app.clone();
+            w.on_window_should_close(cx, move |w, cx| {
+                let bounds = w.bounds();
+                if let Some(app) = back.upgrade() {
+                    app.update(cx, |app, cx| {
+                        app.quick.bounds = Some(bounds);
+                        app.quick.window = None;
+                        cx.notify();
+                    });
+                }
+                true
+            });
+            cx.new(|cx| {
+                let back = app.clone();
+                cx.observe_window_bounds(w, move |_: &mut QuickWindow, w, cx| {
+                    let bounds = w.bounds();
+                    if let Some(app) = back.upgrade() {
+                        app.update(cx, |app, _| app.quick.bounds = Some(bounds));
+                    }
+                })
+                .detach();
+                QuickWindow { app, view }
+            })
+        });
+        match opened {
+            Ok(handle) => self.quick.window = Some(handle),
+            Err(err) => self.show_toast(format!("小さいターミナルを開けない: {err}"), cx),
         }
         cx.notify();
     }
 
+    pub(crate) fn hide_quick(&mut self, cx: &mut Context<Self>) {
+        if let Some(handle) = self.quick.window.take() {
+            let _ = handle.update(cx, |_, w, _| {
+                let bounds = w.bounds();
+                w.remove_window();
+                bounds
+            }).map(|b| self.quick.bounds = Some(b));
+        }
+        cx.notify();
+    }
+
+    // 端末が終わったら、窓も閉じて忘れる
+    pub(crate) fn drop_quick(&mut self, cx: &mut Context<Self>) {
+        self.hide_quick(cx);
+        self.quick.id = None;
+    }
+
     pub(crate) fn render_quick_button(&self, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
-        let open = self.quick.visible;
+        let open = self.quick.visible();
         div()
             .id("quick-terminal-button")
             .absolute()
@@ -88,55 +211,5 @@ impl TerpApp {
             .on_click(cx.listener(|app, _: &ClickEvent, window, cx| app.toggle_quick(window, cx)))
             .child(crate::ui::icon("terminal", 15.0, if open { p.accent } else { p.text }))
             .into_any_element()
-    }
-
-    // ボタンの上に浮かせて出す
-    pub(crate) fn render_quick_panel(&self, p: &Palette, cx: &mut Context<Self>) -> Option<AnyElement> {
-        if !self.quick.visible {
-            return None;
-        }
-        let view = self.quick.id.and_then(|id| self.session(id))?.view.clone();
-        let title = view.read(cx).display_name();
-        Some(
-            div()
-                .id("quick-terminal")
-                .absolute()
-                .right(px(14.0))
-                .bottom(px(52.0))
-                .w(px(QUICK_WIDTH))
-                .h(px(QUICK_HEIGHT))
-                .max_w(gpui::relative(0.9))
-                .max_h(gpui::relative(0.8))
-                .flex()
-                .flex_col()
-                .rounded_lg()
-                .overflow_hidden()
-                .border_1()
-                .border_color(p.border)
-                .bg(p.term_bg)
-                .shadow_lg()
-                .occlude()
-                .child(
-                    div()
-                        .flex()
-                        .flex_row()
-                        .flex_none()
-                        .items_center()
-                        .gap_1()
-                        .h(px(26.0))
-                        .px_2()
-                        .bg(p.solid_bg)
-                        .border_b_1()
-                        .border_color(p.border)
-                        .child(crate::ui::icon("terminal", 12.0, p.muted))
-                        .child(div().flex_1().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().text_xs().text_color(p.text).child(title))
-                        .child(
-                            crate::ui::icon_button("quick-terminal-hide", "minus", "隠す（⌥⌘N）。シェルは残り、次に出したときに続きから使える", p.muted, p.hover, p.text)
-                                .on_click(cx.listener(|app, _: &ClickEvent, window, cx| app.toggle_quick(window, cx))),
-                        ),
-                )
-                .child(div().flex_1().min_h_0().child(view))
-                .into_any_element(),
-        )
     }
 }
