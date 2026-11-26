@@ -2047,7 +2047,7 @@ impl TerpApp {
         let now = Instant::now();
         let accent = p.accent;
 
-        let mut bar = div()
+        let bar = div()
             .id(("tab-bar", pane_id))
             .flex()
             .flex_row()
@@ -2059,6 +2059,8 @@ impl TerpApp {
             .border_b_1()
             .border_color(if pane_active { p.accent } else { p.border })
             .overflow_x_hidden();
+        // 収まらないタブは横に送って見る（Electron 版と同じく送りの棒は出さない）
+        let mut tabs = div().id(("pane-tabs", pane_id)).flex().flex_row().items_center().gap(px(2.0)).h_full().min_w_0().overflow_x_scroll();
         for (index, id) in pane.tabs.iter().copied().enumerate() {
             let Some(session) = self.session(id) else { continue };
             let view = session.view.read(cx);
@@ -2070,7 +2072,7 @@ impl TerpApp {
             let state = view.agent_state();
             let dot = mark_dot(mark_of(view), p);
             let tip = view.agent.text(now);
-            bar = bar.child(
+            tabs = tabs.child(
                 div()
                     .id(("tab", id))
                     .flex()
@@ -2142,6 +2144,7 @@ impl TerpApp {
         let locked = pane.locked;
         let lock_group = SharedString::from(format!("bar-{pane_id}"));
         let bar = bar
+            .child(tabs)
             .group(lock_group.clone())
             .child(div().flex_1().min_w_0().px_2().text_xs().text_color(p.muted).overflow_hidden().text_ellipsis().whitespace_nowrap().children(info));
         let bar = bar.child(
