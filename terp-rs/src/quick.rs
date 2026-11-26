@@ -5,7 +5,7 @@
 use crate::app::{Palette, TerpApp};
 use crate::terminal_view::TerminalView;
 use gpui::{
-    AnyElement, Bounds, ClickEvent, Context, Entity, Focusable, MouseButton, Pixels, Render, TitlebarOptions, WeakEntity, Window, WindowBounds, WindowHandle,
+    AnyElement, Bounds, ClickEvent, Context, DisplayId, Entity, Focusable, MouseButton, Pixels, Render, TitlebarOptions, WeakEntity, Window, WindowBounds, WindowHandle,
     WindowKind, WindowOptions, div, point, prelude::*, px, size,
 };
 
@@ -14,8 +14,8 @@ pub struct Quick {
     pub id: Option<u64>,
     // 出しているときの窓。隠すと閉じ、端末は残す
     pub window: Option<WindowHandle<QuickWindow>>,
-    // 最後に置いた位置と大きさ。次に出すときもそこに出す
-    pub bounds: Option<Bounds<Pixels>>,
+    // 最後に置いた位置と大きさと、その画面。次に出すときもそこに出す（位置は画面の左上からの距離）
+    pub bounds: Option<(Bounds<Pixels>, Option<DisplayId>)>,
 }
 
 impl Quick {
@@ -119,16 +119,17 @@ impl TerpApp {
             }
         }
         let Some(view) = self.quick.id.and_then(|id| self.session(id)).map(|s| s.view.clone()) else { return };
-        // 初めは terp の窓の中の右下（ボタンの上）に出す
-        let bounds = self.quick.bounds.unwrap_or_else(|| {
+        // 初めは terp の窓の中の右下（ボタンの上）に、terp の窓と同じ画面で出す
+        let (bounds, display_id) = self.quick.bounds.unwrap_or_else(|| {
             let main = window.bounds();
             let size = size(px(QUICK_WIDTH).min(main.size.width * 0.9), px(QUICK_HEIGHT).min(main.size.height * 0.8));
-            Bounds::new(point(main.right() - size.width - px(22.0), main.bottom() - size.height - px(60.0)), size)
+            (Bounds::new(point(main.right() - size.width - px(22.0), main.bottom() - size.height - px(60.0)), size), window.display(cx).map(|d| d.id()))
         });
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             titlebar: Some(TitlebarOptions { title: Some("terp".into()), appears_transparent: true, traffic_light_position: Some(point(px(8.0), px(7.0))) }),
             kind: WindowKind::Floating,
+            display_id,
             window_background: crate::app::background_appearance(cx),
             window_min_size: Some(size(px(240.0), px(140.0))),
             ..Default::default()
@@ -140,7 +141,7 @@ impl TerpApp {
             // 閉じるボタンは、隠すのと同じにする
             let back = app.clone();
             w.on_window_should_close(cx, move |w, cx| {
-                let bounds = w.bounds();
+                let bounds = (w.bounds(), w.display(cx).map(|d| d.id()));
                 if let Some(app) = back.upgrade() {
                     app.update(cx, |app, cx| {
                         app.quick.bounds = Some(bounds);
@@ -153,7 +154,7 @@ impl TerpApp {
             cx.new(|cx| {
                 let back = app.clone();
                 cx.observe_window_bounds(w, move |_: &mut QuickWindow, w, cx| {
-                    let bounds = w.bounds();
+                    let bounds = (w.bounds(), w.display(cx).map(|d| d.id()));
                     if let Some(app) = back.upgrade() {
                         app.update(cx, |app, _| app.quick.bounds = Some(bounds));
                     }
@@ -171,11 +172,13 @@ impl TerpApp {
 
     pub(crate) fn hide_quick(&mut self, cx: &mut Context<Self>) {
         if let Some(handle) = self.quick.window.take() {
-            let _ = handle.update(cx, |_, w, _| {
-                let bounds = w.bounds();
-                w.remove_window();
-                bounds
-            }).map(|b| self.quick.bounds = Some(b));
+            let _ = handle
+                .update(cx, |_, w, cx| {
+                    let bounds = (w.bounds(), w.display(cx).map(|d| d.id()));
+                    w.remove_window();
+                    bounds
+                })
+                .map(|b| self.quick.bounds = Some(b));
         }
         cx.notify();
     }
