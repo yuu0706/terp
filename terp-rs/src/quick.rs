@@ -37,7 +37,6 @@ impl Render for QuickWindow {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = crate::app::palette(cx);
         let font = cx.global::<crate::appearance::Appearance>().font.clone();
-        let title = self.view.read(cx).display_name();
         let app = self.app.clone();
         div()
             .size_full()
@@ -55,14 +54,13 @@ impl Render for QuickWindow {
                     .items_center()
                     .gap_1()
                     .h(px(26.0))
-                    .pl(px(64.0))
+                    .pl(px(80.0))
                     .pr_2()
                     .bg(p.solid_bg)
                     .border_b_1()
                     .border_color(p.border)
                     .on_mouse_down(MouseButton::Left, |_: &gpui::MouseDownEvent, window, _| window.start_window_move())
-                    .child(crate::ui::icon("terminal", 12.0, p.muted))
-                    .child(div().flex_1().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().text_xs().child(title))
+                    .child(div().flex_1().min_w_0().text_xs().child("terp"))
                     .child(
                         crate::ui::icon_button("quick-terminal-hide", "minus", "隠す（⌥⌘N）。シェルは残り、次に出したときに続きから使える", p.muted, p.hover, p.text)
                             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -129,7 +127,7 @@ impl TerpApp {
         });
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
-            titlebar: Some(TitlebarOptions { title: Some("小さいターミナル".into()), appears_transparent: true, traffic_light_position: Some(point(px(8.0), px(7.0))) }),
+            titlebar: Some(TitlebarOptions { title: Some("terp".into()), appears_transparent: true, traffic_light_position: Some(point(px(8.0), px(7.0))) }),
             kind: WindowKind::Floating,
             window_background: crate::app::background_appearance(cx),
             window_min_size: Some(size(px(240.0), px(140.0))),
