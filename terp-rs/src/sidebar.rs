@@ -8,7 +8,7 @@ use crate::projects::{self, Project, contains_path};
 use crate::ui::{agent_icon, icon, icon_button};
 use gpui::{
     AnyElement, App, ClickEvent, Context, ExternalPaths, FontWeight, MouseButton, MouseDownEvent, PathPromptOptions,
-    ScrollEvent, SharedString, Task, Window, div, prelude::*, px,
+    DragMoveEvent, FocusHandle, KeyDownEvent, Pixels, ScrollEvent, ScrollHandle, SharedString, Task, Window, div, point, prelude::*, px,
 };
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -54,6 +54,41 @@ fn priority(mark: Mark) -> u8 {
     }
 }
 
+
+// 左の一覧の、キーでの並べ替えとドラッグ中の送りの状態
+pub(crate) struct SidebarState {
+    scroll: ScrollHandle,
+    focus: FocusHandle,
+    // ⌥↑↓ で動かすリポジトリ。リポジトリの見出しを押すと決まり、端末に入力を移すと外れる
+    pub(crate) focused_repo: Option<String>,
+    drag_speed: f32,
+    drag_task: Option<Task<()>>,
+}
+
+impl SidebarState {
+    pub(crate) fn new(cx: &mut App) -> Self {
+        SidebarState { scroll: ScrollHandle::new(), focus: cx.focus_handle(), focused_repo: None, drag_speed: 0.0, drag_task: None }
+    }
+}
+
+// ドラッグ中にカーソルが一覧の上端か下端から 48px 以内に来たら、端に近いほど速く（最大 16px／1回）送る
+const DRAG_SCROLL_EDGE: f32 = 48.0;
+const DRAG_SCROLL_MAX: f32 = 16.0;
+
+fn drag_scroll_speed(y: f32, top: f32, bottom: f32) -> f32 {
+    if y < top || y > bottom {
+        return 0.0;
+    }
+    let (from_top, from_bottom) = (y - top, bottom - y);
+    let near = if from_top < DRAG_SCROLL_EDGE {
+        -(1.0 - from_top / DRAG_SCROLL_EDGE)
+    } else if from_bottom < DRAG_SCROLL_EDGE {
+        1.0 - from_bottom / DRAG_SCROLL_EDGE
+    } else {
+        0.0
+    };
+    if near == 0.0 { 0.0 } else { near.signum() * (near.abs() * DRAG_SCROLL_MAX).round().max(1.0) }
+}
 
 const SWIPE_DISTANCE: f32 = 30.0;
 const SWIPE_SETTLE: Duration = Duration::from_millis(120);
@@ -358,6 +393,67 @@ impl TerpApp {
             Some(view) => self.set_view(view, cx),
             None => cx.notify(),
         }
+    }
+
+    fn on_list_drag_move(&mut self, position: gpui::Point<Pixels>, bounds: gpui::Bounds<Pixels>, cx: &mut Context<Self>) {
+        let inside_x = position.x >= bounds.left() && position.x <= bounds.right();
+        self.sidebar_state.drag_speed = if inside_x { drag_scroll_speed(f32::from(position.y), f32::from(bounds.top()), f32::from(bounds.bottom())) } else { 0.0 };
+        if self.sidebar_state.drag_speed == 0.0 || self.sidebar_state.drag_task.is_some() {
+            return;
+        }
+        // カーソルが止まっていても送り続ける。ドラッグが終わるか、端から離れたら止める
+        self.sidebar_state.drag_task = Some(cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(Duration::from_micros(16_667)).await;
+                let go_on = this
+                    .update(cx, |app, cx| {
+                        let speed = app.sidebar_state.drag_speed;
+                        if speed == 0.0 || !cx.has_active_drag() {
+                            app.sidebar_state.drag_speed = 0.0;
+                            app.sidebar_state.drag_task = None;
+                            return false;
+                        }
+                        let scroll = &app.sidebar_state.scroll;
+                        let max = f32::from(scroll.max_offset().y);
+                        let y = (f32::from(scroll.offset().y) - speed).clamp(-max, 0.0);
+                        scroll.set_offset(point(scroll.offset().x, px(y)));
+                        cx.notify();
+                        true
+                    })
+                    .unwrap_or(false);
+                if !go_on {
+                    break;
+                }
+            }
+        }));
+    }
+
+    // 一覧の入れ物に、送りの位置とドラッグ中の送りを付ける
+    fn scrolling_list(&self, list: gpui::Stateful<gpui::Div>, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
+        list.track_scroll(&self.sidebar_state.scroll)
+            .on_drag_move::<DraggedRepo>(cx.listener(|app, e: &DragMoveEvent<DraggedRepo>, _, cx| app.on_list_drag_move(e.event.position, e.bounds, cx)))
+            .on_drag_move::<DraggedTab>(cx.listener(|app, e: &DragMoveEvent<DraggedTab>, _, cx| app.on_list_drag_move(e.event.position, e.bounds, cx)))
+            .on_drag_move::<ExternalPaths>(cx.listener(|app, e: &DragMoveEvent<ExternalPaths>, _, cx| app.on_list_drag_move(e.event.position, e.bounds, cx)))
+    }
+
+    // ⌥↑↓ で、見出しを押したリポジトリをドラフトの並びの中で1つ上か下へ動かす
+    fn on_sidebar_key(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        let k = &event.keystroke;
+        if !k.modifiers.alt || k.modifiers.platform || k.modifiers.control || !(k.key == "up" || k.key == "down") {
+            return;
+        }
+        let Some(path) = self.sidebar_state.focused_repo.clone() else { return };
+        cx.stop_propagation();
+        let ws = self.workspace();
+        let mut order: Vec<String> = self.tree(&ws, cx).repos.into_iter().map(|r| r.project.path).collect();
+        let Some(at) = order.iter().position(|p| *p == path) else { return };
+        let to = if k.key == "up" { at.checked_sub(1) } else { (at + 1 < order.len()).then_some(at + 1) };
+        let Some(to) = to else { return };
+        order.swap(at, to);
+        if let Err(err) = projects::reorder(&order) {
+            self.notice = Some(format!("並べ替えを記録できない: {err}"));
+        }
+        self.reload_projects(cx);
     }
 
     fn set_view(&mut self, view: &str, cx: &mut Context<Self>) {
@@ -861,6 +957,8 @@ impl TerpApp {
             .flex()
             .flex_col()
             .size_full()
+            .track_focus(&self.sidebar_state.focus)
+            .on_key_down(cx.listener(Self::on_sidebar_key))
             .child(head)
             .child(switcher)
             .child(overview)
@@ -874,7 +972,7 @@ impl TerpApp {
         let ws = self.workspace();
         let mut names: Vec<Project> = self.projects.projects.iter().filter(|x| x.workspace == ws).cloned().collect();
         names.sort_by_key(|x| x.name().to_lowercase());
-        let mut list = div()
+        let list = div()
             .id("sidebar-all")
             .flex()
             .flex_col()
@@ -884,6 +982,7 @@ impl TerpApp {
             .gap(px(2.0))
             .py_2()
             .on_drop(cx.listener(|app, paths: &ExternalPaths, _, cx| app.add_repos(paths.paths(), cx)));
+        let mut list = self.scrolling_list(list, cx);
         if names.is_empty() {
             return self.render_no_projects(p, cx);
         }
@@ -960,7 +1059,7 @@ impl TerpApp {
     fn render_draft_view(&self, ws: &str, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
         let tree = self.tree(ws, cx);
         let accent = p.accent;
-        let mut list = div()
+        let list = div()
             .id("sidebar-list")
             .flex()
             .flex_col()
@@ -972,6 +1071,7 @@ impl TerpApp {
             .py_2()
             .drag_over::<ExternalPaths>(move |s, _, _, _| s.border_2().border_color(accent))
             .on_drop(cx.listener(|app, paths: &ExternalPaths, _, cx| app.add_repos(paths.paths(), cx)));
+        let mut list = self.scrolling_list(list, cx);
         let has_projects = self.projects.projects.iter().any(|x| x.workspace == ws);
         if tree.repos.is_empty() {
             if has_projects {
@@ -1055,7 +1155,12 @@ impl TerpApp {
             .text_color(p.text)
             .hover(|s| s.bg(p.hover))
             .tooltip(move |_, cx| crate::tooltip::text(p4.clone(), cx))
-            .on_click(cx.listener(move |app, _: &ClickEvent, _, cx| app.toggle_collapsed(p1.clone(), cx)))
+            .when(self.sidebar_state.focused_repo.as_deref() == Some(path.as_str()), |d| d.border_1().border_color(accent))
+            .on_click(cx.listener(move |app, _: &ClickEvent, window, cx| {
+                app.sidebar_state.focused_repo = Some(p1.clone());
+                window.focus(&app.sidebar_state.focus, cx);
+                app.toggle_collapsed(p1.clone(), cx);
+            }))
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(move |app, event: &MouseDownEvent, _, cx| {
@@ -1450,6 +1555,16 @@ mod tests {
         assert_eq!(swipe.feed(20.0, "all"), None);
         assert_eq!(swipe.feed(15.0, "all"), Some("draft"));
         assert_eq!(swipe.feed(40.0, "draft"), None);
+    }
+
+    #[test]
+    fn ドラッグ中の送りは端に近いほど速く_中ほどと枠の外では送らない() {
+        assert_eq!(drag_scroll_speed(100.0, 100.0, 600.0), -16.0);
+        assert_eq!(drag_scroll_speed(124.0, 100.0, 600.0), -8.0);
+        assert_eq!(drag_scroll_speed(147.0, 100.0, 600.0), -1.0);
+        assert_eq!(drag_scroll_speed(300.0, 100.0, 600.0), 0.0);
+        assert_eq!(drag_scroll_speed(590.0, 100.0, 600.0), 13.0);
+        assert_eq!(drag_scroll_speed(700.0, 100.0, 600.0), 0.0);
     }
 
     #[test]

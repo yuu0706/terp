@@ -166,6 +166,7 @@ pub struct TerpApp {
     pub(crate) settings: Option<crate::settings::Settings>,
     pub(crate) theme_ai: Option<crate::themeai::ThemeAi>,
     pub(crate) swipe: crate::sidebar::Swipe,
+    pub(crate) sidebar_state: crate::sidebar::SidebarState,
     pub(crate) panel: Option<crate::rightpanel::RightPanel>,
     pub(crate) pets: crate::pets::Pets,
     // よく戻るタブ。タブごとの訪れた時刻（3秒以上とどまったものだけ）と、今いるタブ
@@ -425,6 +426,7 @@ impl TerpApp {
             settings: None,
             theme_ai: None,
             swipe: crate::sidebar::Swipe::default(),
+            sidebar_state: crate::sidebar::SidebarState::new(cx),
             panel: None,
             pets: Default::default(),
             visits: HashMap::new(),
@@ -741,7 +743,10 @@ impl TerpApp {
         });
         // 端末を押して入力を移したら、その枠とタブを選ぶ
         let focus_handle = view.read(cx).focus_handle(cx);
-        let focus = cx.on_focus(&focus_handle, window, move |app, window, cx| app.select(id, window, cx));
+        let focus = cx.on_focus(&focus_handle, window, move |app, window, cx| {
+            app.sidebar_state.focused_repo = None;
+            app.select(id, window, cx);
+        });
         self.sessions.push(Session { id, view, workspace, last_notify: None, _subscriptions: [events, focus] });
         id
     }
