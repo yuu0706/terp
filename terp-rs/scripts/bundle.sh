@@ -37,5 +37,13 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </dict>
 </plist>
 PLIST
-codesign --force --deep -s - "$APP"
+# 手元の署名用の証明書（既定は「terp local signing」）があれば、それで署名する。
+# アドホック署名は作り直すたびに別のアプリとみなされ、macOS の許可を毎回求められるため。無ければアドホック署名にする
+IDENTITY="${TERP_SIGN_IDENTITY:-terp local signing}"
+if security find-identity -p codesigning 2>/dev/null | grep -qF "\"$IDENTITY\""; then
+  codesign --force --deep -s "$IDENTITY" "$APP"
+else
+  echo "署名用の証明書「$IDENTITY」が無いため、アドホック署名にする（作り直すたびに macOS の許可を求められる）" >&2
+  codesign --force --deep -s - "$APP"
+fi
 echo "$APP"
