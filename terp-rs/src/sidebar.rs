@@ -1030,7 +1030,7 @@ impl TerpApp {
     }
 
     fn card(&self, p: &Palette) -> gpui::Div {
-        div().flex().flex_col().p_1().gap(px(1.0)).rounded_lg().bg(p.card)
+        div().flex().flex_col().p_1().gap(px(1.0)).rounded_lg().bg(p.card).border_1().border_color(p.border)
     }
 
     fn render_repo(&self, repo: RepoGroup, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
