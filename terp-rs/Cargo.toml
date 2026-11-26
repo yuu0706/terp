@@ -21,4 +21,4 @@ regex = "1"
 resvg = "0.46"
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", features = ["NSString", "NSFileManager", "NSURL", "NSError", "NSData"] }
-objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSDockTile", "NSResponder", "NSWindow", "NSImage"] }
+objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSDockTile", "NSResponder", "NSWindow", "NSImage", "NSGraphics"] }

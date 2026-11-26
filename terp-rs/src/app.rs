@@ -273,6 +273,10 @@ fn text_hash(text: &str) -> u64 {
 
 fn show_notification(id: u64, title: String, body: String, cx: &mut App) {
     cx.show_system_notification(SystemNotification { tag: format!("terp-{id}").into(), title: title.into(), body: body.into(), actions: Vec::new() });
+    // GPUI の通知は音を付けずに出す。音を鳴らす設定のときは、macOS の警告音を鳴らす
+    if cx.global::<Appearance>().config.notify_sound {
+        objc2_app_kit::NSBeep();
+    }
 }
 
 pub(crate) fn palette(cx: &App) -> Palette {

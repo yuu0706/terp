@@ -1245,7 +1245,7 @@ impl TerpApp {
             .child(self.field("応答が終わったとき", None, self.toggle("notifyAgentDone", c.notify_agent_done, off, false, p, cx), off, p))
             .child(self.field("ベルが鳴ったとき", None, self.toggle("notifyBell", c.notify_bell, off, false, p, cx), off, p))
             .child(self.field("表示中のターミナルも知らせる", None, self.toggle("notifyWhenVisible", c.notify_when_visible, off, false, p, cx), off, p))
-            .child(self.field("音を鳴らす", Some("音の有無は macOS の「システム設定 → 通知 → terp」でも変えられる"), self.toggle("notifySound", c.notify_sound, off, false, p, cx), off, p))
+            .child(self.field("音を鳴らす", Some("通知を出すときに macOS の警告音を鳴らす。音の種類と大きさは「システム設定 → サウンド」の警告音に従う"), self.toggle("notifySound", c.notify_sound, off, false, p, cx), off, p))
             .child(self.field("返答の文を出す", Some("ロック画面や画面の共有で、返答の中身が見えることがある"), self.toggle("notifyMessage", c.notify_message, off, false, p, cx), off, p))
             .child(self.field("Dock に数を出す", None, self.toggle("dockBadge", c.dock_badge, false, false, p, cx), false, p))
             .child(self.field("許可待ちに右下のカードで答える", Some("表示していないターミナルが許可を求めたとき、移らずに選べる"), self.toggle("permissionCard", c.permission_card, false, false, p, cx), false, p))
