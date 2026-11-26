@@ -1,6 +1,7 @@
 #!/bin/sh
 # Rust 版を .app にまとめる。macOS の通知は .app から起動したときだけ届く。
-# 出力: terp-rs/target/release/bundle/terp.app（ad-hoc 署名）
+# 出力: terp-rs/target/release/bundle/terp.app（手元の証明書か ad-hoc で署名）
+# /Applications/terp.app が Rust 版（local.terp.gpui）なら、作った版をそこへ写す。TERP_INSTALL=0 で写さない
 set -eu
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -47,3 +48,20 @@ else
   codesign --force --deep -s - "$APP"
 fi
 echo "$APP"
+
+# アプリケーションフォルダへ写す。別の場所に写してから入れ替えるので、動いている terp は止まらず、次に開いたときから新しい版になる。
+# 違うアプリ（Electron 版など）が置いてあるときは、上書きしない
+DEST=/Applications/terp.app
+if [ "${TERP_INSTALL:-1}" = "1" ] && [ -d "$DEST" ]; then
+  CURRENT=$(defaults read "$DEST/Contents/Info.plist" CFBundleIdentifier 2>/dev/null || true)
+  if [ "$CURRENT" = "${TERP_BUNDLE_ID:-local.terp.gpui}" ]; then
+    rm -rf "$DEST.new" "$DEST.old"
+    ditto "$APP" "$DEST.new"
+    mv "$DEST" "$DEST.old"
+    mv "$DEST.new" "$DEST"
+    rm -rf "$DEST.old"
+    echo "写した: ${DEST}（次に開いたときから新しい版）"
+  else
+    echo "写さない: ${DEST} は Rust 版ではない（${CURRENT}）" >&2
+  fi
+fi
