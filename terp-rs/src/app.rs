@@ -206,6 +206,7 @@ pub fn apply_dock_icon(cx: &App) {
     let a = cx.global::<Appearance>();
     if !a.config.themed_icon {
         crate::dock::set_dock_icon(None);
+        crate::dock::set_bundle_icon(None);
         return;
     }
     let c = &a.chrome;
@@ -218,6 +219,7 @@ pub fn apply_dock_icon(cx: &App) {
     }
     let svg = crate::dock::icon_svg(&hex(top), &hex(bottom), &hex(c.accent), &hex(c.text_muted), &hex(c.text));
     crate::dock::set_dock_icon(Some(&svg));
+    crate::dock::set_bundle_icon(Some(svg));
 }
 
 pub fn apply_blur(cx: &App) {

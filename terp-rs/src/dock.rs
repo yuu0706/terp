@@ -88,3 +88,66 @@ pub fn set_dock_icon(svg: Option<&str>) {
         unsafe { app.setApplicationIconImage(Some(&image)) };
     }
 }
+
+// Finder と、閉じているときの Dock に出るアプリの絵も同じ色にする。アプリのフォルダに絵を貼る（Icon\r ができる）。
+// 貼るとファイルを書くため、最後に貼った絵を控え、同じ絵が貼れたままなら貼り直さない
+pub fn set_bundle_icon(svg: Option<String>) {
+    let Some(target) = bundle_path() else { return };
+    if svg.is_none() && !target.join("Icon\r").exists() {
+        return;
+    }
+    let key = format!("{}\n{}", target.display(), svg.as_deref().unwrap_or(""));
+    if applied_bundle_icon(&target, &key, svg.is_none()) {
+        return;
+    }
+    std::thread::spawn(move || {
+        if !write_bundle_icon(&target, svg.as_deref()) {
+            return;
+        }
+        let _ = std::fs::write(bundle_icon_store(), &key);
+        refresh_dock_after_exit();
+    });
+}
+
+fn bundle_path() -> Option<std::path::PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let app = exe.parent()?.parent()?.parent()?;
+    (app.extension().is_some_and(|e| e == "app")).then(|| app.to_path_buf())
+}
+
+fn bundle_icon_store() -> std::path::PathBuf {
+    crate::config::config_dir().join("gpui-bundle-icon.txt")
+}
+
+fn applied_bundle_icon(target: &std::path::Path, key: &str, remove: bool) -> bool {
+    std::fs::read_to_string(bundle_icon_store()).is_ok_and(|saved| saved == key) && target.join("Icon\r").exists() != remove
+}
+
+fn write_bundle_icon(target: &std::path::Path, svg: Option<&str>) -> bool {
+    use objc2::AllocAnyThread;
+    use objc2_app_kit::{NSImage, NSWorkspace, NSWorkspaceIconCreationOptions};
+    use objc2_foundation::NSData;
+    let image = match svg {
+        Some(svg) => {
+            let Some(png) = render_png(svg, 1024) else { return false };
+            match NSImage::initWithData(NSImage::alloc(), &NSData::with_bytes(&png)) {
+                Some(image) => Some(image),
+                None => return false,
+            }
+        }
+        None => None,
+    };
+    let path = NSString::from_str(&target.to_string_lossy());
+    NSWorkspace::sharedWorkspace().setIcon_forFile_options(image.as_deref(), &path, NSWorkspaceIconCreationOptions(0))
+}
+
+// Dock は閉じているアプリの絵を覚えていて、貼り替えても古い絵のまま出す。terp が終わってから Dock を作り直す。
+// 全画面の Space を片付けている途中で作り直さないよう、終わった後も1秒置く
+fn refresh_dock_after_exit() {
+    static STARTED: std::sync::Once = std::sync::Once::new();
+    STARTED.call_once(|| {
+        let pid = std::process::id();
+        let script = format!("while kill -0 {pid} 2>/dev/null; do sleep 0.5; done; sleep 1; /usr/bin/killall Dock");
+        let _ = std::process::Command::new("/bin/sh").args(["-c", &script]).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn();
+    });
+}
