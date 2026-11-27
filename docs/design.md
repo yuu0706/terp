@@ -1,5 +1,7 @@
 # terp の設計方針
 
+> 2026-11-27 に Electron 版を削除し、Rust 版（`terp-rs/`。GPUI と alacritty_terminal を使う）に切り替えた。以下は Electron 版で決めた方針・採らなかった案・既知の落とし穴の記録である。`src/` のファイル名・`TERP_SELFTEST_*`・xterm.js と Electron に固有の記述は Electron 版のもので、Rust 版には当てはまらない。設定ファイルの書式は Rust 版も同じものを読む。
+
 terp は、ターミナルを複数開いて素早く切り替えるための macOS 用アプリである。2026-10-23 から、Orca に代わる並列のエージェント開発の道具を目指す（ブランチ `feature/orca-replacement`）。
 
 ## 目的

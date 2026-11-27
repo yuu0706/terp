@@ -27,21 +27,15 @@
 
 ## 動かす
 
-macOS（Apple Silicon）と Node.js が要る。
+macOS（Apple Silicon）・Rust・Xcode が要る。本体は `terp-rs/` にある。
 
 ```sh
-npm install
-npm start
+terp-rs/scripts/bundle.sh
 ```
 
-`/Applications` に入れるときは次のどちらかを使う。
+`terp-rs/target/release/bundle/terp.app` ができる。`/Applications/terp.app` が Rust 版（`local.terp.gpui`）なら、作った版をそこへ写す。写さないときは `TERP_INSTALL=0` を付ける。初めて入れるときは、できた `terp.app` を `/Applications` へ写す。
 
-| コマンド | 入れ方 |
-| --- | --- |
-| `npm run link-app` | アプリがこのリポジトリのコードを直接読む。コードを直したら、terp を開き直すだけで反映される |
-| `npm run install-app` | コードを同梱する |
-
-署名の鍵が無いため、どちらも ad-hoc 署名で入れる。手元でビルドしたアプリは、そのまま Finder から起動できる。
+手元の証明書「terp local signing」があればそれで署名し、無ければ ad-hoc 署名にする。ad-hoc 署名は作り直すたびに別のアプリとみなされ、macOS の許可を毎回求められる。
 
 ## 設定
 
@@ -79,4 +73,4 @@ npm start
 [MIT](LICENSE)
 
 エージェントのアイコンは [Lobe Icons](https://github.com/lobehub/lobe-icons)（MIT）を使用している。
-各ロゴは各社の商標であり、terp は各社と関係がない。詳細は [NOTICE.md](src/renderer/icons/agents/NOTICE.md) を参照。
+各ロゴは各社の商標であり、terp は各社と関係がない。詳細は [NOTICE.md](terp-rs/assets/agents/NOTICE.md) を参照。
